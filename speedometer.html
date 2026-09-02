@@ -1,0 +1,309 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0E1620">
+<title>Spoormeter</title>
+<style>
+:root{
+  --grond:#0E1620; --vlak:#18232E; --rand:#26333F;
+  --tekst:#E8EDF2; --gedempt:#7E8C9A;
+  --sein-groen:#35B37E; --sein-geel:#E5A02C; --sein-rood:#E4574C;
+  --spoor:#4C9BE8;
+  --cijfer:ui-monospace,"SF Mono",Menlo,monospace;
+  --tekst-font:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;height:100%}
+body{
+  background:var(--grond); color:var(--tekst); font-family:var(--tekst-font);
+  font-size:15px; line-height:1.45;
+  padding:env(safe-area-inset-top) 14px calc(env(safe-area-inset-bottom) + 12px);
+  display:flex; flex-direction:column; gap:12px; max-width:560px; margin:0 auto;
+}
+h1{font-size:15px;font-weight:600;margin:14px 0 0;letter-spacing:.01em}
+h1 span{color:var(--gedempt);font-weight:400}
+
+/* seinen: de kern van het scherm */
+.seinen{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.sein{
+  background:var(--vlak); border:1px solid var(--rand); border-radius:10px;
+  padding:12px 10px 11px; position:relative; overflow:hidden;
+}
+.sein::before{
+  content:""; position:absolute; inset:0 auto 0 0; width:3px;
+  background:var(--rand); transition:background .18s;
+}
+.sein.op::before{background:var(--sein-groen)}
+.sein.traag::before{background:var(--sein-geel)}
+.sein.stuk::before{background:var(--sein-rood)}
+.sein .naam{font-size:11px;color:var(--gedempt);margin-bottom:5px}
+.sein .waarde{font-family:var(--cijfer);font-size:23px;font-variant-numeric:tabular-nums;letter-spacing:-.02em}
+.sein .eenheid{font-size:11px;color:var(--gedempt);margin-left:2px}
+.sein.stuk .waarde{color:var(--sein-rood)}
+.sein .uitval{font-size:11px;color:var(--gedempt);margin-top:3px;font-family:var(--cijfer)}
+
+.uitleg{font-size:12.5px;color:var(--gedempt);margin:-4px 0 0}
+
+/* meetstand */
+.stand{
+  background:var(--vlak);border:1px solid var(--rand);border-radius:10px;
+  padding:11px 13px;display:grid;grid-template-columns:1fr 1fr;gap:9px 16px;
+  font-size:12.5px
+}
+.stand div{display:flex;justify-content:space-between;gap:10px}
+.stand b{font-family:var(--cijfer);font-weight:500;font-variant-numeric:tabular-nums}
+.stand span{color:var(--gedempt)}
+
+/* loglijst */
+.log{
+  flex:1;min-height:110px;overflow-y:auto;background:var(--vlak);
+  border:1px solid var(--rand);border-radius:10px;padding:8px 10px;
+  font-family:var(--cijfer);font-size:11.5px;line-height:1.75;
+  -webkit-overflow-scrolling:touch
+}
+.log div{white-space:nowrap;color:var(--gedempt)}
+.log .bad{color:var(--sein-rood)}
+.log .mark{color:var(--spoor)}
+
+/* bediening onderaan, duimbereik */
+.bediening{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+button{
+  font:inherit;font-size:15px;font-weight:600;color:var(--tekst);
+  background:var(--vlak);border:1px solid var(--rand);border-radius:10px;
+  padding:14px 10px;cursor:pointer;transition:background .15s,border-color .15s
+}
+button:focus-visible{outline:2px solid var(--spoor);outline-offset:2px}
+button.start{background:var(--sein-groen);border-color:var(--sein-groen);color:#06231A}
+button.stop{background:var(--sein-rood);border-color:var(--sein-rood);color:#2A0A08}
+button.breed{grid-column:1/-1}
+button:disabled{opacity:.4;cursor:default}
+.regel{display:flex;gap:8px;align-items:center}
+select{
+  font:inherit;font-size:13px;color:var(--tekst);background:var(--vlak);
+  border:1px solid var(--rand);border-radius:8px;padding:9px 8px;flex:1
+}
+label{font-size:12.5px;color:var(--gedempt)}
+.mel{font-size:12px;color:var(--sein-geel);min-height:16px}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+</head>
+<body>
+
+<h1>Spoormeter <span>— verbindingslogger</span></h1>
+
+<div class="seinen">
+  <div class="sein" id="s-ip"><div class="naam">via IP-adres</div>
+    <div><span class="waarde" id="v-ip">—</span><span class="eenheid">ms</span></div>
+    <div class="uitval" id="u-ip">0 uitval</div></div>
+  <div class="sein" id="s-dns"><div class="naam">via hostnaam</div>
+    <div><span class="waarde" id="v-dns">—</span><span class="eenheid">ms</span></div>
+    <div class="uitval" id="u-dns">0 uitval</div></div>
+  <div class="sein" id="s-web"><div class="naam">ander netwerk</div>
+    <div><span class="waarde" id="v-web">—</span><span class="eenheid">ms</span></div>
+    <div class="uitval" id="u-web">0 uitval</div></div>
+</div>
+
+<p class="uitleg">Valt alleen de middelste weg, dan is het DNS. Vallen ze alle drie tegelijk weg, dan is het de radioverbinding.</p>
+
+<div class="stand">
+  <div><span>Rondes</span><b id="m-rondes">0</b></div>
+  <div><span>Looptijd</span><b id="m-tijd">0:00</b></div>
+  <div><span>Positie</span><b id="m-pos">—</b></div>
+  <div><span>Snelheid</span><b id="m-snel">—</b></div>
+  <div><span>Verbruik</span><b id="m-data">0 kB</b></div>
+  <div><span>Markeringen</span><b id="m-mark">0</b></div>
+</div>
+
+<div class="log" id="log"><div>Nog niet gestart.</div></div>
+<div class="mel" id="mel"></div>
+
+<div class="regel">
+  <label for="int">Elke</label>
+  <select id="int">
+    <option value="2000">2 seconden</option>
+    <option value="5000" selected>5 seconden</option>
+    <option value="10000">10 seconden</option>
+  </select>
+</div>
+
+<div class="bediening">
+  <button id="btn-start" class="start">Start meting</button>
+  <button id="btn-mark" disabled>Markeer nu</button>
+  <button id="btn-csv" class="breed" disabled>Log opslaan als CSV</button>
+</div>
+
+<script>
+const PROBES = [
+  {id:"ip",  naam:"IP-adres", url:"https://1.1.1.1/cdn-cgi/trace"},
+  {id:"dns", naam:"hostnaam", url:"https://one.one.one.one/cdn-cgi/trace"},
+  {id:"web", naam:"gstatic",  url:"https://www.gstatic.com/generate_204"}
+];
+const TIMEOUT = 4000;
+const BYTES_PER_PROBE = 700;   // ruwe schatting incl. headers
+
+let draait = false, timer = null, rondes = 0, markeringen = 0;
+let start = 0, wakeLock = null, watchId = null, positie = null;
+const uitval = {ip:0, dns:0, web:0};
+const regels = [];
+
+const $ = id => document.getElementById(id);
+const pad = n => String(n).padStart(2,"0");
+
+function meld(t){ $("mel").textContent = t || ""; }
+
+async function probe(p){
+  const ctrl = new AbortController();
+  const kap = setTimeout(()=>ctrl.abort(), TIMEOUT);
+  const t0 = performance.now();
+  try{
+    await fetch(p.url + (p.url.includes("?")?"&":"?") + "_=" + Date.now(),
+      {mode:"no-cors", cache:"no-store", signal:ctrl.signal});
+    return {ok:true, ms:Math.round(performance.now()-t0)};
+  }catch(e){
+    return {ok:false, ms:Math.round(performance.now()-t0)};
+  }finally{ clearTimeout(kap); }
+}
+
+function toonSein(p, r){
+  const el = $("s-"+p.id);
+  el.classList.remove("op","traag","stuk");
+  if(!r.ok){ el.classList.add("stuk"); $("v-"+p.id).textContent = "weg"; }
+  else{
+    el.classList.add(r.ms > 400 ? "traag" : "op");
+    $("v-"+p.id).textContent = r.ms;
+  }
+  $("u-"+p.id).textContent = uitval[p.id] + " uitval";
+}
+
+async function ronde(){
+  const nu = new Date();
+  const res = {};
+  await Promise.all(PROBES.map(async p => {
+    const r = await probe(p);
+    if(!r.ok) uitval[p.id]++;
+    res[p.id] = r;
+    toonSein(p, r);
+  }));
+
+  rondes++;
+  const pos = positie;
+  regels.push([
+    nu.toISOString(),
+    pos ? pos.coords.latitude.toFixed(6) : "",
+    pos ? pos.coords.longitude.toFixed(6) : "",
+    pos ? Math.round(pos.coords.accuracy) : "",
+    pos && pos.coords.speed != null ? (pos.coords.speed*3.6).toFixed(1) : "",
+    res.ip.ok?1:0,  res.ip.ms,
+    res.dns.ok?1:0, res.dns.ms,
+    res.web.ok?1:0, res.web.ms,
+    ""
+  ]);
+
+  const kapot = PROBES.filter(p=>!res[p.id].ok).map(p=>p.id);
+  const tijd = pad(nu.getHours())+":"+pad(nu.getMinutes())+":"+pad(nu.getSeconds());
+  const tekst = kapot.length
+    ? tijd+"  weg: "+kapot.join(" ")
+    : tijd+"  "+PROBES.map(p=>p.id+" "+res[p.id].ms).join("  ");
+  logRegel(tekst, kapot.length ? "bad" : "");
+
+  $("m-rondes").textContent = rondes;
+  $("m-data").textContent = kB(rondes * PROBES.length * BYTES_PER_PROBE);
+  if(pos){
+    $("m-pos").textContent = pos.coords.latitude.toFixed(4)+", "+pos.coords.longitude.toFixed(4);
+    $("m-snel").textContent = pos.coords.speed != null
+      ? Math.round(pos.coords.speed*3.6)+" km/u" : "—";
+  }
+}
+
+function kB(b){ return b < 1e6 ? Math.round(b/1024)+" kB" : (b/1048576).toFixed(1)+" MB"; }
+
+function logRegel(t, klasse){
+  const d = document.createElement("div");
+  d.textContent = t;
+  if(klasse) d.className = klasse;
+  const log = $("log");
+  if(regels.length <= 1) log.innerHTML = "";
+  log.appendChild(d);
+  while(log.children.length > 300) log.removeChild(log.firstChild);
+  log.scrollTop = log.scrollHeight;
+}
+
+function tikker(){
+  if(!draait) return;
+  const s = Math.floor((Date.now()-start)/1000);
+  $("m-tijd").textContent = Math.floor(s/60)+":"+pad(s%60);
+}
+
+async function beginnen(){
+  draait = true;
+  start = Date.now();
+  $("btn-start").textContent = "Stop meting";
+  $("btn-start").className = "stop";
+  $("btn-mark").disabled = false;
+  $("btn-csv").disabled = false;
+  $("int").disabled = true;
+  meld("");
+
+  if("geolocation" in navigator){
+    watchId = navigator.geolocation.watchPosition(
+      p => { positie = p; },
+      e => meld("Geen locatie: "+e.message+". Meting loopt door zonder coördinaten."),
+      {enableHighAccuracy:true, maximumAge:2000, timeout:8000});
+  } else meld("Dit apparaat geeft geen locatie door.");
+
+  try{ if("wakeLock" in navigator) wakeLock = await navigator.wakeLock.request("screen"); }
+  catch(e){ meld("Scherm kan niet aanblijven; zet de schermvergrendeling langer."); }
+
+  const ms = +$("int").value;
+  await ronde();
+  timer = setInterval(ronde, ms);
+  setInterval(tikker, 1000);
+}
+
+function stoppen(){
+  draait = false;
+  clearInterval(timer);
+  $("btn-start").textContent = "Start meting";
+  $("btn-start").className = "start";
+  $("btn-mark").disabled = true;
+  $("int").disabled = false;
+  if(watchId != null) navigator.geolocation.clearWatch(watchId);
+  if(wakeLock){ wakeLock.release(); wakeLock = null; }
+}
+
+$("btn-start").onclick = () => draait ? stoppen() : beginnen();
+
+$("btn-mark").onclick = () => {
+  markeringen++;
+  $("m-mark").textContent = markeringen;
+  if(regels.length) regels[regels.length-1][10] = "markering";
+  const n = new Date();
+  logRegel(pad(n.getHours())+":"+pad(n.getMinutes())+":"+pad(n.getSeconds())+"  ← markering "+markeringen, "mark");
+};
+
+$("btn-csv").onclick = () => {
+  const kop = ["tijd_utc","lat","lon","nauwkeurigheid_m","snelheid_kmh",
+               "ip_ok","ip_ms","dns_ok","dns_ms","web_ok","web_ms","markering"];
+  const csv = [kop.join(","), ...regels.map(r=>r.join(","))].join("\n");
+  const blob = new Blob([csv], {type:"text/csv"});
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "spoormeter-" + new Date().toISOString().slice(0,16).replace(/[:T]/g,"") + ".csv";
+  a.click();
+  setTimeout(()=>URL.revokeObjectURL(a.href), 2000);
+};
+
+document.addEventListener("visibilitychange", async () => {
+  if(document.visibilityState === "visible" && draait && "wakeLock" in navigator && !wakeLock){
+    try{ wakeLock = await navigator.wakeLock.request("screen"); }catch(e){}
+  }
+});
+
+window.addEventListener("beforeunload", e => {
+  if(regels.length){ e.preventDefault(); e.returnValue = ""; }
+});
+</script>
+</body>
+</html>
