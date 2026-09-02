@@ -1,0 +1,149 @@
+:root{
+  --ground:#0E1620; --panel:#18232E; --line:#26333F;
+  --text:#E8EDF2; --muted:#7E8C9A;
+  --green:#35B37E; --amber:#E5A02C; --red:#E4574C;
+  --rail:#4C9BE8;
+  --num:ui-monospace,"SF Mono",Menlo,monospace;
+  color-scheme:dark;
+  --ui:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;height:100%}
+body{
+  background:var(--ground);color:var(--text);font-family:var(--ui);
+  font-size:15px;line-height:1.45;
+  display:flex;flex-direction:column;height:100dvh;overflow:hidden;
+  padding-top:env(safe-area-inset-top);
+}
+h1{font-size:15px;font-weight:600;margin:12px 14px 0;letter-spacing:.01em}
+h1 span{color:var(--muted);font-weight:400}
+h2{font-size:12px;font-weight:600;color:var(--muted);margin:2px 0 0;
+   text-transform:uppercase;letter-spacing:.06em}
+
+main{flex:1;overflow-y:auto;overscroll-behavior:contain;-webkit-overflow-scrolling:touch;
+     padding:12px 14px calc(12px + env(safe-area-inset-bottom));
+     max-width:560px;width:100%;margin:0 auto}
+.view,#readout{display:flex;flex-direction:column;gap:12px}
+.view{min-height:100%}
+[hidden]{display:none!important}
+
+/* signals: the part that has to read at a glance */
+.signals{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.signal{background:var(--panel);border:1px solid var(--line);border-radius:10px;
+        padding:12px 10px 11px;position:relative;overflow:hidden}
+.signal::before{content:"";position:absolute;inset:0 auto 0 0;width:3px;
+                background:var(--line);transition:background .18s}
+.signal.up::before{background:var(--green)}
+.signal.slow::before{background:var(--amber)}
+.signal.down::before{background:var(--red)}
+.signal .name{font-size:11px;color:var(--muted);margin-bottom:5px}
+.signal .value{font-family:var(--num);font-size:23px;font-variant-numeric:tabular-nums;letter-spacing:-.02em}
+.signal .unit{font-size:11px;color:var(--muted);margin-left:2px}
+.signal.down .value{color:var(--red)}
+.signal .fails{font-size:11px;color:var(--muted);margin-top:3px;font-family:var(--num)}
+
+.hint{font-size:12.5px;color:var(--muted);margin:-4px 0 0}
+
+/* last few minutes, so a dip is distinguishable from a gap */
+.strip{display:grid;grid-template-columns:repeat(48,1fr);gap:2px;height:26px;
+       background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:4px;overflow:hidden}
+.strip i{min-width:0;border-radius:1px;background:var(--line)}
+.strip i.up{background:var(--green)}
+.strip i.slow{background:var(--amber)}
+.strip i.dns{background:var(--rail)}
+.strip i.down{background:var(--red)}
+.strip i.skip{background:var(--muted);opacity:.5}
+.strip i.pause{background:repeating-linear-gradient(45deg,var(--muted),var(--muted) 2px,transparent 2px,transparent 4px)}
+
+.stats{background:var(--panel);border:1px solid var(--line);border-radius:10px;
+       padding:11px 13px;display:grid;grid-template-columns:1fr 1fr;gap:9px 16px;font-size:12.5px}
+.stats div{display:flex;justify-content:space-between;gap:10px;min-width:0}
+.stats b{font-family:var(--num);font-weight:500;font-variant-numeric:tabular-nums;
+         white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.stats span{flex:0 0 auto}
+.stats span{color:var(--muted)}
+
+.log{height:132px;overflow-y:auto;overscroll-behavior:contain;background:var(--panel);border:1px solid var(--line);
+     border-radius:10px;padding:8px 10px;font-family:var(--num);font-size:11.5px;
+     line-height:1.75;-webkit-overflow-scrolling:touch}
+.log div{white-space:pre-wrap;overflow-wrap:anywhere;color:var(--muted)}
+.log .bad{color:var(--red)}
+.log .mark{color:var(--rail)}
+.log .warn{color:var(--amber)}
+
+.notice{font-size:12px;color:var(--amber);min-height:16px}
+.notice:empty{min-height:0}
+
+.setup{display:grid;gap:8px}
+.field{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.field label{font-size:12.5px;color:var(--muted);flex:0 0 88px}
+#f-operator-other{flex:1 0 100%}
+/* 16px is the threshold below which Safari zooms the page on focus */
+input,select{font:inherit;font-size:16px;color:var(--text);background:var(--panel);
+             border:1px solid var(--line);border-radius:8px;padding:11px 10px;flex:1;min-width:0;
+             -webkit-appearance:none;appearance:none}
+select{padding-right:30px;
+       background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 8'%3E%3Cpath d='M1 1.5 6 6.5 11 1.5' stroke='%237E8C9A' stroke-width='1.6' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
+       background-repeat:no-repeat;background-position:right 11px center;background-size:11px}
+input:focus,select:focus{outline:2px solid var(--rail);outline-offset:1px}
+.check{display:flex;align-items:center;gap:10px;font-size:12.5px;color:var(--muted);
+       line-height:1.35;min-height:44px}
+.check input{flex:0 0 auto;width:22px;height:22px;margin:0;accent-color:var(--rail);
+             -webkit-appearance:auto;appearance:auto}
+
+/* pinned to the bottom of the viewport, and sticky once the page scrolls:
+   the primary action stays under the thumb in both states */
+.controls{display:flex;gap:8px;margin-top:auto;
+          position:sticky;bottom:0;z-index:2;background:var(--ground);padding:8px 0 2px}
+.controls button{flex:1}
+button{font:inherit;font-size:15px;font-weight:600;color:var(--text);background:var(--panel);
+       border:1px solid var(--line);border-radius:10px;padding:15px 10px;cursor:pointer;
+       touch-action:manipulation;user-select:none;-webkit-user-select:none;
+       transition:background .15s,border-color .15s}
+button:focus-visible{outline:2px solid var(--rail);outline-offset:2px}
+button.start{background:var(--green);border-color:var(--green);color:#06231A}
+button.stop{background:var(--red);border-color:var(--red);color:#2A0A08}
+button.wide{grid-column:1/-1}
+button.small{font-size:13px;font-weight:500;padding:12px 8px;border-radius:8px}
+button:disabled{opacity:.4;cursor:default}
+
+/* recovery: never resume silently */
+.recover{background:var(--panel);border:1px solid var(--amber);border-radius:10px;padding:12px 13px;display:grid;gap:9px}
+.recover p{margin:0;font-size:13px}
+.recover .row{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+
+.sessions{display:grid;gap:8px}
+.session{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:11px 13px;display:grid;gap:7px}
+.session .top{display:flex;justify-content:space-between;gap:10px;align-items:baseline}
+.session .title{font-weight:600;font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.session .when{font-size:11.5px;color:var(--muted);font-family:var(--num);flex:0 0 auto}
+.session .meta{font-size:12px;color:var(--muted);font-family:var(--num);
+               display:flex;flex-wrap:wrap;gap:4px 12px}
+.session .meta b{font-weight:500;color:var(--text)}
+.session .flag{color:var(--amber)}
+.session .note{font-size:12px;color:var(--muted);font-style:italic}
+.session .actions{display:grid;grid-template-columns:repeat(3,1fr);gap:6px}
+.empty{color:var(--muted);font-size:13px;text-align:center;padding:28px 0}
+
+nav{display:grid;grid-template-columns:1fr 1fr;gap:0;
+    border-top:1px solid var(--line);background:var(--panel);
+    padding-bottom:env(safe-area-inset-bottom);flex:0 0 auto}
+nav button{background:none;border:none;border-radius:0;padding:13px 0 12px;
+           font-size:13px;font-weight:500;color:var(--muted)}
+nav button.on{color:var(--text);box-shadow:inset 0 2px 0 var(--rail)}
+
+@media (max-width:399px){.stats{font-size:11.5px;gap:9px 12px}}
+/* narrow phones: stack the labels rather than squeezing the controls */
+@media (max-width:359px){
+  .field{gap:4px}
+  .field label{flex:0 0 100%}
+  .stats{grid-template-columns:1fr}
+}
+/* landscape: the readout still has to fit without hunting for the controls */
+@media (max-height:520px){
+  h1{margin-top:8px}
+  .log{height:80px}
+  .signal{padding:9px 9px 8px}
+  .signal .value{font-size:19px}
+}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}

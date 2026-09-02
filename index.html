@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0E1620">
+<meta name="description" content="Offline-capable mobile connectivity logger for train journeys.">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Spoormeter">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon-180.png">
+<link rel="stylesheet" href="app.css">
+<title>Spoormeter</title>
+</head>
+<body>
+
+<h1>Spoormeter <span>— connectivity logger</span></h1>
+
+<main>
+
+<section class="view" id="view-measure">
+
+  <div class="recover" id="recover" hidden>
+    <p id="recover-text"></p>
+    <div class="row">
+      <button class="small" id="recover-resume">Resume</button>
+      <button class="small" id="recover-close">Close it</button>
+    </div>
+  </div>
+
+  <div class="setup" id="setup">
+    <div class="field">
+      <label for="f-name">Session</label>
+      <input id="f-name" type="text" placeholder="Morning run" autocomplete="off" enterkeyhint="done">
+    </div>
+    <div class="field">
+      <label for="f-operator">Operator</label>
+      <select id="f-operator">
+        <option>KPN</option>
+        <option>Odido</option>
+        <option>Vodafone</option>
+        <option value="__other">Other…</option>
+      </select>
+      <input id="f-operator-other" type="text" placeholder="Name" autocomplete="off" hidden>
+    </div>
+    <div class="field">
+      <label for="f-connection">Connection</label>
+      <select id="f-connection">
+        <option value="cellular">Cellular</option>
+        <option value="wifi">Wi-Fi</option>
+        <option value="unknown">Unknown</option>
+      </select>
+    </div>
+    <div class="field">
+      <label for="f-route">Route</label>
+      <input id="f-route" type="text" placeholder="Rotterdam – Utrecht" autocomplete="off" enterkeyhint="done">
+    </div>
+    <div class="field">
+      <label for="f-interval">Interval</label>
+      <select id="f-interval">
+        <option value="2000">2 seconds</option>
+        <option value="5000" selected>5 seconds</option>
+        <option value="10000">10 seconds</option>
+      </select>
+    </div>
+    <label class="check">
+      <input id="f-adaptive" type="checkbox">
+      Adaptive interval — speed up while failing, slow down while stable
+    </label>
+  </div>
+
+
+  <div id="readout" hidden>
+    <div class="signals">
+      <div class="signal" id="sig-ip">
+        <div class="name">via IP address</div>
+        <div><span class="value" id="val-ip">—</span><span class="unit">ms</span></div>
+        <div class="fails" id="fail-ip">0 failed</div>
+      </div>
+      <div class="signal" id="sig-dns">
+        <div class="name">via hostname</div>
+        <div><span class="value" id="val-dns">—</span><span class="unit">ms</span></div>
+        <div class="fails" id="fail-dns">0 failed</div>
+      </div>
+      <div class="signal" id="sig-web">
+        <div class="name">other network</div>
+        <div><span class="value" id="val-web">—</span><span class="unit">ms</span></div>
+        <div class="fails" id="fail-web">0 failed</div>
+      </div>
+    </div>
+
+    <p class="hint">If only the middle one drops, it is DNS. If all three drop together, it is the radio link.</p>
+
+    <div class="strip" id="strip"></div>
+
+    <div class="stats">
+      <div><span>Rounds</span><b id="m-rounds">0</b></div>
+      <div><span>Elapsed</span><b id="m-time">0:00</b></div>
+      <div><span>Position</span><b id="m-pos">—</b></div>
+      <div><span>Speed</span><b id="m-speed">—</b></div>
+      <div><span>Data (est.)</span><b id="m-data">0 kB</b></div>
+      <div><span>Marks</span><b id="m-marks">0</b></div>
+    </div>
+
+    <div class="log" id="log"><div>Not started.</div></div>
+  </div>
+
+  <div class="notice" id="notice"></div>
+
+  <div class="controls">
+    <button id="btn-start" class="start">Start</button>
+    <button id="btn-mark" disabled hidden>Mark now</button>
+  </div>
+
+</section>
+
+<section class="view" id="view-sessions" hidden>
+  <h2>Sessions</h2>
+  <div class="sessions" id="session-list"></div>
+  <button class="wide small" id="btn-export-all">Export everything (JSON)</button>
+  <p class="hint">Safari can evict storage for sites left unvisited for a week. Sessions that
+  have never been exported are flagged above.</p>
+</section>
+
+</main>
+
+<nav>
+  <button data-view="measure" class="on">Measure</button>
+  <button data-view="sessions">Sessions</button>
+</nav>
+
+<script type="module" src="js/main.js"></script>
+</body>
+</html>
