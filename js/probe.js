@@ -1,5 +1,4 @@
-// Six probes, each isolating a different layer. Only ip6/ip4/dns/dns_ctl/web run every
-// round; the download runs on a fixed cadence because of its size.
+// Six probes run in parallel every round, each isolating a different layer.
 //
 // ip6/ip4 use address literals, so no name resolution happens at all — that is what makes
 // them a clean read on the radio link. On an IPv6-only carrier (NAT64/DNS64, the normal
@@ -15,8 +14,9 @@
 
 export const DOWNLOAD_SIZES = [100000, 250000, 500000];
 export const DEFAULT_DOWNLOAD_BYTES = 250000;
-export const DOWNLOAD_PERIOD_MS = 60000;
-export const TIMEOUT_MS = 4000;
+export const TIMEOUT_MS = 4000;           // a HEAD or a trace needs no longer than this
+export const DOWNLOAD_TIMEOUT_MS = 20000; // a full page on a bad cell can legitimately take this
+export const MIN_TIMEOUT_MS = 1000;
 export const IPV4_PREFLIGHT_MS = 2000;
 
 const DNS_CONTROL_HOST = 'webspeed-dns-control.github.io';
@@ -27,10 +27,8 @@ export const PROBES = [
   {id: 'dns',     label: 'DNS fresh',   kind: 'opaque',   url: 'https://%RANDOM%.github.io/',      method: 'HEAD'},
   {id: 'dns_ctl', label: 'DNS cached',  kind: 'opaque',   url: `https://${DNS_CONTROL_HOST}/`,     method: 'HEAD'},
   {id: 'web',     label: 'other net',   kind: 'opaque',   url: 'https://www.gstatic.com/generate_204'},
-  {id: 'down',    label: 'throughput',  kind: 'download', url: 'https://speed.cloudflare.com/__down', periodic: true}
+  {id: 'down',    label: 'throughput',  kind: 'download', url: 'https://speed.cloudflare.com/__down'}
 ];
-
-export const ROUND_PROBES = PROBES.filter(p => !p.periodic);
 
 const rand = () => {
   const b = new Uint8Array(8);
@@ -204,11 +202,22 @@ export async function checkIpv4(signal) {
   return {available: r.ok, ms: r.ms, fail: r.fail};
 }
 
-export async function runRound({signal, downloadBytes = null, ipv4Available = true} = {}) {
-  const probes = downloadBytes ? PROBES : ROUND_PROBES;
-  const results = await Promise.all(probes.map(p => runProbe(p, {signal, downloadBytes})));
+// No probe may outlive its own round, or a slow stretch stacks rounds on top of each other
+// and the cadence stops being a cadence. Every deadline is therefore capped by the interval,
+// not only the download's. Cut short at the deadline, a download still reports what it
+// managed to pull, which on a congested cell is the measurement rather than a loss.
+export function timeoutFor(probe, intervalMs) {
+  const base = probe.kind === 'download' ? DOWNLOAD_TIMEOUT_MS : TIMEOUT_MS;
+  return Math.max(MIN_TIMEOUT_MS, Math.min(base, intervalMs - 500));
+}
+
+export async function runRound({signal, downloadBytes = DEFAULT_DOWNLOAD_BYTES,
+                                intervalMs = 5000, ipv4Available = true} = {}) {
+  const results = await Promise.all(PROBES.map(p => runProbe(p, {
+    signal, downloadBytes, timeoutMs: timeoutFor(p, intervalMs)
+  })));
   const out = {};
-  probes.forEach((p, i) => {
+  PROBES.forEach((p, i) => {
     const r = results[i];
     // An IPv4 literal on an IPv6-only network is a known-absent path, not an outage.
     if (p.id === 'ip4' && !r.ok && !ipv4Available) r.expected = true;

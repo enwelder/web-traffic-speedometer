@@ -4,7 +4,7 @@ import {PROBES, DOWNLOAD_SIZES, DEFAULT_DOWNLOAD_BYTES} from './probe.js';
 import {createRecorder, environment, projectedBytes} from './session.js';
 import {exportSession, exportAll} from './export.js';
 
-const PREFS_KEY = 'spoormeter.prefs';   // see the note on key names in store.js
+const PREFS_KEY = 'webspeed.prefs';
 const $ = ui.$;
 
 const fails = {};
@@ -80,7 +80,11 @@ function syncSetup() {
   $('row-operator').hidden = wifi;
   $('f-operator-other').hidden = $('f-operator').value !== '__other';
   const mb = projectedBytes(+$('f-interval').value, +$('f-download').value) / 1048576;
-  $('budget').textContent = `≈ ${mb.toFixed(1)} MB for a 40-minute run — one download a minute, the rest is the small probes.`;
+  const el = $('budget');
+  el.textContent = `≈ ${Math.round(mb)} MB for a 40-minute run. A full page download every round is almost all of it.`;
+  // Past this the run costs more than a chunk of a monthly bundle, which is worth seeing
+  // before pressing Start rather than afterwards.
+  el.classList.toggle('warn', mb > 50);
 }
 
 function operatorName() {

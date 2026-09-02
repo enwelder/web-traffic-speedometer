@@ -2,25 +2,23 @@
 // the ones that could not run at all — a failed attempt is the measurement, and must never
 // be represented by a missing row.
 
-import {ROUND_PROBES, PROBES, runRound, checkIpv4, clearTimings,
-        DOWNLOAD_PERIOD_MS, DEFAULT_DOWNLOAD_BYTES, TIMEOUT_MS} from './probe.js';
+import {PROBES, runRound, checkIpv4, clearTimings, timeoutFor} from './probe.js';
 import * as store from './store.js';
 
-// Estimates. Safari opened a fresh connection for every probe in the field trial
-// (reused: false on all 15 rounds), so a repeat contact is charged a resumed TLS handshake
-// rather than a reused connection; only the first contact with an origin pays a full one.
+// Estimates. Safari opens a fresh connection per request rather than reusing one, so every
+// repeat contact is charged a resumed TLS handshake; only the first contact with an origin
+// pays a full one.
 const FIRST_CONTACT_BYTES = 5000;
 const RESUMED_BYTES = 1500;
 const WARM_BYTES = {trace: 420, opaque: 220, download: 400};
 const REFUSED_BYTES = 100;      // an IPv4 literal with no path never gets a connection up
 
-export const APP_VERSION = '5.0.0';
+export const APP_VERSION = '6.0.0';
 
 export function projectedBytes(intervalMs, downloadBytes, minutes = 40) {
   const rounds = Math.round((minutes * 60000) / intervalMs);
-  const downloads = Math.round((minutes * 60000) / DOWNLOAD_PERIOD_MS);
-  const perRound = ROUND_PROBES.reduce((n, p) => n + WARM_BYTES[p.kind] + RESUMED_BYTES, 0);
-  return rounds * perRound + downloads * (downloadBytes + WARM_BYTES.download + RESUMED_BYTES);
+  const perRound = PROBES.reduce((n, p) => n + WARM_BYTES[p.kind] + RESUMED_BYTES, 0) + downloadBytes;
+  return rounds * perRound;
 }
 
 export function environment(intervalMs, downloadBytes) {
@@ -32,12 +30,11 @@ export function environment(intervalMs, downloadBytes) {
     timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
     screen: `${screen.width}x${screen.height}@${devicePixelRatio}`,
     interval_ms: intervalMs,
-    timeout_ms: TIMEOUT_MS,
     download_bytes: downloadBytes,
-    download_period_ms: DOWNLOAD_PERIOD_MS,
+    timeouts_ms: Object.fromEntries(PROBES.map(p => [p.id, timeoutFor(p, intervalMs)])),
     probes: PROBES.map(p => ({id: p.id, url: p.url, kind: p.kind,
                               mode: p.kind === 'opaque' ? 'no-cors' : 'cors',
-                              method: p.method || 'GET', periodic: !!p.periodic})),
+                              method: p.method || 'GET'})),
     // Absent in Safari on every platform; recorded anyway so a browser that gains it contributes for free.
     network_information: c ? {type: c.type, effectiveType: c.effectiveType, downlink: c.downlink, rtt: c.rtt} : null
   };
@@ -63,7 +60,6 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice}) {
   let flushing = false;
   let writeFailed = false;
   let current = null;
-  let lastDownload = -Infinity;
 
   const contacted = new Set();
   const pendingSamples = [];
@@ -166,21 +162,16 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice}) {
   async function measure(late) {
     inFlight = true;
     const row = baseRow(late, null);
-    // Fixed cadence, decided before the round runs and never conditional on network state,
-    // so a bad stretch cannot bias which rounds carry a throughput sample.
-    const withDownload = mono() - lastDownload >= DOWNLOAD_PERIOD_MS;
-    if (withDownload) lastDownload = mono();
-    row.download_round = withDownload;
-
     try {
       row.probes = await runRound({
         signal: abort.signal,
-        downloadBytes: withDownload ? session.downloadBytes : null,
+        downloadBytes: session.downloadBytes,
+        intervalMs: interval(),
         ipv4Available: session.ipv4_available
       });
     } catch (e) {
       row.round_error = String(e && e.message || e);
-      for (const p of ROUND_PROBES) {
+      for (const p of PROBES) {
         if (!row.probes[p.id]) row.probes[p.id] = {ok: false, ms: null, status: null, fail: 'network'};
       }
     } finally {
@@ -260,7 +251,6 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice}) {
     due = monoBase;
     bytes = 0;
     throughput = null;
-    lastDownload = -Infinity;
     inFlight = false;
     contacted.clear();
     abort = new AbortController();
