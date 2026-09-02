@@ -9,7 +9,7 @@ const HANDSHAKE_BYTES = 5000;   // fresh TLS handshake, the dominant cost during
 const IDLE_RECONNECT_MS = 60000;
 const WARM_BYTES = {trace: 420, opaque: 220, download: DOWNLOAD_BYTES + 400};
 
-export const APP_VERSION = '3.0.0';
+export const APP_VERSION = '3.1.0';
 
 // Shown before the run starts, because the download probe makes the cost worth seeing
 // up front rather than discovering it on the phone bill.

@@ -67,6 +67,18 @@ export function setSignals(sample, fails) {
   if (v4) $('sub-ip6').textContent = `${fails.ip6 || 0} failed · v4 ${v4.ok ? 'ok' : 'no'}`;
 }
 
+// The strip is always full width, with empty slots dimmed. Filling it up from the left
+// would read as progress towards something; it is a history, scrolling right to left.
+export function clearStrip() {
+  const strip = $('strip');
+  strip.replaceChildren();
+  for (let i = 0; i < STRIP_BARS; i++) {
+    const bar = document.createElement('i');
+    bar.className = 'none';
+    strip.appendChild(bar);
+  }
+}
+
 export function pushStrip(kind) {
   const strip = $('strip');
   const bar = document.createElement('i');
@@ -75,7 +87,10 @@ export function pushStrip(kind) {
   while (strip.children.length > STRIP_BARS) strip.removeChild(strip.firstChild);
 }
 
-export function clearStrip() { $('strip').replaceChildren(); }
+export function setStripWindow(intervalMs) {
+  const minutes = Math.round((STRIP_BARS * intervalMs) / 60000);
+  $('strip-span').textContent = minutes >= 1 ? `last ${minutes} min` : `last ${Math.round(STRIP_BARS * intervalMs / 1000)}s`;
+}
 
 export function pushLog(text, cls) {
   const log = $('log');

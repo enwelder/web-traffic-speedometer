@@ -118,8 +118,13 @@ a few lines to derive from it where the enrichment happens anyway.
 
 ### Events
 
-Only what cannot be derived from the samples: `mark` (pressed by hand), `pause` (JavaScript
-was frozen, with the bridged duration) and `note`.
+Only what cannot be derived from the samples.
+
+`mark` is the subjective half of the measurement: pressed when you notice the failure
+yourself — audio stalling, a page that will not load. The probes record what the network
+did; nothing else records when it felt broken, and the premise of the whole exercise is
+that those two disagree. `pause` records JavaScript being frozen, with the bridged
+duration. `note` is free text.
 
 ## Operator and connection type
 

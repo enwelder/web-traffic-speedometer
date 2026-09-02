@@ -120,6 +120,7 @@ async function begin() {
   for (const p of PROBES) fails[p.id] = 0;
   ui.clearLog();
   ui.clearStrip();
+  ui.setStripWindow(+$('f-interval').value);
   ui.notice('');
   $('readout').hidden = false;
   writePrefs();
@@ -160,6 +161,7 @@ async function checkRecovery() {
     for (const p of PROBES) fails[p.id] = 0;
     ui.clearLog();
     ui.clearStrip();
+    ui.setStripWindow(session.intervalMs);
     $('readout').hidden = false;
     ui.pushLog(`${ui.clock(Date.now())}  resumed "${session.name}" at round ${last ? last.seq + 1 : 0}`, 'mark');
     // performance.now() restarts on reload, so the monotonic clock is carried across the

@@ -44,11 +44,14 @@ main{flex:1;overflow-y:auto;overscroll-behavior:contain;-webkit-overflow-scrolli
               white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 
 .hint{font-size:12.5px;color:var(--muted);margin:-4px 0 0}
+.hint b{color:var(--text);font-weight:600}
+.hint em{font-style:normal;color:var(--text)}
 
 /* last few minutes, so a dip is distinguishable from a gap */
 .strip{display:grid;grid-template-columns:repeat(48,1fr);gap:2px;height:26px;
        background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:4px;overflow:hidden}
 .strip i{min-width:0;border-radius:1px;background:var(--line)}
+.strip i.none{opacity:.3}
 .strip i.up{background:var(--green)}
 .strip i.slow{background:var(--amber)}
 .strip i.dns{background:var(--rail)}
@@ -56,6 +59,8 @@ main{flex:1;overflow-y:auto;overscroll-behavior:contain;-webkit-overflow-scrolli
 .strip i.down{background:var(--red)}
 .strip i.skip{background:var(--muted);opacity:.5}
 .strip i.pause{background:repeating-linear-gradient(45deg,var(--muted),var(--muted) 2px,transparent 2px,transparent 4px)}
+.strip-axis{display:flex;justify-content:space-between;font-size:10.5px;color:var(--muted);
+            font-family:var(--num);padding:3px 2px 0}
 
 .stats{background:var(--panel);border:1px solid var(--line);border-radius:10px;
        padding:11px 13px;display:grid;grid-template-columns:1fr 1fr;gap:9px 16px;font-size:12.5px}

@@ -58,6 +58,9 @@
       </select>
     </div>
     <p class="hint" id="budget"></p>
+    <p class="hint"><b>Mark problem</b>, while recording, timestamps the moment <em>you</em>
+    notice something — audio stalling, a page that will not load. It is the one thing the
+    probes cannot see.</p>
   </div>
 
   <div id="readout" hidden>
@@ -86,7 +89,10 @@
 
     <p class="hint">DNS down while “no DNS” holds means name resolution. Both down means the radio link.</p>
 
-    <div class="strip" id="strip"></div>
+    <div>
+      <div class="strip" id="strip"></div>
+      <div class="strip-axis"><span id="strip-span">last 4 min</span><span>now</span></div>
+    </div>
 
     <div class="stats">
       <div><span>Rounds</span><b id="m-rounds">0</b></div>
@@ -104,7 +110,7 @@
 
   <div class="controls">
     <button id="btn-start" class="start">Start</button>
-    <button id="btn-mark" disabled hidden>Mark now</button>
+    <button id="btn-mark" disabled hidden>Mark problem</button>
   </div>
 
 </section>
