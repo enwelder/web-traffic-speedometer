@@ -1,10 +1,10 @@
 // DOM rendering only. Nothing here is persisted; the screen is a live readout.
 
-import {PROBES} from './probe.js';
+import {PROBES, ROUND_PROBES} from './probe.js';
 
 const STRIP_BARS = 48;
 const SLOW_MS = 400;
-const TILES = ['ip6', 'dns', 'web', 'down'];   // ip4 rides along in the ip6 tile's subtitle
+const TILES = ['ip6', 'dns', 'web', 'down'];   // ip4 and dns_ctl ride along in subtitles
 
 export const $ = id => document.getElementById(id);
 const pad = n => String(n).padStart(2, '0');
@@ -31,14 +31,18 @@ export function rate(bps) {
 
 export function notice(text) { $('notice').textContent = text || ''; }
 
+// A failure counts only if the probe actually ran and was not expected to fail. A probe
+// that did not run this round (the periodic download) is absent, which is not a failure.
+export const counts = r => !!r && r.ok === false && !r.expected;
+
 export function classify(sample) {
   if (sample.skipped) return 'skip';
   const r = id => sample.probes[id] || {};
   const reachable = r('ip6').ok || r('ip4').ok;
   if (!reachable && !r('web').ok) return 'down';
   if (!r('dns').ok && reachable) return 'dns';
-  if (!r('down').ok || !r('web').ok) return 'part';
-  return PROBES.some(p => p.kind === 'trace' && r(p.id).ok && r(p.id).ms > SLOW_MS) ? 'slow' : 'up';
+  if (counts(r('web')) || counts(r('down'))) return 'part';
+  return ROUND_PROBES.some(p => p.kind === 'trace' && r(p.id).ok && r(p.id).ms > SLOW_MS) ? 'slow' : 'up';
 }
 
 const FLOOR_MS = 2;   // below this the transfer window is shorter than the clock resolves
@@ -49,22 +53,47 @@ function tileValue(id, r) {
   if (id !== 'down') return String(r.ms);
   // An unmeasurably short transfer still bounds the rate from below, which beats showing
   // nothing for a download that plainly succeeded.
-  return r.bps ? rate(r.bps) : `>${rate((r.bytes * 8) / (FLOOR_MS / 1000))}`;
+  return r.bps_transfer ? rate(r.bps_transfer) : `>${rate((r.bytes * 8) / (FLOOR_MS / 1000))}`;
 }
+
+// The throughput tile holds its last reading between download rounds; the subtitle says
+// how long ago, so a stale figure is never mistaken for a current one.
+let lastDownloadAt = null;
 
 export function setSignals(sample, fails) {
   for (const id of TILES) {
     const cell = $(`sig-${id}`);
-    const r = sample && !sample.skipped ? sample.probes[id] : null;
+    const fresh = sample && !sample.skipped ? sample.probes[id] : null;
+    if (id === 'down' && fresh) lastDownloadAt = sample.t;
+    const r = id === 'down' ? (fresh || null) : fresh;
+    if (id === 'down' && !fresh) { $(`sub-down`).textContent = downSubtitle(fails); continue; }
     cell.classList.remove('up', 'slow', 'down');
     if (r) cell.classList.add(!r.ok ? 'down' : (id !== 'down' && r.ms > SLOW_MS) ? 'slow' : 'up');
     $(`val-${id}`).textContent = sample && sample.skipped ? '–' : tileValue(id, r);
     $(`sub-${id}`).textContent = `${fails[id] || 0} failed`;
   }
-  // IPv4 is a property of the network rather than of the round, so it reads as a marker
-  // on the reachability tile instead of taking a tile of its own.
-  const v4 = sample && !sample.skipped ? sample.probes.ip4 : null;
-  if (v4) $('sub-ip6').textContent = `${fails.ip6 || 0} failed · v4 ${v4.ok ? 'ok' : 'no'}`;
+
+  const p = sample && !sample.skipped ? sample.probes : null;
+  if (p) {
+    // IPv4 is a property of the network rather than of the round, so it reads as a marker
+    // on the reachability tile instead of taking a tile of its own.
+    const v4 = p.ip4.expected ? 'n/a' : p.ip4.ok ? 'ok' : 'no';
+    $('sub-ip6').textContent = `${fails.ip6 || 0} failed · v4 ${v4}`;
+    // The cached-name control shares the DNS probe's destination, so the pair separates a
+    // resolution failure from the destination simply being unreachable.
+    if (p.dns_ctl) $('sub-dns').textContent = `${fails.dns || 0} failed · cached ${p.dns_ctl.ok ? p.dns_ctl.ms : 'no'}`;
+    if (p.down) $('sub-down').textContent = downSubtitle(fails, p.down);
+  }
+}
+
+function downSubtitle(fails, d) {
+  if (d) {
+    const e2e = d.bps_end_to_end ? rate(d.bps_end_to_end) : '—';
+    return `${fails.down || 0} failed · e2e ${e2e}`;
+  }
+  if (lastDownloadAt == null) return 'waiting';
+  const age = Math.round((Date.now() - lastDownloadAt) / 1000);
+  return `${fails.down || 0} failed · ${age}s ago`;
 }
 
 // The strip is always full width, with empty slots dimmed. Filling it up from the left
@@ -111,11 +140,13 @@ export function sampleLine(sample) {
   const time = clock(sample.t);
   if (sample.skipped) return `${time}  skipped: ${sample.skipped} (${sample.late_ms} ms late)`;
   if (sample.round_error) return `${time}  round error: ${sample.round_error}`;
-  const failed = PROBES.filter(p => !sample.probes[p.id].ok);
+  const failed = PROBES.filter(p => counts(sample.probes[p.id]));
   if (failed.length) return `${time}  ` + failed.map(p => `${p.id} ${sample.probes[p.id].fail}`).join('  ');
   const d = sample.probes.down;
-  return `${time}  v6 ${sample.probes.ip6.ms}  dns ${sample.probes.dns.ms}  ${d.bps ? rate(d.bps) : 'fast'}` +
-         (d.server && d.server.retrans ? `  retrans ${d.server.retrans}` : '');
+  const dns = sample.probes.dns.ms;
+  const ctl = sample.probes.dns_ctl?.ms;
+  return `${time}  v6 ${sample.probes.ip6.ms}  dns ${dns}${ctl != null ? '/' + ctl : ''}` +
+         (d ? `  ${d.bps_transfer ? rate(d.bps_transfer) : 'fast'}` : '');
 }
 
 export function setStats({rounds, elapsed, pos, speed, data, marks}) {

@@ -1,6 +1,6 @@
 import * as store from './store.js';
 import * as ui from './ui.js';
-import {PROBES} from './probe.js';
+import {PROBES, DOWNLOAD_SIZES, DEFAULT_DOWNLOAD_BYTES} from './probe.js';
 import {createRecorder, environment, projectedBytes} from './session.js';
 import {exportSession, exportAll} from './export.js';
 
@@ -19,7 +19,8 @@ const uuid = () => (crypto.randomUUID ? crypto.randomUUID()
 const recorder = createRecorder({
   onSample(sample) {
     if (!sample.skipped && !sample.round_error) {
-      for (const p of PROBES) if (!sample.probes[p.id].ok) fails[p.id] = (fails[p.id] || 0) + 1;
+      // An expected failure (no IPv4 path) is a known condition, not an outage to tally.
+      for (const p of PROBES) if (ui.counts(sample.probes[p.id])) fails[p.id] = (fails[p.id] || 0) + 1;
     }
     ui.setSignals(sample, fails);
     const kind = ui.classify(sample);
@@ -57,7 +58,8 @@ function writePrefs() {
       operator: $('f-operator').value,
       operatorOther: $('f-operator-other').value,
       connection: $('f-connection').value,
-      interval: $('f-interval').value
+      interval: $('f-interval').value,
+      download: $('f-download').value
     }));
   } catch { /* private mode */ }
 }
@@ -68,6 +70,7 @@ function applyPrefs() {
   if (p.operatorOther) $('f-operator-other').value = p.operatorOther;
   if (p.connection) $('f-connection').value = p.connection;
   if (p.interval) $('f-interval').value = p.interval;
+  if (p.download) $('f-download').value = p.download;
   syncSetup();
 }
 
@@ -76,8 +79,8 @@ function syncSetup() {
   const wifi = $('f-connection').value === 'wifi';
   $('row-operator').hidden = wifi;
   $('f-operator-other').hidden = $('f-operator').value !== '__other';
-  const mb = projectedBytes(+$('f-interval').value) / 1048576;
-  $('budget').textContent = `≈ ${mb.toFixed(1)} MB for a 40-minute run, mostly the throughput probe.`;
+  const mb = projectedBytes(+$('f-interval').value, +$('f-download').value) / 1048576;
+  $('budget').textContent = `≈ ${mb.toFixed(1)} MB for a 40-minute run — one download a minute, the rest is the small probes.`;
 }
 
 function operatorName() {
@@ -98,6 +101,7 @@ function generatedName(operator, connection, started) {
 
 function newSession() {
   const intervalMs = +$('f-interval').value;
+  const downloadBytes = +$('f-download').value;
   const connection = $('f-connection').value;
   const operator = operatorName();
   const started = Date.now();
@@ -109,7 +113,11 @@ function newSession() {
     started,
     stopped: null,
     intervalMs,
-    environment: environment(intervalMs),
+    downloadBytes,
+    // Determined by a preflight at start rather than assumed; null until then.
+    ipv4_available: null,
+    ipv4_check: null,
+    environment: environment(intervalMs, downloadBytes),
     exportedAt: null
   };
 }
@@ -233,7 +241,7 @@ const handlers = {
 
 $('btn-start').onclick = () => (recorder.status().running ? end() : begin());
 $('btn-mark').onclick = () => recorder.mark();
-for (const id of ['f-connection', 'f-operator', 'f-interval']) $(id).onchange = syncSetup;
+for (const id of ['f-connection', 'f-operator', 'f-interval', 'f-download']) $(id).onchange = syncSetup;
 $('btn-export-all').onclick = async () => {
   try {
     const sessions = await exportAll();

@@ -1,7 +1,7 @@
 // Offline shell. Recovery after a crash means the page has to load on a degraded network,
 // which is exactly the condition the tool exists to measure.
 
-const CACHE = "spoormeter-v3.1.0";
+const CACHE = "spoormeter-v4.0.0";
 
 const SHELL = [
   './',

@@ -2,23 +2,28 @@
 // the ones that could not run at all — a failed attempt is the measurement, and must never
 // be represented by a missing row.
 
-import {PROBES, runRound, clearTimings, DOWNLOAD_BYTES, TIMEOUT_MS} from './probe.js';
+import {ROUND_PROBES, PROBES, runRound, checkIpv4, clearTimings,
+        DOWNLOAD_PERIOD_MS, DEFAULT_DOWNLOAD_BYTES, TIMEOUT_MS} from './probe.js';
 import * as store from './store.js';
 
-const HANDSHAKE_BYTES = 5000;   // fresh TLS handshake, the dominant cost during trouble
-const IDLE_RECONNECT_MS = 60000;
-const WARM_BYTES = {trace: 420, opaque: 220, download: DOWNLOAD_BYTES + 400};
+// Estimates. Safari opened a fresh connection for every probe in the field trial
+// (reused: false on all 15 rounds), so a repeat contact is charged a resumed TLS handshake
+// rather than a reused connection; only the first contact with an origin pays a full one.
+const FIRST_CONTACT_BYTES = 5000;
+const RESUMED_BYTES = 1500;
+const WARM_BYTES = {trace: 420, opaque: 220, download: 400};
+const REFUSED_BYTES = 100;      // an IPv4 literal with no path never gets a connection up
 
-export const APP_VERSION = '3.1.0';
+export const APP_VERSION = '4.0.0';
 
-// Shown before the run starts, because the download probe makes the cost worth seeing
-// up front rather than discovering it on the phone bill.
-export function projectedBytes(intervalMs, minutes = 40) {
-  const perRound = PROBES.reduce((n, p) => n + WARM_BYTES[p.kind], 0);
-  return Math.round((minutes * 60000 / intervalMs) * perRound);
+export function projectedBytes(intervalMs, downloadBytes, minutes = 40) {
+  const rounds = Math.round((minutes * 60000) / intervalMs);
+  const downloads = Math.round((minutes * 60000) / DOWNLOAD_PERIOD_MS);
+  const perRound = ROUND_PROBES.reduce((n, p) => n + WARM_BYTES[p.kind] + RESUMED_BYTES, 0);
+  return rounds * perRound + downloads * (downloadBytes + WARM_BYTES.download + RESUMED_BYTES);
 }
 
-export function environment(intervalMs) {
+export function environment(intervalMs, downloadBytes) {
   const c = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
   return {
     app_version: APP_VERSION,
@@ -28,10 +33,11 @@ export function environment(intervalMs) {
     screen: `${screen.width}x${screen.height}@${devicePixelRatio}`,
     interval_ms: intervalMs,
     timeout_ms: TIMEOUT_MS,
-    download_bytes: DOWNLOAD_BYTES,
+    download_bytes: downloadBytes,
+    download_period_ms: DOWNLOAD_PERIOD_MS,
     probes: PROBES.map(p => ({id: p.id, url: p.url, kind: p.kind,
                               mode: p.kind === 'opaque' ? 'no-cors' : 'cors',
-                              method: p.method || 'GET'})),
+                              method: p.method || 'GET', periodic: !!p.periodic})),
     // Absent in Safari on every platform; recorded anyway so a browser that gains it contributes for free.
     network_information: c ? {type: c.type, effectiveType: c.effectiveType, downlink: c.downlink, rtt: c.rtt} : null
   };
@@ -57,24 +63,21 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice}) {
   let flushing = false;
   let writeFailed = false;
   let current = null;
+  let lastDownload = -Infinity;
 
-  const lastOk = {};
-  const prevFailed = {};
+  const contacted = new Set();
   const pendingSamples = [];
   const pendingEvents = [];
 
   const mono = () => performance.now() - t0;
-
   const interval = () => session.intervalMs;
 
   function status() {
     return {
       running, session, seq, marks, bytes, throughput,
       pending: pendingSamples.length + pendingEvents.length,
-      writeFailed,
-      pos: lastPos, posError,
-      elapsed: running ? Math.floor(mono() / 1000) : 0,
-      interval: session ? interval() : 0
+      writeFailed, pos: lastPos, posError,
+      elapsed: running ? Math.floor(mono() / 1000) : 0
     };
   }
 
@@ -129,11 +132,11 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice}) {
   function charge(row) {
     for (const p of PROBES) {
       const r = row.probes[p.id];
-      bytes += WARM_BYTES[p.kind];
-      const last = lastOk[p.id];
-      if (prevFailed[p.id] || last == null || row.mono - last > IDLE_RECONNECT_MS) bytes += HANDSHAKE_BYTES;
-      prevFailed[p.id] = !r.ok;
-      if (r.ok) lastOk[p.id] = row.mono;
+      if (!r) continue;
+      if (r.expected && !r.ok) { bytes += REFUSED_BYTES; continue; }
+      bytes += WARM_BYTES[p.kind] + (p.kind === 'download' ? r.bytes || 0 : 0);
+      bytes += contacted.has(p.id) ? RESUMED_BYTES : FIRST_CONTACT_BYTES;
+      contacted.add(p.id);
     }
   }
 
@@ -163,13 +166,22 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice}) {
   async function measure(late) {
     inFlight = true;
     const row = baseRow(late, null);
+    // Fixed cadence, decided before the round runs and never conditional on network state,
+    // so a bad stretch cannot bias which rounds carry a throughput sample.
+    const withDownload = mono() - lastDownload >= DOWNLOAD_PERIOD_MS;
+    if (withDownload) lastDownload = mono();
+    row.download_round = withDownload;
+
     try {
-      const results = await runRound(abort.signal);
-      PROBES.forEach((p, i) => { row.probes[p.id] = results[i]; });
+      row.probes = await runRound({
+        signal: abort.signal,
+        downloadBytes: withDownload ? session.downloadBytes : null,
+        ipv4Available: session.ipv4_available
+      });
     } catch (e) {
       row.round_error = String(e && e.message || e);
-      for (const p of PROBES) {
-        if (!row.probes[p.id]) row.probes[p.id] = {ok: false, ms: null, status: null, fail: 'network', egress_ip: null, colo: null};
+      for (const p of ROUND_PROBES) {
+        if (!row.probes[p.id]) row.probes[p.id] = {ok: false, ms: null, status: null, fail: 'network'};
       }
     } finally {
       inFlight = false;
@@ -177,9 +189,9 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice}) {
 
     charge(row);
     clearTimings();
-    if (row.probes.down.ok) throughput = row.probes.down.bps;
+    if (row.probes.down?.ok) throughput = row.probes.down.bps_transfer;
 
-    const egress = row.probes.ip6.egress_ip || row.probes.ip4.egress_ip || row.probes.down.egress_ip;
+    const egress = row.probes.ip6.egress_ip || row.probes.down?.egress_ip;
     if (egress) {
       if (lastEgress && egress !== lastEgress) {
         onNotice?.(`Egress IP changed (${lastEgress} → ${egress}) while the label still says ${session.operator}.`);
@@ -198,8 +210,9 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice}) {
     // iOS freezes JS when the tab is backgrounded or the screen locks. Recording the gap
     // explicitly is the only way it stays distinguishable from an outage afterwards.
     if (late > 2 * interval()) {
+      const p = position();
       record({sessionId: session.id, t: Date.now(), mono: Math.round(now), type: 'pause',
-              lat: position().lat, lon: position().lon, text: `${(late / 1000).toFixed(1)}s bridged`});
+              lat: p.lat, lon: p.lon, text: `${(late / 1000).toFixed(1)}s bridged`});
       due = now;
     }
 
@@ -207,8 +220,8 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice}) {
     timer = setTimeout(tick, Math.max(0, due - mono()));
 
     if (inFlight) {
-      // The previous round had not returned when this one came due. At a 2s interval with a
-      // 4s timeout that is itself a signal, so it is written down rather than passed over.
+      // The previous round had not returned when this one came due. At a short interval
+      // that is itself a signal, so it is written down rather than passed over.
       keep(baseRow(late, 'overlap'));
       return;
     }
@@ -247,12 +260,25 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice}) {
     due = monoBase;
     bytes = 0;
     throughput = null;
+    lastDownload = -Infinity;
     inFlight = false;
+    contacted.clear();
     abort = new AbortController();
     store.setActive(session.id);
     clearTimings();
     startGeolocation();
     await acquireWakeLock();
+
+    // Established once, so an IPv6-only network does not spend the whole session reporting
+    // the same absent path as though each round were news.
+    if (session.ipv4_available == null) {
+      const v4 = await checkIpv4(abort.signal);
+      session.ipv4_available = v4.available;
+      session.ipv4_check = v4;
+      await store.putSession(session);
+      if (!v4.available) onNotice?.(`No IPv4 path (${v4.fail} in ${v4.ms} ms). IPv4 probe failures are expected and not counted.`);
+    }
+
     if (resumedGapMs) {
       record({sessionId: session.id, t: Date.now(), mono: Math.round(monoBase), type: 'pause',
               lat: null, lon: null, text: `${(resumedGapMs / 1000).toFixed(1)}s bridged across reload`});
