@@ -2,18 +2,21 @@
 // the ones that could not run at all — a failed attempt is the measurement, and must never
 // be represented by a missing row.
 
-import {PROBES, runRound} from './probe.js';
+import {PROBES, runRound, clearTimings, DOWNLOAD_BYTES, TIMEOUT_MS} from './probe.js';
 import * as store from './store.js';
 
-const FAST_MS = 2000;
-const SLOW_MS = 10000;
-const CALM_ROUNDS = 12;
 const HANDSHAKE_BYTES = 5000;   // fresh TLS handshake, the dominant cost during trouble
-const TRACE_BYTES = 500;        // warm request + 195-byte body + framing
-const OPAQUE_BYTES = 250;
 const IDLE_RECONNECT_MS = 60000;
+const WARM_BYTES = {trace: 420, opaque: 220, download: DOWNLOAD_BYTES + 400};
 
-export const APP_VERSION = '2.0.0';
+export const APP_VERSION = '3.0.0';
+
+// Shown before the run starts, because the download probe makes the cost worth seeing
+// up front rather than discovering it on the phone bill.
+export function projectedBytes(intervalMs, minutes = 40) {
+  const perRound = PROBES.reduce((n, p) => n + WARM_BYTES[p.kind], 0);
+  return Math.round((minutes * 60000 / intervalMs) * perRound);
+}
 
 export function environment(intervalMs) {
   const c = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
@@ -24,8 +27,11 @@ export function environment(intervalMs) {
     timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
     screen: `${screen.width}x${screen.height}@${devicePixelRatio}`,
     interval_ms: intervalMs,
-    timeout_ms: 4000,
-    probes: PROBES.map(p => ({id: p.id, url: p.url, mode: p.kind === 'trace' ? 'cors' : 'no-cors'})),
+    timeout_ms: TIMEOUT_MS,
+    download_bytes: DOWNLOAD_BYTES,
+    probes: PROBES.map(p => ({id: p.id, url: p.url, kind: p.kind,
+                              mode: p.kind === 'opaque' ? 'no-cors' : 'cors',
+                              method: p.method || 'GET'})),
     // Absent in Safari on every platform; recorded anyway so a browser that gains it contributes for free.
     network_information: c ? {type: c.type, effectiveType: c.effectiveType, downlink: c.downlink, rtt: c.rtt} : null
   };
@@ -40,7 +46,6 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice}) {
   let seq = 0;
   let inFlight = false;
   let abort = null;
-  let cleanStreak = 0;
   let bytes = 0;
   let marks = 0;
   let watchId = null;
@@ -48,6 +53,7 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice}) {
   let lastPos = null;
   let posError = null;
   let lastEgress = null;
+  let throughput = null;
   let flushing = false;
   let writeFailed = false;
   let current = null;
@@ -59,17 +65,11 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice}) {
 
   const mono = () => performance.now() - t0;
 
-  function interval() {
-    const base = session.intervalMs;
-    if (!session.adaptive) return base;
-    if (cleanStreak === 0) return Math.min(base, FAST_MS);
-    if (cleanStreak >= CALM_ROUNDS) return Math.max(base, SLOW_MS);
-    return base;
-  }
+  const interval = () => session.intervalMs;
 
   function status() {
     return {
-      running, session, seq, marks, bytes,
+      running, session, seq, marks, bytes, throughput,
       pending: pendingSamples.length + pendingEvents.length,
       writeFailed,
       pos: lastPos, posError,
@@ -129,7 +129,7 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice}) {
   function charge(row) {
     for (const p of PROBES) {
       const r = row.probes[p.id];
-      bytes += p.kind === 'trace' ? TRACE_BYTES : OPAQUE_BYTES;
+      bytes += WARM_BYTES[p.kind];
       const last = lastOk[p.id];
       if (prevFailed[p.id] || last == null || row.mono - last > IDLE_RECONNECT_MS) bytes += HANDSHAKE_BYTES;
       prevFailed[p.id] = !r.ok;
@@ -152,6 +152,8 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice}) {
       late_ms: late,
       skipped,
       round_error: null,
+      // iOS suspends a hidden tab; a column is easier to filter on than pause events alone
+      visible: document.visibilityState === 'visible',
       intervalMs: interval(),
       ...position(),
       probes: {}
@@ -173,11 +175,11 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice}) {
       inFlight = false;
     }
 
-    const allOk = PROBES.every(p => row.probes[p.id].ok);
-    cleanStreak = allOk ? cleanStreak + 1 : 0;
     charge(row);
+    clearTimings();
+    if (row.probes.down.ok) throughput = row.probes.down.bps;
 
-    const egress = row.probes.ip.egress_ip || row.probes.dns.egress_ip;
+    const egress = row.probes.ip6.egress_ip || row.probes.ip4.egress_ip || row.probes.down.egress_ip;
     if (egress) {
       if (lastEgress && egress !== lastEgress) {
         onNotice?.(`Egress IP changed (${lastEgress} → ${egress}) while the label still says ${session.operator}.`);
@@ -243,11 +245,12 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice}) {
     running = true;
     t0 = performance.now() - monoBase;
     due = monoBase;
-    cleanStreak = 0;
     bytes = 0;
+    throughput = null;
     inFlight = false;
     abort = new AbortController();
     store.setActive(session.id);
+    clearTimings();
     startGeolocation();
     await acquireWakeLock();
     if (resumedGapMs) {

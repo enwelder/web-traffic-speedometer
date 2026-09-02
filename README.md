@@ -1,8 +1,7 @@
 # Spoormeter
 
-A browser-based mobile connectivity logger for train journeys. It records whether the
-network is reachable, how fast it answers, and where you were — continuously, on a few
-hundred kilobytes, with no backend and no runtime dependencies.
+A browser-based mobile connectivity logger for train journeys. It records reachability,
+latency, throughput and position continuously, with no backend and no runtime dependencies.
 
 It is a logger only. Analysis happens elsewhere, where the data can be joined against
 timetables, track maps and cell databases.
@@ -16,66 +15,108 @@ crashed session still recovers — with no usable network.
 Locally, `python3 -m http.server` on `http://localhost` counts as a secure context, so
 geolocation, wake lock and service workers all work without certificates.
 
-## Measurement
+## The probes
 
-Three probes fire in parallel each round:
+Five probes fire in parallel each round.
 
-| Probe | URL | Isolates |
+| Probe | Target | Isolates |
 |---|---|---|
-| `ip` | `https://1.1.1.1/cdn-cgi/trace` | the radio link, with no DNS involved |
-| `dns` | `https://one.one.one.one/cdn-cgi/trace` | the same server via hostname — the difference against `ip` is DNS |
-| `web` | `https://www.gstatic.com/generate_204` | different infrastructure, as a control |
+| `ip6` | `https://[2606:4700:4700::1111]/cdn-cgi/trace` | the radio link over IPv6, no name resolution |
+| `ip4` | `https://1.1.1.1/cdn-cgi/trace` | the same, over IPv4 |
+| `dns` | `https://<random>.github.io/` (HEAD) | the carrier's resolver, forced to do real work |
+| `web` | `https://www.gstatic.com/generate_204` | a provider that is not Cloudflare |
+| `down` | `https://speed.cloudflare.com/__down?bytes=25000` | throughput, and Cloudflare's view of the connection |
 
-If only `dns` fails, name resolution is the problem. If all three fail together, it is the
+If `dns` fails while `ip6` holds, name resolution is the problem. If both fail, it is the
 radio link. If only `web` fails, the fault is specific to one provider's edge.
 
-The two Cloudflare endpoints send `access-control-allow-origin: *`, so they are fetched
-with `mode: 'cors'` and their bodies read — the same bytes an opaque request already
-transferred. That yields the operator's egress IP, the Cloudflare PoP, and real HTTP
-status codes, and it makes an intercepting proxy detectable: under `no-cors` an opaque
-redirect resolves as a success, which it is not. `generate_204` sends no CORS header and
-stays opaque, so its success means only that the request completed and its status is
-recorded as unknown rather than as zero.
+**Why two address families.** Dutch mobile networks run IPv6-only with NAT64/DNS64. iOS has
+no CLAT, so it depends on DNS64 synthesising an address during lookup — and an address
+literal skips lookup entirely, which means `ip4` simply cannot connect there. That is not a
+bug to work around; recording both is how the address family actually in use becomes
+visible instead of assumed. On cellular, expect `ip4` to fail and `ip6` to succeed.
 
-Every scheduled round produces a row — including rounds that failed, rounds that could not
-start because the previous one was still in flight, and rounds delayed by iOS freezing the
-tab. A failed attempt is the measurement; it is never represented by a missing row.
+**Why a random hostname.** A fixed hostname stops testing DNS almost immediately:
+`one.one.one.one` has a 24-hour TTL, so after the first lookup iOS answers from cache and no
+query reaches the network — precisely during the long outages that matter most. `*.github.io`
+has a wildcard record and a wildcard certificate, so a fresh random label is resolvable,
+uncacheable, and cannot have been seen before. Measured effect: the `dns` probe costs about
+127 ms against 13 ms for `ip6`, and that difference is the recursive lookup. `HEAD` is used
+so the 9 kB 404 body is never transferred. The hostname used is recorded per round, so the
+freshness is checkable rather than merely claimed.
+
+DNS-over-HTTPS was considered and rejected: it bypasses the OS resolver entirely, so it
+tests Cloudflare's recursive resolver rather than the carrier's — the one under suspicion.
+
+**Why the download.** Latency alone cannot see congestion: a saturated cell often answers a
+small request quickly while delivering almost no throughput. The body is streamed and
+counted rather than awaited whole, so a download cut short by the deadline still yields a
+figure — on a congested cell that partial number is the measurement.
+
+`speed.cloudflare.com` is also the only endpoint that sends `timing-allow-origin`, which is
+what makes `handshake`, `reused` and `ttfb_ms` readable at all; the other four report zeroed
+timing cross-origin. It additionally returns `Server-Timing: cfL4`, which is Cloudflare's own
+view of the TCP connection — RTT, retransmits, losses, delivery rate, congestion window.
+Congestion and a coverage gap look different there: retransmits and the congestion window
+move while reachability does not.
+
+## Every attempt is recorded
+
+A round that fails is the measurement. Nothing is dropped, skipped, or summarised away, and
+no failure is represented only by an absence.
+
+- `<probe>_fail` is the reason, not the fact: `timeout`, `network`, `http`, `parse`, `abort`.
+- `ms` is recorded on failure too — time-to-fail separates a refused connection from a link
+  that hung until the deadline.
+- A round that could not start because the previous one was still in flight is written with
+  `skipped: "overlap"`, not passed over.
+- `late_ms` is on every row. iOS freezes JavaScript when the tab is hidden or the screen
+  locks; a round more than twice the interval late also writes a `pause` event with the
+  bridged duration, and `visible` records the tab state per row.
+- If an IndexedDB write fails, rows stay in memory and are retried, with the pending count
+  on screen. Silent data loss is the one failure this tool cannot have.
+
+What is *not* stored is the derived conclusion: no outage events, durations or counts. Where
+the line falls between noise and an outage shifts the answer, and that choice belongs with
+the analysis, next to the other sources.
 
 ## Data
 
-Sessions live in IndexedDB until exported. Only raw samples are stored: no outage
-durations, no counts, no summaries. Where the line falls between noise and an outage is an
-analysis decision, and it has to stay revisable.
+Sessions live in IndexedDB until exported. One button per session writes one JSON file with
+the session metadata, the environment, every sample and every event. CSV, GPX or GeoJSON are
+a few lines to derive from it where the enrichment happens anyway.
 
-Export formats: **JSON** (canonical and lossless), **CSV** samples, **CSV** events, **GPX**,
-**GeoJSON**. "Export everything" writes every session to one JSON file.
+### Per round
 
-### Sample columns
-
-| Column | Meaning |
+| Field | Meaning |
 |---|---|
-| `session_id` `session_name` `operator` `connection` `route` | session identity, repeated per row so files from different days stack |
 | `seq` | round number; a gap means a row was lost, which should never happen |
-| `t` | wall clock, ISO 8601 |
-| `mono` | milliseconds on a monotonic clock since session start; survives wall-clock jumps, and is bridged across a reload using `t` |
-| `late_ms` | how far behind schedule this round ran |
-| `skipped` | `overlap` when the previous round had not returned yet; empty otherwise |
+| `t` | wall clock, epoch ms |
+| `mono` | monotonic ms since session start; survives wall-clock jumps, bridged across a reload using `t` |
+| `late_ms` | how far behind schedule the round ran |
+| `skipped` | `overlap` when the previous round had not returned; otherwise null |
 | `round_error` | exception message if the round itself threw |
+| `visible` | whether the tab was foregrounded for this round |
 | `lat` `lon` `accuracy` `speed` `heading` | GPS fix; speed in m/s |
-| `pos_t` | timestamp **of the fix**, not of the round — a stale fix on a moving train is off by a kilometre and this is the only way to see it |
+| `pos_t` | timestamp **of the fix**, not the round — a stale fix on a moving train is off by a kilometre and this is the only way to see it |
 | `pos_error` | `denied`, `timeout` or `unavailable` when there is no position |
-| `interval_ms` | the interval actually used for this round |
-| `<probe>_ok` | 1 or 0, per probe `ip` / `dns` / `web` |
-| `<probe>_ms` | round trip, **also filled in on failure** — time-to-fail separates a refused connection from a link that hung to the deadline |
-| `<probe>_status` | HTTP status; empty for the opaque probe, where it cannot be known |
-| `<probe>_fail` | `timeout`, `network`, `http`, `parse` or `abort` |
-| `<probe>_egress_ip` | the operator's public IP, from the trace body |
-| `<probe>_colo` | Cloudflare PoP |
+| `intervalMs` | interval in force for this round |
 
-`parse` means the endpoint answered but the body was not trace-shaped — something replied
-on Cloudflare's behalf.
+### Per probe, under `probes.<id>`
 
-### Event rows
+| Field | Probes | Meaning |
+|---|---|---|
+| `ok` `ms` `fail` | all | success, round trip, failure reason |
+| `status` | `ip6` `ip4` `down` | HTTP status; null where the response is opaque and the status is genuinely unknowable |
+| `egress_ip` `colo` | `ip6` `ip4` `down` | the operator's public address and the Cloudflare PoP |
+| `host` | `dns` | the random hostname used, so freshness is verifiable |
+| `bytes` `transfer_ms` | `down` | bytes counted and the window they arrived in |
+| `bps` | `down` | rate, **null when `transfer_ms` is under 2 ms** — below that the window is shorter than the clock resolves and a rate would be noise. `bytes` and `transfer_ms` are always kept |
+| `truncated` | `down` | the deadline cut the body short; the partial figure still stands |
+| `ttfb_ms` `handshake` `reused` `protocol` | `down` | connection setup. A reused connection reports `connectStart == connectEnd`, and on reuse the spec sets `secureConnectionStart` to `fetchStart`, so a handshake is only counted when the TLS phase falls inside a real connect window |
+| `server` | `down` | Cloudflare's `cfL4` view: `rtt_us`, `min_rtt_us`, `rtt_var_us`, `lost`, `retrans`, `delivery_rate`, `cwnd` |
+
+### Events
 
 Only what cannot be derived from the samples: `mark` (pressed by hand), `pause` (JavaScript
 was frozen, with the bridged duration) and `note`.
@@ -83,29 +124,27 @@ was frozen, with the bridged duration) and `note`.
 ## Operator and connection type
 
 No browser API exposes the carrier or whether the radio is cellular or Wi-Fi;
-`navigator.connection` is not implemented in Safari on any platform. Both are therefore
-fields you set before the run. The recorded egress IP makes the label checkable afterwards:
-a carrier CGNAT range and a home Wi-Fi address resolve to different ASNs. If the egress IP
-changes mid-session while the label does not, the screen says so at the time.
+`navigator.connection` is not implemented in Safari on any platform. Connection type is
+therefore asked for before the run, and the operator only when it is not Wi-Fi. Everything
+else about the session — its name included — is generated from what is already known.
+
+The recorded egress IP makes the label checkable afterwards: a carrier range and a home
+Wi-Fi address resolve to different ASNs. If the egress IP changes mid-session while the
+label does not, the screen says so at the time.
 
 One SIM is active at a time, so an operator comparison is a comparison between journeys.
 
 ## Data usage
 
-Roughly 1 kB per round once connections are warm, plus about 5 kB whenever TLS has to be
-re-established — which a moving train forces often, and most often during the trouble you
-are trying to record. A 40-minute run at 5 seconds is on the order of half a megabyte; at
-10 seconds, half that. The on-screen counter is an estimate and is labelled as one.
-
-The adaptive interval trades even sampling for fewer bytes: it speeds up while probes are
-failing and slows down while they are stable. It is off by default, because an even
-interval makes two journeys directly comparable.
+About 26 kB per round, almost all of it the download probe. A 40-minute run at 5 seconds is
+roughly 13 MB; at 10 seconds, half that. The projection for the selected interval is shown
+before the run starts, and the running estimate during it.
 
 ## iOS notes
 
 - Wake lock is requested at start and re-requested when the tab becomes visible. If it is
   refused, set auto-lock to a longer interval.
 - Locking the screen or backgrounding the tab freezes JavaScript. The gap is recorded as a
-  `pause` event and as `late_ms` on the next row, so it is never mistaken for an outage.
+  `pause` event, as `late_ms` on the next row, and as `visible: false`.
 - Safari can evict storage for sites left unvisited for about a week. Sessions that have
   never been exported are flagged in the list; export a journey before it matters.

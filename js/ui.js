@@ -4,6 +4,7 @@ import {PROBES} from './probe.js';
 
 const STRIP_BARS = 48;
 const SLOW_MS = 400;
+const TILES = ['ip6', 'dns', 'web', 'down'];   // ip4 rides along in the ip6 tile's subtitle
 
 export const $ = id => document.getElementById(id);
 const pad = n => String(n).padStart(2, '0');
@@ -21,33 +22,49 @@ export function duration(s) {
   return `${Math.floor(s / 60)}:${pad(s % 60)}`;
 }
 
+export function rate(bps) {
+  if (bps == null) return '—';
+  if (bps < 1e6) return `${Math.round(bps / 1e3)} kb/s`;
+  const mb = bps / 1e6;
+  return `${mb >= 100 ? Math.round(mb) : mb.toFixed(1)} Mb/s`;
+}
+
 export function notice(text) { $('notice').textContent = text || ''; }
 
 export function classify(sample) {
   if (sample.skipped) return 'skip';
-  const r = id => sample.probes[id];
-  const failed = PROBES.filter(p => !r(p.id).ok);
-  if (!failed.length) return PROBES.some(p => r(p.id).ms > SLOW_MS) ? 'slow' : 'up';
-  if (!r('dns').ok && r('ip').ok) return 'dns';
-  return 'down';
+  const r = id => sample.probes[id] || {};
+  const reachable = r('ip6').ok || r('ip4').ok;
+  if (!reachable && !r('web').ok) return 'down';
+  if (!r('dns').ok && reachable) return 'dns';
+  if (!r('down').ok || !r('web').ok) return 'part';
+  return PROBES.some(p => p.kind === 'trace' && r(p.id).ok && r(p.id).ms > SLOW_MS) ? 'slow' : 'up';
+}
+
+const FLOOR_MS = 2;   // below this the transfer window is shorter than the clock resolves
+
+function tileValue(id, r) {
+  if (!r) return '—';
+  if (!r.ok) return r.fail === 'timeout' ? 'to' : r.fail === 'http' ? String(r.status) : 'gone';
+  if (id !== 'down') return String(r.ms);
+  // An unmeasurably short transfer still bounds the rate from below, which beats showing
+  // nothing for a download that plainly succeeded.
+  return r.bps ? rate(r.bps) : `>${rate((r.bytes * 8) / (FLOOR_MS / 1000))}`;
 }
 
 export function setSignals(sample, fails) {
-  for (const p of PROBES) {
-    const cell = $(`sig-${p.id}`);
-    const r = sample?.probes?.[p.id];
+  for (const id of TILES) {
+    const cell = $(`sig-${id}`);
+    const r = sample && !sample.skipped ? sample.probes[id] : null;
     cell.classList.remove('up', 'slow', 'down');
-    if (!sample || sample.skipped) {
-      $(`val-${p.id}`).textContent = sample ? '–' : '—';
-    } else if (!r.ok) {
-      cell.classList.add('down');
-      $(`val-${p.id}`).textContent = r.fail === 'timeout' ? 'to' : r.fail === 'http' ? String(r.status) : 'gone';
-    } else {
-      cell.classList.add(r.ms > SLOW_MS ? 'slow' : 'up');
-      $(`val-${p.id}`).textContent = r.ms;
-    }
-    $(`fail-${p.id}`).textContent = `${fails[p.id] || 0} failed`;
+    if (r) cell.classList.add(!r.ok ? 'down' : (id !== 'down' && r.ms > SLOW_MS) ? 'slow' : 'up');
+    $(`val-${id}`).textContent = sample && sample.skipped ? '–' : tileValue(id, r);
+    $(`sub-${id}`).textContent = `${fails[id] || 0} failed`;
   }
+  // IPv4 is a property of the network rather than of the round, so it reads as a marker
+  // on the reachability tile instead of taking a tile of its own.
+  const v4 = sample && !sample.skipped ? sample.probes.ip4 : null;
+  if (v4) $('sub-ip6').textContent = `${fails.ip6 || 0} failed · v4 ${v4.ok ? 'ok' : 'no'}`;
 }
 
 export function pushStrip(kind) {
@@ -80,10 +97,10 @@ export function sampleLine(sample) {
   if (sample.skipped) return `${time}  skipped: ${sample.skipped} (${sample.late_ms} ms late)`;
   if (sample.round_error) return `${time}  round error: ${sample.round_error}`;
   const failed = PROBES.filter(p => !sample.probes[p.id].ok);
-  if (failed.length) {
-    return `${time}  ` + failed.map(p => `${p.id} ${sample.probes[p.id].fail}`).join('  ');
-  }
-  return `${time}  ` + PROBES.map(p => `${p.id} ${sample.probes[p.id].ms}`).join('  ');
+  if (failed.length) return `${time}  ` + failed.map(p => `${p.id} ${sample.probes[p.id].fail}`).join('  ');
+  const d = sample.probes.down;
+  return `${time}  v6 ${sample.probes.ip6.ms}  dns ${sample.probes.dns.ms}  ${d.bps ? rate(d.bps) : 'fast'}` +
+         (d.server && d.server.retrans ? `  retrans ${d.server.retrans}` : '');
 }
 
 export function setStats({rounds, elapsed, pos, speed, data, marks}) {
@@ -102,23 +119,19 @@ export function setRunning(running) {
   // Idle, Start is the only action; it takes the whole thumb zone.
   $('btn-mark').hidden = !running;
   $('btn-mark').disabled = !running;
-  // The fields describe a session that has already begun; hiding them frees the screen
-  // for the readout and removes any way to edit what is already recorded.
   $('setup').hidden = running;
 }
 
 export function switchView(name) {
-  for (const view of document.querySelectorAll('.view')) {
-    view.hidden = view.id !== `view-${name}`;
-  }
-  for (const tab of document.querySelectorAll('nav button')) {
-    tab.classList.toggle('on', tab.dataset.view === name);
-  }
+  for (const view of document.querySelectorAll('.view')) view.hidden = view.id !== `view-${name}`;
+  for (const tab of document.querySelectorAll('nav button')) tab.classList.toggle('on', tab.dataset.view === name);
 }
 
+// Short, because the generated name already carries date and time; this is what keeps the
+// date on the card after a rename.
 const dateLabel = ms => {
   const d = new Date(ms);
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 };
 
 export function renderSessions(rows, handlers) {
@@ -140,40 +153,21 @@ export function renderSessions(rows, handlers) {
     top.className = 'top';
     const title = document.createElement('div');
     title.className = 'title';
-    title.textContent = session.name || '(unnamed)';
-    const when = document.createElement('div');
-    when.className = 'when';
-    when.textContent = dateLabel(session.started);
-    top.append(title, when);
+    title.textContent = session.name;
+    top.append(title);
 
     const meta = document.createElement('div');
     meta.className = 'meta';
     const secs = Math.round(((session.stopped || session.started) - session.started) / 1000);
-    const bits = [
-      `${session.operator} · ${session.connection}`,
-      session.route || '—',
-      `${duration(secs)}`,
-      `${count} rounds`,
-      `${session.intervalMs / 1000}s${session.adaptive ? ' adaptive' : ''}`
-    ];
+    const bits = [dateLabel(session.started), duration(secs), `${count} rounds`, `${session.intervalMs / 1000}s`];
+    if (!session.stopped) bits.push(['never closed', 'flag']);
+    if (!session.exportedAt) bits.push(['not exported', 'flag']);
     for (const b of bits) {
       const s = document.createElement('span');
-      s.textContent = b;
+      s.textContent = Array.isArray(b) ? b[0] : b;
+      if (Array.isArray(b)) s.className = b[1];
       meta.appendChild(s);
     }
-    if (!session.stopped) {
-      const s = document.createElement('span');
-      s.className = 'flag';
-      s.textContent = 'never closed';
-      meta.appendChild(s);
-    }
-    if (!session.exportedAt) {
-      const s = document.createElement('span');
-      s.className = 'flag';
-      s.textContent = 'not exported';
-      meta.appendChild(s);
-    }
-
     card.append(top, meta);
 
     if (session.note) {
@@ -183,27 +177,21 @@ export function renderSessions(rows, handlers) {
       card.appendChild(note);
     }
 
-    const exports = document.createElement('div');
-    exports.className = 'actions';
-    for (const [format, label] of [['json', 'JSON'], ['csv', 'CSV'], ['events', 'Events'],
-                                   ['gpx', 'GPX'], ['geojson', 'GeoJSON']]) {
-      const b = document.createElement('button');
-      b.className = 'small';
-      b.textContent = label;
-      b.onclick = () => handlers.export(session, format);
-      exports.appendChild(b);
-    }
-    const manage = document.createElement('div');
-    manage.className = 'actions';
+    const actions = document.createElement('div');
+    actions.className = 'actions';
+    const exp = document.createElement('button');
+    exp.className = 'small export';
+    exp.textContent = 'Export';
+    exp.onclick = () => handlers.export(session);
+    actions.appendChild(exp);
     for (const [label, fn] of [['Rename', 'rename'], ['Note', 'note'], ['Delete', 'remove']]) {
       const b = document.createElement('button');
       b.className = 'small';
       b.textContent = label;
       b.onclick = () => handlers[fn](session);
-      manage.appendChild(b);
+      actions.appendChild(b);
     }
-
-    card.append(exports, manage);
+    card.appendChild(actions);
     list.appendChild(card);
   }
 }

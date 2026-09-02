@@ -1,7 +1,7 @@
 import * as store from './store.js';
 import * as ui from './ui.js';
 import {PROBES} from './probe.js';
-import {createRecorder, environment} from './session.js';
+import {createRecorder, environment, projectedBytes} from './session.js';
 import {exportSession, exportAll} from './export.js';
 
 const PREFS_KEY = 'spoormeter.prefs';
@@ -22,8 +22,9 @@ const recorder = createRecorder({
       for (const p of PROBES) if (!sample.probes[p.id].ok) fails[p.id] = (fails[p.id] || 0) + 1;
     }
     ui.setSignals(sample, fails);
-    ui.pushStrip(ui.classify(sample));
-    ui.pushLog(ui.sampleLine(sample), sample.skipped ? 'warn' : ui.classify(sample) === 'up' ? '' : 'bad');
+    const kind = ui.classify(sample);
+    ui.pushStrip(kind);
+    ui.pushLog(ui.sampleLine(sample), sample.skipped ? 'warn' : kind === 'up' || kind === 'slow' ? '' : 'bad');
   },
   onEvent(event) {
     if (event.type === 'pause') ui.pushStrip('pause');
@@ -35,7 +36,7 @@ const recorder = createRecorder({
     ui.setStats({
       rounds: s.seq,
       elapsed: ui.duration(s.elapsed),
-      pos: c ? `${c.latitude.toFixed(3)},${c.longitude.toFixed(3)}` : (s.posError || '—'),
+      pos: c ? `${c.latitude.toFixed(5)}, ${c.longitude.toFixed(5)}` : (s.posError || '—'),
       speed: c && c.speed != null ? `${Math.round(c.speed * 3.6)} km/h` : '—',
       data: ui.bytes(s.bytes) + (s.pending ? ` (${s.pending} held)` : ''),
       marks: s.marks
@@ -44,7 +45,7 @@ const recorder = createRecorder({
   onNotice: ui.notice
 });
 
-/* ---- form ---- */
+/* ---- setup ---- */
 
 function readPrefs() {
   try { return JSON.parse(localStorage.getItem(PREFS_KEY) || '{}'); } catch { return {}; }
@@ -56,9 +57,7 @@ function writePrefs() {
       operator: $('f-operator').value,
       operatorOther: $('f-operator-other').value,
       connection: $('f-connection').value,
-      route: $('f-route').value,
-      interval: $('f-interval').value,
-      adaptive: $('f-adaptive').checked
+      interval: $('f-interval').value
     }));
   } catch { /* private mode */ }
 }
@@ -68,39 +67,48 @@ function applyPrefs() {
   if (p.operator) $('f-operator').value = p.operator;
   if (p.operatorOther) $('f-operator-other').value = p.operatorOther;
   if (p.connection) $('f-connection').value = p.connection;
-  if (p.route) $('f-route').value = p.route;
   if (p.interval) $('f-interval').value = p.interval;
-  $('f-adaptive').checked = !!p.adaptive;
-  syncOperatorField();
+  syncSetup();
 }
 
-function syncOperatorField() {
+// On Wi-Fi there is no operator to name, so the field is not asked for.
+function syncSetup() {
+  const wifi = $('f-connection').value === 'wifi';
+  $('row-operator').hidden = wifi;
   $('f-operator-other').hidden = $('f-operator').value !== '__other';
+  const mb = projectedBytes(+$('f-interval').value) / 1048576;
+  $('budget').textContent = `≈ ${mb.toFixed(1)} MB for a 40-minute run, mostly the throughput probe.`;
 }
 
 function operatorName() {
+  if ($('f-connection').value === 'wifi') return '';
   const sel = $('f-operator').value;
   return sel === '__other' ? ($('f-operator-other').value.trim() || 'unknown') : sel;
 }
 
-function defaultName() {
-  const d = new Date();
-  return `${d.getDate()}/${d.getMonth() + 1} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+// Generated, not typed: everything in the name is already known, and a keyboard on a
+// moving train is the last thing wanted before pressing Start.
+function generatedName(operator, connection, started) {
+  const d = new Date(started);
+  const month = d.toLocaleString('en', {month: 'short'});
+  const when = `${d.getDate()} ${month} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  const who = operator || (connection === 'wifi' ? 'Wi-Fi' : connection);
+  return `${who} · ${when}`;
 }
 
 function newSession() {
   const intervalMs = +$('f-interval').value;
+  const connection = $('f-connection').value;
+  const operator = operatorName();
+  const started = Date.now();
   return {
     id: uuid(),
-    name: $('f-name').value.trim() || defaultName(),
-    operator: operatorName(),
-    connection: $('f-connection').value,
-    route: $('f-route').value.trim(),
+    name: generatedName(operator, connection, started),
+    operator, connection,
     note: '',
-    started: Date.now(),
+    started,
     stopped: null,
     intervalMs,
-    adaptive: $('f-adaptive').checked,
     environment: environment(intervalMs),
     exportedAt: null
   };
@@ -118,18 +126,17 @@ async function begin() {
 
   const session = newSession();
   await store.putSession(session);
-  ui.pushLog(`${ui.clock(session.started)}  session "${session.name}" — ${session.operator} / ${session.connection}`, 'mark');
+  ui.pushLog(`${ui.clock(session.started)}  ${session.name}`, 'mark');
   await recorder.start(session);
   ui.setRunning(true);
   listDirty = true;
 }
 
 async function end() {
-  const session = await recorder.stop();
+  await recorder.stop();
   ui.setRunning(false);
   ui.pushLog(`${ui.clock(Date.now())}  session closed — export it from the Sessions tab`, 'mark');
   listDirty = true;
-  return session;
 }
 
 /* ---- crash recovery: never resume silently ---- */
@@ -176,25 +183,23 @@ async function checkRecovery() {
   };
 }
 
-/* ---- sessions view ---- */
+/* ---- sessions ---- */
 
 async function renderSessions() {
   const sessions = await store.allSessions();
   const rows = [];
-  for (const session of sessions) {
-    rows.push({session, count: await store.countSamples(session.id)});
-  }
+  for (const session of sessions) rows.push({session, count: await store.countSamples(session.id)});
   ui.renderSessions(rows, handlers);
   listDirty = false;
 }
 
 const handlers = {
-  async export(session, format) {
+  async export(session) {
     try {
-      const {samples, events} = await exportSession(session, format);
+      const {samples, events} = await exportSession(session);
       session.exportedAt = Date.now();
       await store.putSession(session);
-      ui.notice(`Exported ${samples} rounds and ${events} events as ${format.toUpperCase()}.`);
+      ui.notice(`Exported ${samples} rounds and ${events} events.`);
       renderSessions();
     } catch (e) {
       ui.notice(`Export failed: ${e.message}`);
@@ -226,7 +231,7 @@ const handlers = {
 
 $('btn-start').onclick = () => (recorder.status().running ? end() : begin());
 $('btn-mark').onclick = () => recorder.mark();
-$('f-operator').onchange = syncOperatorField;
+for (const id of ['f-connection', 'f-operator', 'f-interval']) $(id).onchange = syncSetup;
 $('btn-export-all').onclick = async () => {
   try {
     const sessions = await exportAll();

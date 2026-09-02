@@ -28,7 +28,7 @@ main{flex:1;overflow-y:auto;overscroll-behavior:contain;-webkit-overflow-scrolli
 [hidden]{display:none!important}
 
 /* signals: the part that has to read at a glance */
-.signals{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.signals{display:grid;grid-template-columns:repeat(2,1fr);gap:8px}
 .signal{background:var(--panel);border:1px solid var(--line);border-radius:10px;
         padding:12px 10px 11px;position:relative;overflow:hidden}
 .signal::before{content:"";position:absolute;inset:0 auto 0 0;width:3px;
@@ -40,7 +40,8 @@ main{flex:1;overflow-y:auto;overscroll-behavior:contain;-webkit-overflow-scrolli
 .signal .value{font-family:var(--num);font-size:23px;font-variant-numeric:tabular-nums;letter-spacing:-.02em}
 .signal .unit{font-size:11px;color:var(--muted);margin-left:2px}
 .signal.down .value{color:var(--red)}
-.signal .fails{font-size:11px;color:var(--muted);margin-top:3px;font-family:var(--num)}
+.signal .sub{font-size:11px;color:var(--muted);margin-top:3px;font-family:var(--num);
+              white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 
 .hint{font-size:12.5px;color:var(--muted);margin:-4px 0 0}
 
@@ -51,6 +52,7 @@ main{flex:1;overflow-y:auto;overscroll-behavior:contain;-webkit-overflow-scrolli
 .strip i.up{background:var(--green)}
 .strip i.slow{background:var(--amber)}
 .strip i.dns{background:var(--rail)}
+.strip i.part{background:var(--amber);opacity:.55}
 .strip i.down{background:var(--red)}
 .strip i.skip{background:var(--muted);opacity:.5}
 .strip i.pause{background:repeating-linear-gradient(45deg,var(--muted),var(--muted) 2px,transparent 2px,transparent 4px)}
@@ -58,6 +60,7 @@ main{flex:1;overflow-y:auto;overscroll-behavior:contain;-webkit-overflow-scrolli
 .stats{background:var(--panel);border:1px solid var(--line);border-radius:10px;
        padding:11px 13px;display:grid;grid-template-columns:1fr 1fr;gap:9px 16px;font-size:12.5px}
 .stats div{display:flex;justify-content:space-between;gap:10px;min-width:0}
+.stats div:nth-child(3),.stats div:last-child{grid-column:1/-1}
 .stats b{font-family:var(--num);font-weight:500;font-variant-numeric:tabular-nums;
          white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .stats span{flex:0 0 auto}
@@ -122,7 +125,9 @@ button:disabled{opacity:.4;cursor:default}
 .session .meta b{font-weight:500;color:var(--text)}
 .session .flag{color:var(--amber)}
 .session .note{font-size:12px;color:var(--muted);font-style:italic}
-.session .actions{display:grid;grid-template-columns:repeat(3,1fr);gap:6px}
+.session .actions{display:grid;grid-template-columns:repeat(4,1fr);gap:6px}
+.session .actions .export{grid-column:1/-1;background:var(--rail);border-color:var(--rail);
+                          color:#06182B;font-weight:600}
 .empty{color:var(--muted);font-size:13px;text-align:center;padding:28px 0}
 
 nav{display:grid;grid-template-columns:1fr 1fr;gap:0;

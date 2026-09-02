@@ -32,10 +32,14 @@
 
   <div class="setup" id="setup">
     <div class="field">
-      <label for="f-name">Session</label>
-      <input id="f-name" type="text" placeholder="Morning run" autocomplete="off" enterkeyhint="done">
+      <label for="f-connection">Connection</label>
+      <select id="f-connection">
+        <option value="cellular">Cellular</option>
+        <option value="wifi">Wi-Fi</option>
+        <option value="unknown">Unknown</option>
+      </select>
     </div>
-    <div class="field">
+    <div class="field" id="row-operator">
       <label for="f-operator">Operator</label>
       <select id="f-operator">
         <option>KPN</option>
@@ -46,18 +50,6 @@
       <input id="f-operator-other" type="text" placeholder="Name" autocomplete="off" hidden>
     </div>
     <div class="field">
-      <label for="f-connection">Connection</label>
-      <select id="f-connection">
-        <option value="cellular">Cellular</option>
-        <option value="wifi">Wi-Fi</option>
-        <option value="unknown">Unknown</option>
-      </select>
-    </div>
-    <div class="field">
-      <label for="f-route">Route</label>
-      <input id="f-route" type="text" placeholder="Rotterdam – Utrecht" autocomplete="off" enterkeyhint="done">
-    </div>
-    <div class="field">
       <label for="f-interval">Interval</label>
       <select id="f-interval">
         <option value="2000">2 seconds</option>
@@ -65,33 +57,34 @@
         <option value="10000">10 seconds</option>
       </select>
     </div>
-    <label class="check">
-      <input id="f-adaptive" type="checkbox">
-      Adaptive interval — speed up while failing, slow down while stable
-    </label>
+    <p class="hint" id="budget"></p>
   </div>
-
 
   <div id="readout" hidden>
     <div class="signals">
-      <div class="signal" id="sig-ip">
-        <div class="name">via IP address</div>
-        <div><span class="value" id="val-ip">—</span><span class="unit">ms</span></div>
-        <div class="fails" id="fail-ip">0 failed</div>
+      <div class="signal" id="sig-ip6">
+        <div class="name">no DNS</div>
+        <div><span class="value" id="val-ip6">—</span><span class="unit">ms</span></div>
+        <div class="sub" id="sub-ip6">0 failed</div>
       </div>
       <div class="signal" id="sig-dns">
-        <div class="name">via hostname</div>
+        <div class="name">DNS</div>
         <div><span class="value" id="val-dns">—</span><span class="unit">ms</span></div>
-        <div class="fails" id="fail-dns">0 failed</div>
+        <div class="sub" id="sub-dns">0 failed</div>
       </div>
       <div class="signal" id="sig-web">
         <div class="name">other network</div>
         <div><span class="value" id="val-web">—</span><span class="unit">ms</span></div>
-        <div class="fails" id="fail-web">0 failed</div>
+        <div class="sub" id="sub-web">0 failed</div>
+      </div>
+      <div class="signal" id="sig-down">
+        <div class="name">throughput</div>
+        <div><span class="value" id="val-down">—</span></div>
+        <div class="sub" id="sub-down">0 failed</div>
       </div>
     </div>
 
-    <p class="hint">If only the middle one drops, it is DNS. If all three drop together, it is the radio link.</p>
+    <p class="hint">DNS down while “no DNS” holds means name resolution. Both down means the radio link.</p>
 
     <div class="strip" id="strip"></div>
 
@@ -100,8 +93,8 @@
       <div><span>Elapsed</span><b id="m-time">0:00</b></div>
       <div><span>Position</span><b id="m-pos">—</b></div>
       <div><span>Speed</span><b id="m-speed">—</b></div>
-      <div><span>Data (est.)</span><b id="m-data">0 kB</b></div>
       <div><span>Marks</span><b id="m-marks">0</b></div>
+      <div><span>Data (est.)</span><b id="m-data">0 kB</b></div>
     </div>
 
     <div class="log" id="log"><div>Not started.</div></div>
@@ -119,7 +112,7 @@
 <section class="view" id="view-sessions" hidden>
   <h2>Sessions</h2>
   <div class="sessions" id="session-list"></div>
-  <button class="wide small" id="btn-export-all">Export everything (JSON)</button>
+  <button class="wide small" id="btn-export-all">Export all sessions</button>
   <p class="hint">Safari can evict storage for sites left unvisited for a week. Sessions that
   have never been exported are flagged above.</p>
 </section>
