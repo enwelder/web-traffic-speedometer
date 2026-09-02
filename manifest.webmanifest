@@ -1,6 +1,6 @@
 {
-  "name": "Spoormeter",
-  "short_name": "Spoormeter",
+  "name": "Webspeed Speedometer",
+  "short_name": "Webspeed",
   "description": "Mobile connectivity logger for train journeys.",
   "start_url": "./",
   "scope": "./",

@@ -2,6 +2,8 @@
 // alongside them, because where the line falls between noise and outage is an analysis
 // decision that belongs downstream and has to stay revisable.
 
+// Storage keys keep the original product name deliberately: renaming them would orphan
+// every session already recorded on the device, for a change nobody can see.
 const DB_NAME = 'spoormeter';
 const DB_VERSION = 1;
 const ACTIVE_KEY = 'spoormeter.active';

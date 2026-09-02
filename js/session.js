@@ -14,7 +14,7 @@ const RESUMED_BYTES = 1500;
 const WARM_BYTES = {trace: 420, opaque: 220, download: 400};
 const REFUSED_BYTES = 100;      // an IPv4 literal with no path never gets a connection up
 
-export const APP_VERSION = '4.0.0';
+export const APP_VERSION = '5.0.0';
 
 export function projectedBytes(intervalMs, downloadBytes, minutes = 40) {
   const rounds = Math.round((minutes * 60000) / intervalMs);

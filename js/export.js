@@ -8,7 +8,7 @@ import * as store from './store.js';
 
 export function sessionJson(session, samples, events) {
   return JSON.stringify({
-    format: 'spoormeter/session',
+    format: 'webspeed/session',
     version: 2,
     app_version: APP_VERSION,
     exported: new Date().toISOString(),
@@ -24,7 +24,7 @@ function slug(s) {
 export function filename(session) {
   const d = new Date(session.started);
   const p = n => String(n).padStart(2, '0');
-  return `spoormeter-${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}` +
+  return `webspeed-${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}` +
          `-${slug(session.operator || session.connection)}.json`;
 }
 
@@ -54,10 +54,10 @@ export async function exportAll() {
   }
   const stamp = new Date().toISOString().slice(0, 16).replace(/[:T]/g, '');
   download(JSON.stringify({
-    format: 'spoormeter/bundle', version: 2, app_version: APP_VERSION,
+    format: 'webspeed/bundle', version: 2, app_version: APP_VERSION,
     exported: new Date().toISOString(),
     probes: PROBES.map(p => ({id: p.id, url: p.url, kind: p.kind})),
     sessions: bundles
-  }, null, 1), `spoormeter-all-${stamp}.json`);
+  }, null, 1), `webspeed-all-${stamp}.json`);
   return sessions;
 }

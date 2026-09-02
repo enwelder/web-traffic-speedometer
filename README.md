@@ -1,4 +1,4 @@
-# Spoormeter
+# Webspeed Speedometer
 
 A browser-based mobile connectivity logger for train journeys. It records reachability,
 latency, throughput and position continuously, with no backend and no runtime dependencies.
@@ -25,7 +25,7 @@ a minute.
 | `ip6` | `https://[2606:4700:4700::1111]/cdn-cgi/trace` | the radio link over IPv6, no name resolution |
 | `ip4` | `https://1.1.1.1/cdn-cgi/trace` | the same, over IPv4 |
 | `dns` | `https://<random>.github.io/` (HEAD) | resolution of a name that cannot be cached |
-| `dns_ctl` | `https://spoormeter-dns-control.github.io/` (HEAD) | the same destination with the name already cached |
+| `dns_ctl` | `https://webspeed-dns-control.github.io/` (HEAD) | the same destination with the name already cached |
 | `web` | `https://www.gstatic.com/generate_204` | a provider that is not Cloudflare |
 | `down` | `https://speed.cloudflare.com/__down?bytes=N` | throughput, once a minute |
 
@@ -195,6 +195,14 @@ The projection charges a TLS handshake per probe per round rather than assuming 
 reuse, because the field trial showed `reused: false` on every round. That makes it
 deliberately conservative, and it will over-estimate on a network where IPv4 is absent, since
 a refused literal never gets a connection up.
+
+## Naming
+
+The IndexedDB database and the two `localStorage` keys are still called `spoormeter`, from
+the tool's earlier name. Renaming them would orphan every session already recorded on a
+device in exchange for a change nobody can see. Exported files use `webspeed-` and carry
+`format: "webspeed/session"`; the two files exported before the rename carry
+`spoormeter/session` and are otherwise identical.
 
 ## iOS notes
 

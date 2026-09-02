@@ -19,7 +19,7 @@ export const DOWNLOAD_PERIOD_MS = 60000;
 export const TIMEOUT_MS = 4000;
 export const IPV4_PREFLIGHT_MS = 2000;
 
-const DNS_CONTROL_HOST = 'spoormeter-dns-control.github.io';
+const DNS_CONTROL_HOST = 'webspeed-dns-control.github.io';
 
 export const PROBES = [
   {id: 'ip6',     label: 'no DNS · v6', kind: 'trace',    url: 'https://[2606:4700:4700::1111]/cdn-cgi/trace'},
