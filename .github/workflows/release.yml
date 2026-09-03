@@ -42,7 +42,7 @@ jobs:
         uses: actions/deploy-pages@v4
 
   tag:
-    name: tag and release on a version bump
+    name: release the published version
     needs: publish
     runs-on: ubuntu-latest
     permissions:
@@ -50,33 +50,32 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 2
-      - id: version
-        name: has the version changed?
-        run: |
-          current=$(node -p "require('./package.json').version")
-          previous=$(git show HEAD~1:package.json 2>/dev/null | node -p "JSON.parse(require('fs').readFileSync(0)).version" || echo none)
-          echo "current=$current" >> "$GITHUB_OUTPUT"
-          if [ "$current" = "$previous" ]; then
-            echo "unchanged at $current; nothing to release"
-            echo "bumped=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "$previous -> $current"
-            echo "bumped=true" >> "$GITHUB_OUTPUT"
-          fi
-      - name: create the release
-        if: steps.version.outputs.bumped == 'true'
+          fetch-depth: 0
+      # Keyed on whether this version is already released, not on whether the last commit
+      # changed it. Diffing against the previous commit strands a version permanently if
+      # the run that introduced it failed before reaching this job.
+      - id: check
         env:
           GH_TOKEN: ${{ github.token }}
-          V: ${{ steps.version.outputs.current }}
         run: |
-          if gh release view "v$V" >/dev/null 2>&1; then
-            echo "v$V is already released"
-            exit 0
+          v=$(node -p "require('./package.json').version")
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          if gh release view "v$v" >/dev/null 2>&1; then
+            echo "v$v is already released"
+            echo "needed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "v$v is deployed but not released"
+            echo "needed=true" >> "$GITHUB_OUTPUT"
           fi
-          since=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
-          if [ -n "$since" ]; then
-            log=$(git log --pretty='- %s' "$since"..HEAD)
+      - name: create the release
+        if: steps.check.outputs.needed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          V: ${{ steps.check.outputs.version }}
+        run: |
+          previous=$(git tag --list 'v*' --sort=-v:refname | head -1)
+          if [ -n "$previous" ]; then
+            log=$(git log --pretty='- %s' "$previous"..HEAD)
           else
             log=$(git log --pretty='- %s' -20)
           fi
