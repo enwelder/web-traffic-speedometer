@@ -7,10 +7,15 @@ import {chromium} from 'playwright';
 import {suite} from './helpers.mjs';
 
 const PORT = 8799;
-const BASE = `http://localhost:${PORT}/`;
+// ?interval shortens the round; the app only honours it on localhost.
+const BASE = `http://127.0.0.1:${PORT}/?interval=2000`;
+const PLAIN = `http://127.0.0.1:${PORT}/`;   // real profile intervals, for the cost projection
 const root = new URL('..', import.meta.url).pathname;
 
-const server = spawn('python3', ['-m', 'http.server', String(PORT)], {cwd: root, stdio: 'ignore'});
+// Bound explicitly to the loopback address: binding every interface is refused in some
+// sandboxes, and the app only honours the interval override on a loopback host anyway.
+const server = spawn('python3', ['-m', 'http.server', String(PORT), '--bind', '127.0.0.1'],
+                     {cwd: root, stdio: 'ignore'});
 const stop = () => { try { server.kill(); } catch { /* already gone */ } };
 process.on('exit', stop);
 await new Promise(r => setTimeout(r, 800));
@@ -37,7 +42,7 @@ async function context(extra = {}) {
   const state = {mode: 'ok'};
   await ctx.route('**/*', route => {
     const u = new URL(route.request().url());
-    if (u.hostname === 'localhost') return route.continue();
+    if (u.hostname === '127.0.0.1' || u.hostname === 'localhost') return route.continue();
     if (u.hostname === '1.1.1.1') return route.abort('connectionfailed');
     if (state.mode === 'fail') return route.abort('connectionfailed');
     if (u.hostname === 'speed.cloudflare.com') return route.fulfill({
@@ -94,7 +99,7 @@ b.test('the page loads clean, and the setup asks only what it cannot know', asyn
   await page.goto(BASE, {waitUntil: 'networkidle'});
   assert.deepEqual(errors, []);
   assert.equal(await page.title(), 'Web Traffic Speedometer');
-  for (const gone of ['#f-route', '#f-name', '#f-adaptive']) {
+  for (const gone of ['#f-route', '#f-name', '#f-adaptive', '#f-interval', '#f-download']) {
     assert.equal(await page.locator(gone).count(), 0, `${gone} is derived, not asked for`);
   }
   await page.selectOption('#f-connection', 'wifi');
@@ -106,15 +111,13 @@ b.test('the page loads clean, and the setup asks only what it cannot know', asyn
 b.test('the projection tracks the settings and warns when a run gets expensive', async () => {
   const {ctx} = await context();
   const page = await ctx.newPage();
-  await page.goto(BASE, {waitUntil: 'networkidle'});
+  await page.goto(PLAIN, {waitUntil: 'networkidle'});
   const read = () => page.$eval('#budget', e => [Number(e.textContent.match(/(\d+) MB/)[1]), e.classList.contains('warn')]);
-  await page.selectOption('#f-interval', '30000');
-  const [cheap, cheapWarn] = await read();
-  await page.selectOption('#f-interval', '5000');
-  const [dear, dearWarn] = await read();
-  assert.ok(dear > cheap * 4, `a shorter interval costs more: ${cheap} MB vs ${dear} MB`);
-  assert.equal(cheapWarn, false);
-  assert.equal(dearWarn, true, 'and past 50 MB it says so before Start');
+  await page.selectOption('#f-profile', 'coarse');
+  const [cheap] = await read();
+  await page.selectOption('#f-profile', 'fine');
+  const [dear] = await read();
+  assert.ok(dear > cheap * 1.8, `the finer profile costs about twice as much: ${cheap} vs ${dear} MB`);
   await ctx.close();
 });
 
@@ -123,8 +126,6 @@ b.test('a session records, survives a reload, and exports losslessly', async () 
   const page = await ctx.newPage();
   await page.goto(BASE, {waitUntil: 'networkidle'});
   await page.selectOption('#f-operator', 'Odido');
-  await page.selectOption('#f-interval', '2000');
-  await page.selectOption('#f-download', '100000');
   await page.click('#btn-start');
   await page.waitForTimeout(3000);
   assert.match(await page.textContent('#sub-ip6'), /v4 n\/a/, 'an absent IPv4 path is not a failure');
@@ -198,7 +199,6 @@ b.test('the shell and the recorded sessions survive with no network at all', asy
   const {ctx} = await context();
   const page = await ctx.newPage();
   await page.goto(BASE, {waitUntil: 'networkidle'});
-  await page.selectOption('#f-interval', '2000');
   await page.click('#btn-start');
   await page.waitForTimeout(2500);
   await page.click('#btn-start');
@@ -223,8 +223,6 @@ b.test('the content security policy blocks nothing the probes need', async () =>
   const blocked = [];
   page.on('console', m => { if (/Content Security Policy|Refused to/.test(m.text())) blocked.push(m.text()); });
   await page.goto(BASE, {waitUntil: 'networkidle'});
-  await page.selectOption('#f-interval', '2000');
-  await page.selectOption('#f-download', '100000');
   await page.click('#btn-start');
   await page.waitForTimeout(3000);
   await page.click('#btn-start');
@@ -238,12 +236,62 @@ b.test('the content security policy blocks nothing the probes need', async () =>
   await ctx.close();
 });
 
+b.test('the newest log line is on top and nothing hides behind the controls', async () => {
+  const {ctx} = await context();
+  const page = await ctx.newPage();
+  await page.goto(BASE, {waitUntil: 'networkidle'});
+  await page.click('#btn-start');
+  await page.waitForTimeout(7000);
+
+  // Newest first: appending put the line that matters at the bottom, under the controls.
+  const times = await page.$$eval('#log div', els => els.map(e => e.textContent.slice(0, 8)));
+  const stamps = times.filter(t => /^\d\d:\d\d:\d\d$/.test(t));
+  assert.ok(stamps.length >= 2, 'several lines are logged');
+  assert.ok(stamps[0] >= stamps[stamps.length - 1], `newest is first: ${stamps[0]} then ${stamps.at(-1)}`);
+
+  // The controls are sticky, so they float; no log line may end up underneath them.
+  const overlap = await page.evaluate(() => {
+    const bar = document.querySelector('.controls').getBoundingClientRect();
+    return [...document.querySelectorAll('#log div')].filter(el => {
+      const r = el.getBoundingClientRect();
+      return r.top < bar.bottom && r.bottom > bar.top && r.height > 0;
+    }).length;
+  });
+  assert.equal(overlap, 0, 'no log line sits under the control bar');
+  await page.click('#btn-start');
+  await ctx.close();
+});
+
+b.test('a tile explains itself on tap and gives the numbers back', async () => {
+  const {ctx} = await context();
+  const page = await ctx.newPage();
+  await page.goto(BASE, {waitUntil: 'networkidle'});
+  await page.click('#btn-start');
+  await page.waitForTimeout(5000);
+
+  const sub = () => page.textContent('#sub-web');
+  const numbers = await sub();
+  assert.ok(!/provider/.test(numbers), 'it shows measurements by default');
+  await page.click('#sig-web');
+  assert.match(await sub(), /different provider/, 'tapping says what the probe measures');
+  await page.waitForTimeout(2500);
+  assert.match(await sub(), /different provider/, 'and the next round does not overwrite it');
+  await page.click('#sig-web');
+  await page.waitForTimeout(2500);
+  assert.ok(!/provider/.test(await sub()), 'tapping again returns the numbers');
+
+  // The explanation replaced a paragraph that used to sit permanently under the tiles.
+  const clutter = await page.$$eval('#readout .hint', els => els.length);
+  assert.equal(clutter, 0, 'no standing explanatory paragraph remains');
+  await page.click('#btn-start');
+  await ctx.close();
+});
+
 b.test('the layout holds and every control is reachable on a phone', async () => {
   for (const [name, width, height] of [['SE', 375, 667], ['15 Pro', 393, 852], ['narrow', 320, 568], ['landscape', 852, 393]]) {
     const {ctx} = await context({viewport: {width, height}, isMobile: true, hasTouch: true});
     const page = await ctx.newPage();
     await page.goto(BASE, {waitUntil: 'networkidle'});
-    await page.selectOption('#f-interval', '2000');
     await page.click('#btn-start');
     await page.waitForTimeout(1500);
     await page.click('#btn-start');

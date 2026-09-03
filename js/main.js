@@ -1,14 +1,30 @@
 import * as store from './store.js';
 import * as ui from './ui.js';
-import {PROBES, DOWNLOAD_SIZES, DEFAULT_DOWNLOAD_BYTES} from './probe.js';
-import {createRecorder, environment, projectedBytes} from './session.js';
+import {PROBES} from './probe.js';
+import {createRecorder, environment, projectedBytes, PROFILES} from './session.js';
 import {exportSession, exportAll} from './export.js';
 
 const PREFS_KEY = 'wts.prefs';
 const $ = ui.$;
 
 const fails = {};
+let degradedRounds = 0;
+let scoredRounds = 0;
 let listDirty = true;
+
+// Test seam. On localhost only, ?interval=<ms> shortens the round so the browser suite does
+// not have to sit through 15 s per round. Inert on any deployed origin.
+function testInterval() {
+  if (location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') return null;
+  const q = Number(new URLSearchParams(location.search).get('interval'));
+  return q >= 500 ? q : null;
+}
+
+function profile() {
+  const base = PROFILES[$('f-profile').value] || PROFILES.coarse;
+  const override = testInterval();
+  return override ? {...base, intervalMs: override} : base;
+}
 
 const uuid = () => (crypto.randomUUID ? crypto.randomUUID()
   : 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
@@ -22,7 +38,14 @@ const recorder = createRecorder({
       // An expected failure (no IPv4 path) is a known condition, not an outage to tally.
       for (const p of PROBES) if (ui.counts(sample.probes[p.id])) fails[p.id] = (fails[p.id] || 0) + 1;
     }
-    ui.setSignals(sample, fails);
+    // Full outages were rare on the route; what tracked the experience was rounds where
+    // some probe failed while the rest looked healthy.
+    if (!sample.skipped && !sample.round_error) {
+      scoredRounds++;
+      if (PROBES.some(p => ui.counts(sample.probes[p.id]))) degradedRounds++;
+    }
+    ui.trackLatency(sample);
+    ui.setSignals(sample, fails, scoredRounds);
     const kind = ui.classify(sample);
     ui.pushStrip(kind);
     ui.pushLog(ui.sampleLine(sample), sample.skipped ? 'warn' : kind === 'up' || kind === 'slow' ? '' : 'bad');
@@ -41,7 +64,8 @@ const recorder = createRecorder({
       speed: c && c.speed != null ? `${Math.round(c.speed * 3.6)} km/h` : '—',
       data: ui.bytes(s.bytes) + (s.pending ? ` (${s.pending} held)` : ''),
       marks: s.marks,
-      udp: s.udpMs == null ? '—' : `${s.udpMs} ms`
+      udp: s.udpMs == null ? '—' : `${s.udpMs} ms`,
+      degraded: scoredRounds ? `${Math.round((degradedRounds / scoredRounds) * 100)}%` : '—'
     });
   },
   onNotice: ui.notice
@@ -59,8 +83,7 @@ function writePrefs() {
       operator: $('f-operator').value,
       operatorOther: $('f-operator-other').value,
       connection: $('f-connection').value,
-      interval: $('f-interval').value,
-      download: $('f-download').value
+      profile: $('f-profile').value
     }));
   } catch { /* private mode */ }
 }
@@ -70,8 +93,7 @@ function applyPrefs() {
   if (p.operator) $('f-operator').value = p.operator;
   if (p.operatorOther) $('f-operator-other').value = p.operatorOther;
   if (p.connection) $('f-connection').value = p.connection;
-  if (p.interval) $('f-interval').value = p.interval;
-  if (p.download) $('f-download').value = p.download;
+  if (p.profile && PROFILES[p.profile]) $('f-profile').value = p.profile;
   syncSetup();
 }
 
@@ -80,7 +102,8 @@ function syncSetup() {
   const wifi = $('f-connection').value === 'wifi';
   $('row-operator').hidden = wifi;
   $('f-operator-other').hidden = $('f-operator').value !== '__other';
-  const mb = projectedBytes(+$('f-interval').value, +$('f-download').value) / 1048576;
+  const {intervalMs, downloadBytes} = profile();
+  const mb = projectedBytes(intervalMs, downloadBytes) / 1048576;
   const el = $('budget');
   el.textContent = `≈ ${Math.round(mb)} MB for a 40-minute run. A full page download every round is almost all of it.`;
   // Past this the run costs more than a chunk of a monthly bundle, which is worth seeing
@@ -105,8 +128,7 @@ function generatedName(operator, connection, started) {
 }
 
 function newSession() {
-  const intervalMs = +$('f-interval').value;
-  const downloadBytes = +$('f-download').value;
+  const {intervalMs, downloadBytes} = profile();
   const connection = $('f-connection').value;
   const operator = operatorName();
   const started = Date.now();
@@ -119,6 +141,7 @@ function newSession() {
     stopped: null,
     intervalMs,
     downloadBytes,
+    profile: $('f-profile').value,
     // Determined by a preflight at start rather than assumed; null until then.
     ipv4_available: null,
     ipv4_check: null,
@@ -131,9 +154,11 @@ function newSession() {
 
 async function begin() {
   for (const p of PROBES) fails[p.id] = 0;
+  degradedRounds = scoredRounds = 0;
+  ui.resetHistory();
   ui.clearLog();
   ui.clearStrip();
-  ui.setStripWindow(+$('f-interval').value);
+  ui.setStripWindow(profile().intervalMs);
   ui.notice('');
   $('readout').hidden = false;
   writePrefs();
@@ -172,6 +197,8 @@ async function checkRecovery() {
   $('recover-resume').onclick = async () => {
     $('recover').hidden = true;
     for (const p of PROBES) fails[p.id] = 0;
+    degradedRounds = scoredRounds = 0;
+    ui.resetHistory();
     ui.clearLog();
     ui.clearStrip();
     ui.setStripWindow(session.intervalMs);
@@ -246,7 +273,8 @@ const handlers = {
 
 $('btn-start').onclick = () => (recorder.status().running ? end() : begin());
 $('btn-mark').onclick = () => recorder.mark();
-for (const id of ['f-connection', 'f-operator', 'f-interval', 'f-download']) $(id).onchange = syncSetup;
+for (const id of ['f-connection', 'f-operator', 'f-profile']) $(id).onchange = syncSetup;
+ui.bindExplanations();
 $('btn-export-all').onclick = async () => {
   try {
     const sessions = await exportAll();

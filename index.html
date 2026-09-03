@@ -56,21 +56,10 @@
       <input id="f-operator-other" type="text" placeholder="Name" autocomplete="off" hidden>
     </div>
     <div class="field">
-      <label for="f-interval">Interval</label>
-      <select id="f-interval">
-        <option value="2000">2 seconds</option>
-        <option value="5000">5 seconds</option>
-        <option value="10000" selected>10 seconds</option>
-        <option value="20000">20 seconds</option>
-        <option value="30000">30 seconds</option>
-      </select>
-    </div>
-    <div class="field">
-      <label for="f-download">Download</label>
-      <select id="f-download">
-        <option value="100000">100 kB — light page</option>
-        <option value="250000" selected>250 kB — article with images</option>
-        <option value="500000">500 kB — heavy page</option>
+      <label for="f-profile">Detail</label>
+      <select id="f-profile">
+        <option value="fine">Fine — every 15 s</option>
+        <option value="coarse" selected>Coarse — every 30 s</option>
       </select>
     </div>
     <p class="hint" id="budget"></p>
@@ -80,30 +69,28 @@
   </div>
 
   <div id="readout" hidden>
-    <div class="signals">
+    <div class="signals" id="signals">
       <div class="signal" id="sig-ip6">
-        <div class="name">no DNS</div>
+        <div class="name">reachable</div>
         <div><span class="value" id="val-ip6">—</span><span class="unit">ms</span></div>
-        <div class="sub" id="sub-ip6">0 failed</div>
+        <div class="sub" id="sub-ip6">—</div>
       </div>
       <div class="signal" id="sig-dns">
         <div class="name">DNS</div>
         <div><span class="value" id="val-dns">—</span><span class="unit">ms</span></div>
-        <div class="sub" id="sub-dns">0 failed</div>
+        <div class="sub" id="sub-dns">—</div>
       </div>
       <div class="signal" id="sig-web">
-        <div class="name">other network</div>
+        <div class="name">other host</div>
         <div><span class="value" id="val-web">—</span><span class="unit">ms</span></div>
-        <div class="sub" id="sub-web">0 failed</div>
+        <div class="sub" id="sub-web">—</div>
       </div>
       <div class="signal" id="sig-down">
         <div class="name">throughput</div>
         <div><span class="value" id="val-down">—</span></div>
-        <div class="sub" id="sub-down">0 failed</div>
+        <div class="sub" id="sub-down">—</div>
       </div>
     </div>
-
-    <p class="hint">DNS down while “no DNS” holds means name resolution. Both down means the radio link.</p>
 
     <div>
       <div class="strip" id="strip"></div>
@@ -117,6 +104,7 @@
       <div><span>Speed</span><b id="m-speed">—</b></div>
       <div><span>Marks</span><b id="m-marks">0</b></div>
       <div><span>UDP</span><b id="m-udp">—</b></div>
+      <div><span>Degraded</span><b id="m-degraded">—</b></div>
       <div><span>Data (est.)</span><b id="m-data">0 kB</b></div>
     </div>
 

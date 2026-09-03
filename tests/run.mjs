@@ -2,7 +2,7 @@
 // Playwright and starts its own server.
 import {spawnSync} from 'node:child_process';
 
-const suites = ['unit', 'security', 'browser'];
+const suites = ['unit', 'regressions', 'security', 'browser'];
 const only = process.argv.slice(2);
 let failed = 0;
 

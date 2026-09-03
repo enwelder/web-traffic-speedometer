@@ -14,10 +14,18 @@
 
 export const DOWNLOAD_SIZES = [100000, 250000, 500000];
 export const DEFAULT_DOWNLOAD_BYTES = 250000;
-export const TIMEOUT_MS = 4000;           // a HEAD or a trace needs no longer than this
-export const DOWNLOAD_TIMEOUT_MS = 20000; // a full page on a bad cell can legitimately take this
+// 8 s for everything that uses TCP. Journey data showed small probes succeeding at 3885 ms
+// against a 4000 ms ceiling, so the old limit was recording slow-but-working rounds as
+// failures and destroying the distinction between slow and gone.
+export const TIMEOUT_MS = 8000;
 export const STUN_TIMEOUT_MS = 3000;      // UDP either answers quickly or not at all
 export const MIN_TIMEOUT_MS = 1000;
+
+// A probe whose connection has wedged fails every round while its peers succeed. Safari
+// cannot be told to open a fresh connection, so recovery is to stop asking for a while and
+// let the browser retire the connection on idle.
+export const STUCK_AFTER = 3;
+export const STUCK_COOLDOWN = 6;
 export const STUN_SERVER = 'stun:stun.cloudflare.com:3478';
 export const IPV4_PREFLIGHT_MS = 2000;
 
@@ -262,9 +270,7 @@ export async function checkIpv4(signal) {
 // not only the download's. Cut short at the deadline, a download still reports what it
 // managed to pull, which on a congested cell is the measurement rather than a loss.
 export function timeoutFor(probe, intervalMs) {
-  const base = probe.kind === 'download' ? DOWNLOAD_TIMEOUT_MS
-             : probe.kind === 'stun' ? STUN_TIMEOUT_MS
-             : TIMEOUT_MS;
+  const base = probe.kind === 'stun' ? STUN_TIMEOUT_MS : TIMEOUT_MS;
   return Math.max(MIN_TIMEOUT_MS, Math.min(base, intervalMs - 500));
 }
 
@@ -319,10 +325,15 @@ function runStun(probe, {timeoutMs, signal}) {
 }
 
 export async function runRound({signal, downloadBytes = DEFAULT_DOWNLOAD_BYTES,
-                                intervalMs = 5000, ipv4Available = true} = {}) {
-  const results = await Promise.all(PROBES.map(p => runProbe(p, {
-    signal, downloadBytes, timeoutMs: timeoutFor(p, intervalMs)
-  })));
+                                intervalMs = 5000, ipv4Available = true, resting = null} = {}) {
+  const results = await Promise.all(PROBES.map(p => {
+    // A probe resting to clear a wedged connection still produces a row, so the round stays
+    // complete and the reason is in the data rather than looking like twenty more timeouts.
+    if (resting?.has(p.id)) {
+      return Promise.resolve({ok: false, ms: null, status: null, fail: 'resting', stuck: true});
+    }
+    return runProbe(p, {signal, downloadBytes, timeoutMs: timeoutFor(p, intervalMs)});
+  }));
   const out = {};
   PROBES.forEach((p, i) => {
     const r = results[i];

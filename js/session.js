@@ -2,7 +2,8 @@
 // the ones that could not run at all — a failed attempt is the measurement, and must never
 // be represented by a missing row.
 
-import {PROBES, runRound, checkIpv4, clearTimings, timeoutFor} from './probe.js';
+import {PROBES, runRound, checkIpv4, clearTimings, timeoutFor,
+        STUCK_AFTER, STUCK_COOLDOWN, DEFAULT_DOWNLOAD_BYTES} from './probe.js';
 import * as realStore from './store.js';
 
 // Estimates. Safari opens a fresh connection per request rather than reusing one, so every
@@ -15,7 +16,27 @@ const REFUSED_BYTES = 100;      // an IPv4 literal with no path never gets a con
 // STUN is UDP: there is no handshake to charge, and no connection to resume.
 const cost = p => (WARM_BYTES[p.kind] * (p.samples || 1)) + (p.kind === 'stun' ? 0 : RESUMED_BYTES);
 
-export const APP_VERSION = '1.1.0';
+export const APP_VERSION = '2.0.0';
+
+// Two profiles instead of loose settings. The download is the only probe that measures
+// throughput rather than reachability, so it runs every round and the interval carries the
+// cost instead.
+export const PROFILES = {
+  fine:   {label: 'Fine — every 15 s',  intervalMs: 15000, downloadBytes: DEFAULT_DOWNLOAD_BYTES},
+  coarse: {label: 'Coarse — every 30 s', intervalMs: 30000, downloadBytes: DEFAULT_DOWNLOAD_BYTES}
+};
+
+const EARTH_M = 6371000;
+// Haversine. iOS fills coords.speed only sporadically — three journeys returned it on 0,
+// 2 and 51 of 158, 75 and 243 rounds — so it is derived from consecutive fixes instead,
+// with the measured value kept whenever the platform does supply one.
+function metresBetween(a, b) {
+  const rad = Math.PI / 180;
+  const dLat = (b.lat - a.lat) * rad, dLon = (b.lon - a.lon) * rad;
+  const h = Math.sin(dLat / 2) ** 2 +
+            Math.cos(a.lat * rad) * Math.cos(b.lat * rad) * Math.sin(dLon / 2) ** 2;
+  return 2 * EARTH_M * Math.asin(Math.min(1, Math.sqrt(h)));
+}
 
 export function projectedBytes(intervalMs, downloadBytes, minutes = 40) {
   const rounds = Math.round((minutes * 60000) / intervalMs);
@@ -58,6 +79,13 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
   let wakeLock = null;
   let lastPos = null;
   let posError = null;
+  let prevFix = null;
+  let inPause = false;
+  let lastRoundMs = null;
+  let lastSpeed = null;
+  let lastSpeedSource = null;
+  const consecutiveFails = {};
+  const restingUntil = {};
   let lastEgress = null;
   let throughput = null;
   let udpMs = null;
@@ -75,6 +103,8 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
   function status() {
     return {
       running, session, seq, marks, bytes, throughput, udpMs,
+      speedKmh: lastSpeed == null ? null : Math.round(lastSpeed * 3.6),
+      speedSource: lastSpeedSource,
       pending: pendingSamples.length + pendingEvents.length,
       writeFailed, pos: lastPos, posError,
       elapsed: running ? Math.floor(mono() / 1000) : 0
@@ -115,16 +145,33 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
   }
 
   function position() {
-    if (!lastPos) return {lat: null, lon: null, accuracy: null, speed: null, heading: null, pos_t: null, pos_error: posError};
+    if (!lastPos) {
+      return {lat: null, lon: null, accuracy: null, speed: null, speed_derived: null,
+              speed_source: null, heading: null, pos_t: null, pos_error: posError};
+    }
     const c = lastPos.coords;
+    const fix = {lat: c.latitude, lon: c.longitude, t: lastPos.timestamp};
+
+    let derived = null;
+    if (prevFix && fix.t > prevFix.t) {
+      const seconds = (fix.t - prevFix.t) / 1000;
+      // Two fixes at the same place seconds apart give a meaningless rate; a gap of minutes
+      // averages away everything that happened between them.
+      if (seconds >= 1 && seconds <= 120) derived = metresBetween(prevFix, fix) / seconds;
+    }
+    if (!prevFix || fix.t !== prevFix.t) prevFix = fix;
+
+    const measured = c.speed == null || c.speed < 0 ? null : c.speed;
     return {
-      lat: c.latitude, lon: c.longitude,
+      lat: fix.lat, lon: fix.lon,
       accuracy: c.accuracy == null ? null : Math.round(c.accuracy),
-      speed: c.speed == null ? null : c.speed,
+      speed: measured,
+      speed_derived: derived == null ? null : Math.round(derived * 100) / 100,
+      speed_source: measured != null ? 'gps' : derived != null ? 'derived' : null,
       heading: c.heading == null ? null : c.heading,
       // The fix's own timestamp, not the round's: a 30s-old fix on a 140 km/h train is
       // more than a kilometre out, and without this the error is invisible.
-      pos_t: lastPos.timestamp,
+      pos_t: fix.t,
       pos_error: posError
     };
   }
@@ -150,6 +197,9 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
   }
 
   function baseRow(late, skipped) {
+    const pos = position();
+    lastSpeed = pos.speed ?? pos.speed_derived ?? null;
+    lastSpeedSource = pos.speed_source;
     return {
       sessionId: session.id,
       seq: seq++,
@@ -160,21 +210,60 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
       round_error: null,
       // iOS suspends a hidden tab; a column is easier to filter on than pause events alone
       visible: document.visibilityState === 'visible',
+      // Set on the round that follows a bridged gap, so those rows can be filtered out
+      // without matching timestamps against the event list afterwards.
+      in_pause: inPause,
+      // The wall time the previous round actually took. A frozen tab suspends the abort
+      // timer too, so a round can outlast every deadline in it; without this an overlap is
+      // indistinguishable from the app stalling.
+      prev_round_ms: lastRoundMs,
       intervalMs: interval(),
-      ...position(),
+      ...pos,
       probes: {}
     };
   }
 
+  // A probe that keeps failing while its peers succeed is not reporting the network: its
+  // connection has wedged. Journey data showed the control probe timing out for twenty
+  // consecutive rounds after an outage, alone, while every other probe recovered within one.
+  function updateStuck(row) {
+    const anyOk = PROBES.some(p => row.probes[p.id]?.ok);
+    for (const p of PROBES) {
+      const r = row.probes[p.id];
+      if (!r || r.fail === 'resting') continue;
+      if (r.ok) { consecutiveFails[p.id] = 0; delete restingUntil[p.id]; continue; }
+      if (r.expected) continue;
+      consecutiveFails[p.id] = (consecutiveFails[p.id] || 0) + 1;
+      if (anyOk && consecutiveFails[p.id] >= STUCK_AFTER && restingUntil[p.id] == null) {
+        r.stuck = true;
+        restingUntil[p.id] = seq + STUCK_COOLDOWN;
+        onNotice?.(`${p.id} has failed ${consecutiveFails[p.id]} rounds while the others answer; ` +
+                   `resting it for ${STUCK_COOLDOWN} rounds to clear the connection.`);
+      }
+    }
+  }
+
+  function resting() {
+    const out = new Set();
+    for (const [id, until] of Object.entries(restingUntil)) {
+      if (seq < until) out.add(id);
+      else delete restingUntil[id];
+    }
+    return out;
+  }
+
   async function measure(late) {
     inFlight = true;
+    const startedAt = mono();
     const row = baseRow(late, null);
+    inPause = false;
     try {
       row.probes = await runRound({
         signal: abort.signal,
         downloadBytes: session.downloadBytes,
         intervalMs: interval(),
-        ipv4Available: session.ipv4_available
+        ipv4Available: session.ipv4_available,
+        resting: resting()
       });
     } catch (e) {
       row.round_error = String(e && e.message || e);
@@ -183,8 +272,10 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
       }
     } finally {
       inFlight = false;
+      lastRoundMs = Math.round(mono() - startedAt);
     }
 
+    updateStuck(row);
     charge(row);
     clearTimings();
     if (row.probes.down?.ok) throughput = row.probes.down.bps_transfer;
@@ -207,15 +298,22 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
     const late = Math.round(now - due);
 
     // iOS freezes JS when the tab is backgrounded or the screen locks. Recording the gap
-    // explicitly is the only way it stays distinguishable from an outage afterwards.
-    if (late > 2 * interval()) {
+    // explicitly is the only way it stays distinguishable from an outage afterwards. A whole
+    // missed slot is already a freeze worth recording; a threshold of two slots let a 13.7 s
+    // delay at a 10 s interval pass unlogged.
+    if (late >= interval()) {
       const p = position();
+      inPause = true;
       record({sessionId: session.id, t: Date.now(), mono: Math.round(now), type: 'pause',
               lat: p.lat, lon: p.lon, text: `${(late / 1000).toFixed(1)}s bridged`});
-      due = now;
     }
 
-    due += interval();
+    // Scheduled from when this round actually fired, not from a fixed grid. On a grid, any
+    // lateness pulls the next slot closer — after a 13.7 s delay at a 10 s interval the next
+    // tick fired 11 ms later and collided with the round still running. Rounds are worth
+    // 250 kB each, so two of them moments apart measure the same instant twice and risk an
+    // overlap; even spacing matters here and grid phase does not.
+    due = now + interval();
     timer = setTimeout(tick, Math.max(0, due - mono()));
 
     if (inFlight) {

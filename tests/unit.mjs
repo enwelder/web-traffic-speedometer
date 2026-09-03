@@ -4,7 +4,7 @@ import {stubBrowser, fakeStore, TRACE, bodyOf, netError, sleep, suite} from './h
 
 stubBrowser();
 const probe = await import('../js/probe.js');
-const {createRecorder, projectedBytes, environment} = await import('../js/session.js');
+const {createRecorder, projectedBytes, environment, PROFILES} = await import('../js/session.js');
 const ui = await import('../js/ui.js');
 const {sessionJson, filename} = await import('../js/export.js');
 
@@ -67,14 +67,14 @@ s.test('the DNS probe never reuses a hostname; its control never changes one', a
 });
 
 s.test('no probe may outlive its own round', async () => {
-  for (const interval of [2000, 5000, 10000, 20000, 30000]) {
+  for (const interval of [2000, 5000, 15000, 30000]) {
     for (const p of probe.PROBES) {
       const t = probe.timeoutFor(p, interval);
       assert.ok(t < interval, `${p.id} at ${interval}ms must give up first, got ${t}ms`);
       assert.ok(t >= 1000, `${p.id} still gets a fair attempt, got ${t}ms`);
     }
   }
-  assert.equal(probe.timeoutFor(P.down, 30000), 20000, 'a long interval is not a licence to hang');
+  assert.equal(probe.timeoutFor(P.down, 30000), 8000, 'a long interval is not a licence to hang');
   assert.equal(probe.timeoutFor(P.ip6, 2000), 1500, 'a short interval squeezes the small probes too');
 });
 
@@ -321,6 +321,16 @@ l.test('a failing store holds rows in memory and retries rather than dropping th
   assert.ok(store.written.samples.length > held, 'and the held rows land on retry');
 });
 
+l.test('both profiles run the download every round, differing only in interval', () => {
+  assert.equal(PROFILES.fine.intervalMs, 15000);
+  assert.equal(PROFILES.coarse.intervalMs, 30000);
+  assert.equal(PROFILES.fine.downloadBytes, PROFILES.coarse.downloadBytes,
+               'the payload is the same; only how often it is fetched differs');
+  assert.ok(projectedBytes(PROFILES.fine.intervalMs, PROFILES.fine.downloadBytes) >
+            projectedBytes(PROFILES.coarse.intervalMs, PROFILES.coarse.downloadBytes) * 1.9,
+            'and the finer profile costs about twice as much');
+});
+
 l.test('the projection tracks interval and payload, and counts one download per round', () => {
   const rounds = (40 * 60000) / 5000;
   const p = projectedBytes(5000, 250000);
@@ -334,6 +344,7 @@ l.test('the environment block makes a session self-describing', () => {
   assert.equal(env.download_bytes, 250000);
   assert.equal(env.probes.length, probe.PROBES.length);
   assert.ok(Object.values(env.timeouts_ms).every(t => t < 10000), 'every deadline fits inside a round');
+  assert.ok(env.timeouts_ms.ip6 >= 8000, 'and slow-but-working rounds are not cut off');
   assert.ok(env.app_version && env.timezone);
 });
 

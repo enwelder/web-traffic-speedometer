@@ -156,6 +156,16 @@ s.test('no credential-shaped string is committed', () => {
   }
 });
 
+s.test('the test seam cannot take effect on a deployed origin', () => {
+  const main = read('js/main.js');
+  const fn = /function testInterval\(\)[\s\S]*?\n}/.exec(main);
+  assert.ok(fn, 'the override is a single named function');
+  assert.match(fn[0], /location\.hostname !== 'localhost'/, 'gated on localhost');
+  assert.match(fn[0], /return null/, 'and returns nothing anywhere else');
+  const uses = main.match(/testInterval\(\)/g) || [];
+  assert.equal(uses.length, 2, 'it is defined once and consulted once');
+});
+
 s.test('the published version is stated once and matches everywhere', () => {
   const version = JSON.parse(read('package.json')).version;
   assert.match(version, /^\d+\.\d+\.\d+$/, 'package.json carries a semantic version');

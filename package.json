@@ -1,6 +1,6 @@
 {
   "name": "web-traffic-speedometer",
-  "version": "1.1.0",
+  "version": "2.0.0",
   "description": "Browser-based mobile connectivity and throughput logger for train journeys.",
   "license": "0BSD",
   "private": false,

@@ -24,13 +24,19 @@ main{flex:1;overflow-y:auto;overscroll-behavior:contain;-webkit-overflow-scrolli
      padding:12px 14px calc(12px + env(safe-area-inset-bottom));
      max-width:560px;width:100%;margin:0 auto}
 .view,#readout{display:flex;flex-direction:column;gap:12px}
+/* The controls are sticky, so they float over whatever is behind them. This lets the
+   content scroll clear of them instead of ending underneath. */
+#readout{padding-bottom:70px}
 .view{min-height:100%}
 [hidden]{display:none!important}
 
 /* signals: the part that has to read at a glance */
 .signals{display:grid;grid-template-columns:repeat(2,1fr);gap:8px}
 .signal{background:var(--panel);border:1px solid var(--line);border-radius:10px;
-        padding:12px 10px 11px;position:relative;overflow:hidden}
+        padding:12px 10px 11px;position:relative;overflow:hidden;cursor:pointer}
+.signal[data-explain="on"]{border-color:var(--rail)}
+.signal[data-explain="on"] .sub{white-space:normal;color:var(--text);font-family:var(--ui);
+                                font-size:11.5px;line-height:1.35}
 .signal::before{content:"";position:absolute;inset:0 auto 0 0;width:3px;
                 background:var(--line);transition:background .18s}
 .signal.up::before{background:var(--green)}
@@ -41,7 +47,7 @@ main{flex:1;overflow-y:auto;overscroll-behavior:contain;-webkit-overflow-scrolli
 .signal .unit{font-size:11px;color:var(--muted);margin-left:2px}
 .signal.down .value{color:var(--red)}
 .signal .sub{font-size:11px;color:var(--muted);margin-top:3px;font-family:var(--num);
-              white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+              line-height:1.35;min-height:2.7em}
 
 .hint{font-size:12.5px;color:var(--muted);margin:-4px 0 0}
 .hint b{color:var(--text);font-weight:600}
@@ -104,6 +110,9 @@ input:focus,select:focus{outline:2px solid var(--rail);outline-offset:1px}
    the primary action stays under the thumb in both states */
 .controls{display:flex;gap:8px;margin-top:auto;
           position:sticky;bottom:0;z-index:2;background:var(--ground);padding:8px 0 2px}
+/* A fade above the bar, so a line disappearing under it reads as scroll, not as truncation */
+.controls::before{content:"";position:absolute;left:0;right:0;bottom:100%;height:14px;
+                  background:linear-gradient(transparent,var(--ground));pointer-events:none}
 .controls button{flex:1}
 button{font:inherit;font-size:15px;font-weight:600;color:var(--text);background:var(--panel);
        border:1px solid var(--line);border-radius:10px;padding:15px 10px;cursor:pointer;

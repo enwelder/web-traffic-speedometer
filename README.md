@@ -150,6 +150,16 @@ remove the destination difference entirely, but none exists — `pages.dev`, `wo
 would measure Cloudflare's recursive resolver rather than the carrier's, which is the one
 under suspicion.
 
+### A probe that has wedged is not the network
+
+A connection can end up in a state the browser will not retire: after an outage every other
+probe recovers within a round while one keeps timing out, alone, for as long as the session
+lasts. Twenty consecutive false failures were recorded that way. A browser cannot be told to
+open a fresh connection, so a probe that fails three rounds running while its peers succeed
+is marked `stuck` and rested for six rounds, which lets the browser retire the connection on
+idle. Rested rounds are still written, with `fail: "resting"`, so the row stays complete and
+the reason is in the data rather than looking like more timeouts.
+
 ### The body has to be Cloudflare's
 
 A trace response is not accepted merely for being trace-shaped. The egress must parse as an
@@ -199,12 +209,25 @@ Throughput is reported twice and labelled:
 Either is left empty when its window is under 2 ms, which is shorter than the clock
 resolves; `bytes` and `transfer_ms` are always kept so the analysis can judge for itself.
 
-### Deadlines
+### Deadlines and cadence
 
-No probe may outlive its own round. Every deadline is capped at the interval minus half a
-second, so a slow stretch cannot stack rounds on top of each other and turn the cadence into
-something else. Within that cap a small probe allows 4 s and the download 20 s. The
-deadlines in force are recorded per session in `environment.timeouts_ms`.
+No probe may outlive its own round: every deadline is 8 s, capped at the interval minus half
+a second, and the values in force are recorded in `environment.timeouts_ms`. Eight seconds
+rather than four because journey data showed probes succeeding at 3885 ms against a 4000 ms
+ceiling — anything slower was being filed as a failure, which collapses "slow" into "gone"
+and that distinction is the point of the measurement.
+
+Each round is scheduled from when the previous one actually fired rather than onto a fixed
+grid. On a grid, any lateness pulls the next slot closer, and after a long freeze the next
+round fires immediately and collides with the one still running. A round costs a full page
+download, so two of them moments apart measure the same instant twice.
+
+### Two profiles
+
+**Fine** runs every 15 s, **Coarse** every 30 s. Both use the same 8 s deadlines and both run
+the download in every round, because the download is the only probe that measures throughput
+rather than reachability and sampling it occasionally leaves most rounds with none. The
+interval carries the cost instead.
 
 ## Every attempt is recorded
 
@@ -239,10 +262,13 @@ GeoJSON are a few lines to derive from it wherever the analysis happens.
 | `skipped` | `overlap` when the previous round had not returned; otherwise null |
 | `round_error` | exception message if the round itself threw |
 | `visible` | whether the tab was foregrounded for this round |
-| `lat` `lon` `accuracy` `speed` `heading` | GPS fix; speed in m/s |
+| `lat` `lon` `accuracy` `speed` `heading` | GPS fix; `speed` in m/s, and often absent — see `speed_derived` |
 | `pos_t` | timestamp **of the fix**, not of the round. A stale fix on a moving train is off by a kilometre, and this is the only way to see it |
 | `pos_error` | `denied`, `timeout` or `unavailable` when there is no position |
 | `intervalMs` | interval in force for this round |
+| `in_pause` | this round followed a bridged gap, so it can be filtered without matching timestamps |
+| `prev_round_ms` | how long the previous round actually took. A frozen tab suspends the abort timers too, so a round can outlast every deadline in it; without this an overlap cannot be told from the app stalling |
+| `speed_derived` `speed_source` | speed computed from consecutive fixes, and whether the reported value is `gps` or `derived` |
 
 ### Per probe, under `probes.<id>`
 
@@ -251,6 +277,7 @@ GeoJSON are a few lines to derive from it wherever the analysis happens.
 | `ok` `ms` `fail` | all | success, round trip, failure reason |
 | `status` | `ip6` `ip4` `down` | HTTP status; null where the response is opaque and the status is genuinely unknowable |
 | `expected` | `ip4` | the failure was a known-absent path rather than an outage, and is excluded from tallies |
+| `stuck` | any | the probe was failing alone and has been rested to clear its connection |
 | `egress_ip` `colo` | `ip6` `ip4` `down` | the operator's public address and the Cloudflare PoP |
 | `ms_samples` `samples_ok` | `ip6` | every latency sample taken this round, and how many succeeded; `ms` is their median |
 | `parse_reason` | `ip6` `ip4` | why a trace body was rejected as not Cloudflare's |
@@ -272,6 +299,20 @@ inside a real connect window.
 accumulated round-trip samples, and Safari opens a fresh connection per request, so the
 response header arrives before any exist. Read an all-zero `cfL4` block as *no data*, never
 as a measurement of zero. It costs nothing to keep, since the header arrives either way.
+
+### Reading it while travelling
+
+The live view shows a rolling p90 over the last five minutes beside each current value. A
+median across a whole journey came out at 82 ms and said nothing about the experience; the
+p90 over a few minutes is the number that moves when the connection does.
+
+**Degraded** is the share of rounds in which some probe failed. Full outages turned out to be
+rare — the longest ran four rounds — while the share of partially failing rounds reached 47%
+over the worst stretch with a median latency of a perfectly healthy 96 ms. Outage-only
+statistics miss almost all of it.
+
+Each tile explains what it measures when tapped, so the screen carries numbers rather than
+captions.
 
 ### Events
 
@@ -300,19 +341,20 @@ roughly 11 kB per round between them, of which the sampled latency probe is abou
 the UDP probe a few hundred bytes. The projection for the chosen settings is shown before
 a run starts and a running estimate during it, and the projection turns amber past 50 MB.
 
-Approximate totals for a 40-minute journey:
+Approximate totals for a 40-minute journey: **Fine ≈ 40 MB**, **Coarse ≈ 20 MB**.
 
-| interval | 100 kB | 250 kB | 500 kB |
-|---|---|---|---|
-| 5 s | 51 MB | 119 MB | 234 MB |
-| 10 s | 25 MB | 60 MB | 117 MB |
-| 20 s | 13 MB | 30 MB | 58 MB |
-| 30 s | 8 MB | 20 MB | 39 MB |
+The interval sets both the cost and the resolution: a 30-second interval cannot locate the
+start of a dropout more precisely than 30 seconds. The estimate charges a TLS handshake per
+probe per round rather than assuming connection reuse, which Safari does not do, so it is
+deliberately conservative.
 
-The interval sets both the cost and the outage resolution: a 30-second interval cannot
-locate the start of a dropout more precisely than 30 seconds. The estimate charges a TLS
-handshake per probe per round rather than assuming connection reuse, which Safari does not
-do, so it is deliberately conservative.
+### On iOS, speed is mostly absent
+
+`coords.speed` came back on 0, 2 and 51 of 158, 75 and 243 rounds across three journeys,
+with `enableHighAccuracy` already set. There is no way to press the platform harder from a
+browser, so speed is also computed from consecutive fixes and their own timestamps.
+`speed_source` says which value is being reported and the measured field is left empty rather
+than filled in with the derived one.
 
 ## iOS notes
 
