@@ -89,6 +89,16 @@ const readDb = page => page.evaluate(async () => {
 
 const b = suite('browser');
 
+b.test('the tiles are named for where they go', async () => {
+  const {ctx} = await context();
+  const page = await ctx.newPage();
+  await page.goto(BASE, {waitUntil: 'networkidle'});
+  const names = await page.$$eval('.signal .name', els => els.map(e => e.textContent));
+  assert.deepEqual(names, ['Cloudflare', 'DNS', 'Google', 'throughput'],
+                   `destinations, not concepts: ${names.join(', ')}`);
+  await ctx.close();
+});
+
 b.test('the page loads clean, and the setup asks only what it cannot know', async () => {
   const {ctx} = await context();
   const page = await ctx.newPage();
@@ -345,9 +355,14 @@ b.test('a tile explains itself on tap and gives the numbers back', async () => {
   await page.waitForTimeout(200);
   const shown = await page.$$eval('.signal .sub', els => els.filter(e => e.textContent.length > 40).length);
   assert.equal(shown, 4, 'the help button explains every tile at once');
+
+  // Dismissing must restore the numbers now. Waiting for the next round would leave prose
+  // on the tile for a whole interval — half a minute on the coarse profile.
   await page.click('#btn-help');
-  await page.waitForTimeout(2500);
-  assert.ok(!/Google/.test(await sub()), 'and turns them all back off');
+  await page.waitForTimeout(150);
+  const restored = await page.$$eval('.signal .sub', els => els.map(e => e.textContent));
+  assert.ok(restored.every(t => !/Google|Cloudflare|download/.test(t)),
+            `numbers come back immediately, not next round: ${restored.join(' | ')}`);
 
   // The explanation replaced a paragraph that used to sit permanently under the tiles.
   const clutter = await page.$$eval('#readout .hint', els => els.length);

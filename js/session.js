@@ -16,7 +16,7 @@ const REFUSED_BYTES = 100;      // an IPv4 literal with no path never gets a con
 // STUN is UDP: there is no handshake to charge, and no connection to resume.
 const cost = p => (WARM_BYTES[p.kind] * (p.samples || 1)) + (p.kind === 'stun' ? 0 : RESUMED_BYTES);
 
-export const APP_VERSION = '2.1.0';
+export const APP_VERSION = '2.2.0';
 
 // Two profiles instead of loose settings. The download is the only probe that measures
 // throughput rather than reachability, so it runs every round and the interval carries the

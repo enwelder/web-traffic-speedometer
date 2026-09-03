@@ -10,10 +10,10 @@ const P90_WINDOW_MS = 5 * 60 * 1000;
 // Tapped, a tile says what it measures. Keeping this off the screen by default is the
 // difference between a readout and a wall of text.
 const EXPLAIN = {
-  ip6: 'Reaches Cloudflare by IP address, so no name lookup is involved. If this answers, the connection itself is working.',
-  dns: 'Resolves a hostname never used before, so your operator has to look it up for real. The cached figure beside it is the same server with the name already known.',
-  web: 'Google, not Cloudflare. If this is the only one failing, the fault is at one provider rather than on your connection.',
-  down: 'A page-sized download. Everything above can answer quickly while there is still no usable speed.'
+  ip6: 'Cloudflare, reached by IP address so no name lookup is involved. If this answers, the connection itself is working.',
+  dns: 'A GitHub Pages hostname never used before, so your operator has to resolve it for real. The figure beside it is the same host asked for again once its name is known.',
+  web: 'Google, not Cloudflare. If this is the only one failing, the fault is at one company rather than on your connection.',
+  down: 'A page-sized download from Cloudflare. Everything above can answer quickly while there is still no usable speed.'
 };
 
 export const $ = id => document.getElementById(id);
@@ -69,66 +69,89 @@ function tileValue(id, r) {
 // A rolling p90 per probe. The median across a whole journey was 82 ms and said nothing;
 // the p90 over the last few minutes is the number that moves when the connection does.
 const history = {};
+let last = {sample: null, fails: {}, rounds: 0};
 
+// Latency probes contribute their round trip; the download contributes its rate, since a
+// millisecond figure rendered as a bitrate is how the tile came to read "p90 0 kb/s".
 export function trackLatency(sample) {
   if (!sample || sample.skipped) return;
   for (const id of TILES) {
     const r = sample.probes[id];
-    if (!r || !r.ok || r.ms == null) continue;
-    (history[id] ??= []).push({t: sample.t, ms: r.ms});
+    if (!r || !r.ok) continue;
+    const v = id === 'down' ? r.bps_transfer : r.ms;
+    if (v == null) continue;
+    (history[id] ??= []).push({t: sample.t, v});
     const cutoff = sample.t - P90_WINDOW_MS;
     while (history[id].length && history[id][0].t < cutoff) history[id].shift();
   }
 }
 
-export function p90(id) {
+// Under eight samples a ninetieth percentile is just the largest value, so it is labelled
+// as the maximum until there are enough for the word to mean anything. On a 30 s interval
+// that fills after a minute and a half instead of showing a dash for four.
+const P90_MIN = 8;
+const WORST_MIN = 3;
+
+export function worst(id) {
   const h = history[id];
-  if (!h || h.length < 5) return null;
-  const v = h.map(x => x.ms).sort((a, b) => a - b);
-  return v[Math.min(v.length - 1, Math.floor(v.length * 0.9))];
+  if (!h || h.length < WORST_MIN) return null;
+  const v = h.map(x => x.v).sort((a, b) => a - b);
+  // For a rate the bad end is the bottom, so the worst recent throughput is the low
+  // percentile, not the high one.
+  if (id === 'down') {
+    return h.length < P90_MIN
+      ? {label: 'slowest', value: v[0]}
+      : {label: 'p10', value: v[Math.floor(v.length * 0.1)]};
+  }
+  return h.length < P90_MIN
+    ? {label: 'max', value: v[v.length - 1]}
+    : {label: 'p90', value: v[Math.min(v.length - 1, Math.floor(v.length * 0.9))]};
 }
 
-export function resetHistory() { for (const k of Object.keys(history)) delete history[k]; }
+export function resetHistory() {
+  for (const k of Object.keys(history)) delete history[k];
+  last = {sample: null, fails: {}, rounds: 0};
+}
 
 export function setSignals(sample, fails, rounds) {
+  last = {sample, fails, rounds};
   for (const id of TILES) {
     const cell = $(`sig-${id}`);
     const r = sample && !sample.skipped ? sample.probes[id] : null;
     cell.classList.remove('up', 'slow', 'down');
     if (r) cell.classList.add(!r.ok ? 'down' : (id !== 'down' && r.ms > SLOW_MS) ? 'slow' : 'up');
     $(`val-${id}`).textContent = sample && sample.skipped ? '–' : tileValue(id, r);
-    if ($(`sig-${id}`).dataset.explain === 'on') continue;
-    const n = fails[id] || 0;
-    const worst = p90(id);
-    $(`sub-${id}`).textContent =
-      (worst == null ? 'p90 —' : id === 'down' ? `p90 ${rate(worst)}` : `p90 ${worst}`) +
-      (n ? ` · ${n}/${rounds} failed` : '');
   }
+  renderSubtitles();
+}
 
+// Called on every round and again the moment an explanation is dismissed, so a tile never
+// keeps showing prose until the next measurement lands — which on the coarse profile would
+// leave it there for half a minute.
+export function renderSubtitles() {
+  const {sample, fails, rounds} = last;
   const p = sample && !sample.skipped ? sample.probes : null;
-  if (p) {
-    // IPv4 is a property of the network rather than of the round, so it reads as a marker
-    // on the reachability tile instead of taking a tile of its own.
-    if ($('sig-ip6').dataset.explain !== 'on') {
-      const v4 = p.ip4.expected ? 'n/a' : p.ip4.ok ? 'ok' : 'no';
-      const worst = p90('ip6');
-      $('sub-ip6').textContent = `${worst == null ? 'p90 —' : 'p90 ' + worst} · v4 ${v4}` +
-        ((fails.ip6 || 0) ? ` · ${fails.ip6}/${rounds} failed` : '');
+
+  for (const id of TILES) {
+    if ($(`sig-${id}`).dataset.explain === 'on') { $(`sub-${id}`).textContent = EXPLAIN[id]; continue; }
+    const w = worst(id);
+    const head = w == null ? '' : id === 'down' ? `${w.label} ${rate(w.value)}` : `${w.label} ${w.value} ms`;
+    const n = fails[id] || 0;
+    const tail = n ? `${n}/${rounds} failed` : '';
+    const extra = [];
+
+    if (id === 'ip6' && p) extra.push(`v4 ${p.ip4.expected ? 'n/a' : p.ip4.ok ? 'ok' : 'no'}`);
+    // Named so it reads as a comparison: the same host, asked for again once its name is
+    // already known. The gap between the two is what a lookup costs.
+    if (id === 'dns' && p?.dns_ctl) {
+      extra.push(p.dns_ctl.ok ? `same host cached ${p.dns_ctl.ms} ms` : 'same host unreachable');
     }
-    // The cached-name control shares the DNS probe's destination, so the pair separates a
-    // resolution failure from the destination simply being unreachable.
-    if (p.dns_ctl && $('sig-dns').dataset.explain !== 'on') {
-      const worst = p90('dns');
-      $('sub-dns').textContent = `${worst == null ? 'p90 —' : 'p90 ' + worst} · cached ${p.dns_ctl.ok ? p.dns_ctl.ms : 'no'}`;
+    if (id === 'down' && p?.down) {
+      if (p.down.truncated) extra.push(`cut short at ${(p.down.bytes / 1000) | 0} kB`);
+      else if (p.down.bps_end_to_end) extra.push(`${rate(p.down.bps_end_to_end)} end to end`);
     }
-    // Both rates on the tile: the payload phase as the headline, end-to-end beneath it,
-    // since at these sizes the difference between them is the connection setup.
-    if (p.down && $('sig-down').dataset.explain !== 'on') {
-      const e2e = p.down.bps_end_to_end ? rate(p.down.bps_end_to_end) : '—';
-      $('sub-down').textContent = p.down.truncated
-        ? `cut short at ${(p.down.bytes / 1000) | 0} kB`
-        : `e2e ${e2e}` + ((fails.down || 0) ? ` · ${fails.down}/${rounds} failed` : '');
-    }
+
+    $(`sub-${id}`).textContent = [head, ...extra, tail].filter(Boolean).join(' · ') || '—';
   }
 }
 
@@ -176,10 +199,8 @@ export function setLamps(sample) {
 // One control turns every explanation on, since a tile that only reacts to being tapped is
 // not discoverable.
 export function setExplainAll(on) {
-  for (const id of TILES) {
-    $(`sig-${id}`).dataset.explain = on ? 'on' : 'off';
-    if (on) $(`sub-${id}`).textContent = EXPLAIN[id];
-  }
+  for (const id of TILES) $(`sig-${id}`).dataset.explain = on ? 'on' : 'off';
+  renderSubtitles();
 }
 
 // Newest first. Appending put the line that matters at the bottom, where the controls sit
@@ -240,7 +261,7 @@ export function bindExplanations() {
     cell.onclick = () => {
       const on = cell.dataset.explain === 'on';
       cell.dataset.explain = on ? 'off' : 'on';
-      if (!on) $(`sub-${id}`).textContent = EXPLAIN[id];
+      renderSubtitles();
     };
   }
 }

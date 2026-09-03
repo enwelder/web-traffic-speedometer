@@ -309,11 +309,12 @@ as a measurement of zero. It costs nothing to keep, since the header arrives eit
 
 ### Reading it while travelling
 
-The four tiles read as a ladder — **link**, **DNS**, **other provider**, **throughput** — so a
-failure can be placed by reading down them: if link answers the connection works, if DNS
-fails beside it the fault is resolution, if only the other provider fails the fault is
-theirs, and if all three answer while throughput collapses the cell is congested. Tapping a
-tile says what it measures; the **?** in the header turns all four explanations on at once.
+The four tiles are named for where they go — **Cloudflare**, **DNS**, **Google**,
+**throughput** — so a failure can be placed by reading down them: if Cloudflare answers the
+connection works, if DNS fails beside it the fault is resolution, if only Google fails the
+fault is at one company, and if all three answer while throughput collapses the cell is
+congested. Tapping a tile says what it measures; the **?** in the header turns all four
+explanations on at once.
 
 Below them, three lamps show which paths are carrying traffic — IPv6, IPv4, UDP — lit, dim
 where a path is known absent, red where it has failed. That replaces a standing sentence

@@ -374,6 +374,45 @@ c.test('each failure shape maps to its own reading', () => {
   assert.equal(ui.classify({probes: healthy(), skipped: 'overlap'}), 'skip');
 });
 
+c.test('the worst recent value is the slow end for a rate and the high end for a latency', () => {
+  ui.resetHistory();
+  const t = Date.now();
+  // Latencies climbing, throughput falling: the tile should surface the bad end of each.
+  const lat = [10, 12, 14, 16, 18, 20, 22, 900];
+  const bps = [50e6, 40e6, 30e6, 20e6, 10e6, 5e6, 2e6, 1e6];
+  lat.forEach((ms, i) => ui.trackLatency({
+    t: t + i * 1000, skipped: null,
+    probes: {ip6: {ok: true, ms}, dns: {ok: true, ms}, web: {ok: true, ms},
+             down: {ok: true, ms, bps_transfer: bps[i]}}
+  }));
+  const l = ui.worst('ip6');
+  assert.equal(l.label, 'p90');
+  assert.ok(l.value >= 22, `a latency spike shows: ${l.value} ms`);
+
+  const d = ui.worst('down');
+  assert.equal(d.label, 'p10', 'a rate is judged from its low end');
+  assert.ok(d.value <= 2e6, `the slowest throughput shows: ${d.value} bps`);
+  assert.ok(d.value > 1000, 'and it is a rate, not a millisecond figure rendered as one');
+
+  ui.resetHistory();
+  assert.equal(ui.worst('ip6'), null, 'and a new session starts empty');
+});
+
+c.test('too few samples are labelled for what they are', () => {
+  ui.resetHistory();
+  const t = Date.now();
+  assert.equal(ui.worst('ip6'), null, 'nothing is claimed from no samples');
+  for (let i = 0; i < 3; i++) {
+    ui.trackLatency({t: t + i * 1000, skipped: null, probes: {ip6: {ok: true, ms: 10 + i}}});
+  }
+  assert.equal(ui.worst('ip6').label, 'max', 'three samples are a maximum, not a percentile');
+  for (let i = 3; i < 9; i++) {
+    ui.trackLatency({t: t + i * 1000, skipped: null, probes: {ip6: {ok: true, ms: 10 + i}}});
+  }
+  assert.equal(ui.worst('ip6').label, 'p90', 'and enough of them earn the word');
+  ui.resetHistory();
+});
+
 await c.run();
 
 const e = suite('export');
