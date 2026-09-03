@@ -166,6 +166,17 @@ s.test('the test seam cannot take effect on a deployed origin', () => {
   assert.equal(uses.length, 2, 'it is defined once and consulted once');
 });
 
+// One description, so the repository, the install prompt and the page cannot drift apart.
+s.test('the description is stated once and matches everywhere', () => {
+  const desc = JSON.parse(read('package.json')).description;
+  assert.ok(desc && desc.length > 40, 'package.json carries the canonical description');
+  assert.equal(JSON.parse(read('manifest.webmanifest')).description, desc,
+               'the install prompt says the same thing');
+  const meta = /<meta name="description" content="([^"]*)">/.exec(html);
+  assert.ok(meta, 'the page has a description');
+  assert.equal(meta[1], desc, 'and it says the same thing');
+});
+
 s.test('the published version is stated once and matches everywhere', () => {
   const version = JSON.parse(read('package.json')).version;
   assert.match(version, /^\d+\.\d+\.\d+$/, 'package.json carries a semantic version');
