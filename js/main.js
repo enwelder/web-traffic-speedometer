@@ -40,7 +40,8 @@ const recorder = createRecorder({
       pos: c ? `${c.latitude.toFixed(5)}, ${c.longitude.toFixed(5)}` : (s.posError || '—'),
       speed: c && c.speed != null ? `${Math.round(c.speed * 3.6)} km/h` : '—',
       data: ui.bytes(s.bytes) + (s.pending ? ` (${s.pending} held)` : ''),
-      marks: s.marks
+      marks: s.marks,
+      udp: s.udpMs == null ? '—' : `${s.udpMs} ms`
     });
   },
   onNotice: ui.notice

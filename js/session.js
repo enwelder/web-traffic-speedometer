@@ -10,15 +10,16 @@ import * as realStore from './store.js';
 // pays a full one.
 const FIRST_CONTACT_BYTES = 5000;
 const RESUMED_BYTES = 1500;
-const WARM_BYTES = {trace: 420, opaque: 220, download: 400};
+const WARM_BYTES = {trace: 420, opaque: 220, download: 400, stun: 400};
 const REFUSED_BYTES = 100;      // an IPv4 literal with no path never gets a connection up
+// STUN is UDP: there is no handshake to charge, and no connection to resume.
+const cost = p => (WARM_BYTES[p.kind] * (p.samples || 1)) + (p.kind === 'stun' ? 0 : RESUMED_BYTES);
 
-export const APP_VERSION = '1.0.0';
+export const APP_VERSION = '1.1.0';
 
 export function projectedBytes(intervalMs, downloadBytes, minutes = 40) {
   const rounds = Math.round((minutes * 60000) / intervalMs);
-  const perRound = PROBES.reduce((n, p) => n + WARM_BYTES[p.kind] + RESUMED_BYTES, 0) + downloadBytes;
-  return rounds * perRound;
+  return rounds * (PROBES.reduce((n, p) => n + cost(p), 0) + downloadBytes);
 }
 
 export function environment(intervalMs, downloadBytes) {
@@ -34,7 +35,7 @@ export function environment(intervalMs, downloadBytes) {
     timeouts_ms: Object.fromEntries(PROBES.map(p => [p.id, timeoutFor(p, intervalMs)])),
     probes: PROBES.map(p => ({id: p.id, url: p.url, kind: p.kind,
                               mode: p.kind === 'opaque' ? 'no-cors' : 'cors',
-                              method: p.method || 'GET'})),
+                              method: p.method || 'GET', samples: p.samples || 1})),
     // Absent in Safari on every platform; recorded anyway so a browser that gains it contributes for free.
     network_information: c ? {type: c.type, effectiveType: c.effectiveType, downlink: c.downlink, rtt: c.rtt} : null
   };
@@ -59,6 +60,7 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
   let posError = null;
   let lastEgress = null;
   let throughput = null;
+  let udpMs = null;
   let flushing = false;
   let writeFailed = false;
   let current = null;
@@ -72,7 +74,7 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
 
   function status() {
     return {
-      running, session, seq, marks, bytes, throughput,
+      running, session, seq, marks, bytes, throughput, udpMs,
       pending: pendingSamples.length + pendingEvents.length,
       writeFailed, pos: lastPos, posError,
       elapsed: running ? Math.floor(mono() / 1000) : 0
@@ -132,9 +134,12 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
       const r = row.probes[p.id];
       if (!r) continue;
       if (r.expected && !r.ok) { bytes += REFUSED_BYTES; continue; }
-      bytes += WARM_BYTES[p.kind] + (p.kind === 'download' ? r.bytes || 0 : 0);
-      bytes += contacted.has(p.id) ? RESUMED_BYTES : FIRST_CONTACT_BYTES;
-      contacted.add(p.id);
+      const attempts = r.ms_samples ? r.ms_samples.length : 1;
+      bytes += WARM_BYTES[p.kind] * attempts + (p.kind === 'download' ? r.bytes || 0 : 0);
+      if (p.kind !== 'stun') {
+        bytes += contacted.has(p.id) ? RESUMED_BYTES : FIRST_CONTACT_BYTES;
+        contacted.add(p.id);
+      }
     }
   }
 
@@ -183,6 +188,7 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
     charge(row);
     clearTimings();
     if (row.probes.down?.ok) throughput = row.probes.down.bps_transfer;
+    if (row.probes.udp) udpMs = row.probes.udp.ok ? row.probes.udp.ms : null;
 
     const egress = row.probes.ip6.egress_ip || row.probes.down?.egress_ip;
     if (egress) {
@@ -253,6 +259,7 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
     due = monoBase;
     bytes = 0;
     throughput = null;
+    udpMs = null;
     inFlight = false;
     contacted.clear();
     abort = new AbortController();

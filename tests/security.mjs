@@ -18,7 +18,8 @@ const ALLOWED_ORIGINS = [
   'https://%RANDOM%.github.io',
   'https://wts-dns-control.github.io',
   'https://www.gstatic.com',
-  'https://speed.cloudflare.com'
+  'https://speed.cloudflare.com',
+  'stun:stun.cloudflare.com:3478'
 ];
 
 const s = suite('security');
@@ -26,7 +27,7 @@ const s = suite('security');
 s.test('no outbound origin exists outside the declared probe allowlist', () => {
   const found = new Set();
   for (const [file, src] of sources) {
-    for (const m of src.matchAll(/https?:\/\/[^\s'"`)]+/g)) {
+    for (const m of src.matchAll(/(?:https?|stun):(?:\/\/)?[^\s'"`)]+/g)) {
       const url = m[0];
       // Comments carry documentation links; only string literals reach the network.
       const line = src.slice(src.lastIndexOf('\n', m.index) + 1, src.indexOf('\n', m.index));
@@ -47,8 +48,27 @@ s.test('no request can carry a body, so nothing recorded can leave the device', 
     assert.ok(!/method:\s*['"](POST|PUT|PATCH)['"]/i.test(src), `${file} issues a write request`);
     assert.ok(!/\bbody\s*:/.test(src.replace(/res\.body|\.body\b/g, '')), `${file} attaches a request body`);
     assert.ok(!/navigator\.sendBeacon/.test(src), `${file} uses sendBeacon`);
-    assert.ok(!/new\s+(WebSocket|EventSource|RTCPeerConnection)/.test(src), `${file} opens a persistent channel`);
+    assert.ok(!/new\s+(WebSocket|EventSource)/.test(src), `${file} opens a persistent channel`);
   }
+});
+
+// The UDP probe needs a peer connection to gather ICE candidates. Gathering alone cannot
+// carry data: what makes a peer connection able to send anything is a data channel, a
+// track, or a remote description completing the negotiation. Those stay banned, so the
+// capability is admitted without admitting the exfiltration path.
+s.test('the peer connection can gather candidates and nothing else', () => {
+  for (const [file, src] of sources) {
+    for (const sink of ['createDataChannel', 'setRemoteDescription', 'addTrack', 'addStream',
+                        'getUserMedia', 'getDisplayMedia']) {
+      assert.ok(!src.includes(sink), `${file} uses ${sink}, which would let the connection carry data`);
+    }
+    for (const m of src.matchAll(/addTransceiver\([^)]*\)/g)) {
+      assert.match(m[0], /direction:\s*'recvonly'/, `${file}: ${m[0]} must be receive-only`);
+    }
+  }
+  const probe = read('js/probe.js');
+  assert.ok(probe.includes('new RTCPeerConnection'), 'the UDP probe exists');
+  assert.match(probe, /pc\.close\(\)/, 'and every connection is closed again');
 });
 
 s.test('no request may carry credentials to a third party', () => {
@@ -103,6 +123,8 @@ s.test('the content security policy locks down everything it can', () => {
   // bracketed literal, and naming it makes the browser ignore the source and block the
   // probe. The allowlist above is the enforcement instead.
   assert.match(csp['connect-src'], /^'self' https:$/);
+  // STUN is not fetched, so connect-src does not gate it; webrtc-src is not a directive
+  // any browser enforces. The allowlist test above is what constrains it.
 });
 
 s.test('the service worker never intercepts a probe', () => {

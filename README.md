@@ -52,8 +52,8 @@ This records a person's location and network behaviour for forty minutes at a ti
 is worth guarding is narrow and checkable. `tests/security.mjs` fails the build if any of it
 stops being true:
 
-- **It contacts nothing but its six probes.** Every URL in the source is checked against the
-  allowlist.
+- **It contacts nothing but its seven probes.** Every URL in the source is checked against
+  the allowlist.
 - **It has no way to upload what it records.** No request may carry a body; no `sendBeacon`,
   `WebSocket`, `EventSource` or `RTCPeerConnection` may appear. Data leaves only when you
   export it.
@@ -61,6 +61,8 @@ stops being true:
 - **It executes no dynamic code** and writes no markup: no `eval`, no `new Function`, no
   `innerHTML`. Everything reaches the DOM as text.
 - **It ships no third-party code**, at build time or at runtime.
+- **The peer connection can gather candidates and nothing else.** No data channel, no track,
+  no remote description, and the transceiver must be receive-only.
 - The service worker never touches a probe, and never takes over a tab mid-session.
 
 The page also carries a Content Security Policy that pins scripts, styles, images, the
@@ -76,8 +78,8 @@ anything, no attribution required.
 
 ## How a round works
 
-Six probes run in parallel, once per interval. Each isolates a different layer, so a failure
-can be attributed rather than merely noted.
+Seven probes run in parallel, once per interval. Each isolates a different layer, so a
+failure can be attributed rather than merely noted.
 
 | Probe | Target | Answers |
 |---|---|---|
@@ -87,6 +89,7 @@ can be attributed rather than merely noted.
 | `dns_ctl` | `https://wts-dns-control.github.io/` (HEAD) | is that same destination reachable with the name already cached |
 | `web` | `https://www.gstatic.com/generate_204` | is a provider other than Cloudflare reachable |
 | `down` | `https://speed.cloudflare.com/__down?bytes=N` | how fast does a page-sized payload actually arrive |
+| `udp` | `stun:stun.cloudflare.com:3478` | is there a UDP path out, and what does it map to |
 
 Reading them together:
 
@@ -97,6 +100,8 @@ Reading them together:
 - everything answers but `down` collapses → congestion. A saturated cell still replies
   quickly to a small request while delivering almost no throughput, which is why latency
   alone cannot see it.
+- `udp` fails while the rest hold → the carrier is treating UDP differently from TCP. Calls
+  and streaming ride on UDP, so this is a failure the other six cannot see.
 
 ### Both address families, deliberately
 
@@ -109,6 +114,18 @@ That is information, not a defect. A preflight at session start settles it once,
 `ipv4_available` with the evidence in `ipv4_check`. Afterwards `ip4` failures carry
 `expected: true`, stay out of failure tallies and do not colour the display. A failure
 *without* that flag still means something: IPv4 was there at the start and stopped.
+
+### Latency is a median, not a sample
+
+A single round trip is noise: a cold connection, one retransmission, or a scheduling delay
+moves it by an order of magnitude. `ip6` is therefore run repeatedly inside its own deadline
+and `ms` is the median of the samples that succeeded, with every sample kept in
+`ms_samples`. Repetition stops at the first failure — repeating a failed probe within one
+round says nothing new and spends budget the round may still need.
+
+This follows RMBT, which takes between 10 and 200 latency samples and reports the median for
+the same reason. Three is the compromise here, because unlike a one-off speed test this runs
+for the length of a journey and pays for every sample.
 
 ### A hostname that cannot be cached
 
@@ -132,6 +149,32 @@ remove the destination difference entirely, but none exists — `pages.dev`, `wo
 `cloudflare-dns.com` all lack wildcard DNS. DNS-over-HTTPS bypasses the OS resolver, so it
 would measure Cloudflare's recursive resolver rather than the carrier's, which is the one
 under suspicion.
+
+### The body has to be Cloudflare's
+
+A trace response is not accepted merely for being trace-shaped. The egress must parse as an
+address, `colo` must be a three-letter PoP code, the scheme must still be HTTPS, and the
+host echoed back must be the host that was requested. A middlebox answering on Cloudflare's
+behalf, or rewriting the Host on the way through, fails as `parse` with the reason in
+`parse_reason` rather than passing as a plausible measurement. This is the equivalent of
+RTR's "unmodified content" check, which exists because an intermediary that alters content
+is invisible to a test that only checks whether a response arrived.
+
+### UDP, and why it needs a peer connection
+
+`udp` gathers ICE candidates against a STUN server and reads the server-reflexive ones. That
+is the only way a browser can put a packet on the wire over UDP, and it is worth doing
+because UDP is what real-time traffic uses and a carrier can shape it separately from TCP.
+
+Gathering alone cannot carry data. What makes a peer connection able to send anything is a
+data channel, a media track, or a remote description completing the negotiation; none is
+ever created, the transceiver is receive-only, and the connection is closed as soon as
+gathering finishes. A security test enforces each of those, so the capability is admitted
+without the exfiltration path.
+
+Every server-reflexive candidate is kept, because a dual-stack network reports one per
+address family, and comparing them against the TCP egress in the same round shows whether
+the two transports leave by the same path.
 
 ### The download
 
@@ -209,6 +252,9 @@ GeoJSON are a few lines to derive from it wherever the analysis happens.
 | `status` | `ip6` `ip4` `down` | HTTP status; null where the response is opaque and the status is genuinely unknowable |
 | `expected` | `ip4` | the failure was a known-absent path rather than an outage, and is excluded from tallies |
 | `egress_ip` `colo` | `ip6` `ip4` `down` | the operator's public address and the Cloudflare PoP |
+| `ms_samples` `samples_ok` | `ip6` | every latency sample taken this round, and how many succeeded; `ms` is their median |
+| `parse_reason` | `ip6` `ip4` | why a trace body was rejected as not Cloudflare's |
+| `public_ips` `candidates` | `udp` | the NAT mapping per address family, and how many ICE candidates were gathered |
 | `host` | `dns` `dns_ctl` | the hostname used — random each round for `dns`, constant for `dns_ctl` |
 | `bytes` `transfer_ms` `ttfb_ms` | `down` | bytes counted, the window they arrived in, and time to first byte |
 | `bps_transfer` `bps_end_to_end` | `down` | the two rates described above |
@@ -249,8 +295,9 @@ One SIM is active at a time, so comparing operators means comparing journeys.
 
 ## Data usage
 
-A full page download in every round is almost the entire cost; the five small probes come to
-roughly 9 kB per round between them. The projection for the chosen settings is shown before
+A full page download in every round is almost the entire cost; the six small probes come to
+roughly 11 kB per round between them, of which the sampled latency probe is about 3 kB and
+the UDP probe a few hundred bytes. The projection for the chosen settings is shown before
 a run starts and a running estimate during it, and the projection turns amber past 50 MB.
 
 Approximate totals for a 40-minute journey:

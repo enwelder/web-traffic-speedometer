@@ -71,7 +71,8 @@ export function setSignals(sample, fails) {
     // IPv4 is a property of the network rather than of the round, so it reads as a marker
     // on the reachability tile instead of taking a tile of its own.
     const v4 = p.ip4.expected ? 'n/a' : p.ip4.ok ? 'ok' : 'no';
-    $('sub-ip6').textContent = `${fails.ip6 || 0} failed · v4 ${v4}`;
+    const n = p.ip6.samples_ok;
+    $('sub-ip6').textContent = `${fails.ip6 || 0} failed · v4 ${v4}` + (n > 1 ? ` · med of ${n}` : '');
     // The cached-name control shares the DNS probe's destination, so the pair separates a
     // resolution failure from the destination simply being unreachable.
     if (p.dns_ctl) $('sub-dns').textContent = `${fails.dns || 0} failed · cached ${p.dns_ctl.ok ? p.dns_ctl.ms : 'no'}`;
@@ -139,13 +140,14 @@ export function sampleLine(sample) {
          (d ? `  ${d.bps_transfer ? rate(d.bps_transfer) : 'fast'}` : '');
 }
 
-export function setStats({rounds, elapsed, pos, speed, data, marks}) {
+export function setStats({rounds, elapsed, pos, speed, data, marks, udp}) {
   $('m-rounds').textContent = rounds;
   $('m-time').textContent = elapsed;
   $('m-pos').textContent = pos;
   $('m-speed').textContent = speed;
   $('m-data').textContent = data;
   $('m-marks').textContent = marks;
+  $('m-udp').textContent = udp;
 }
 
 export function setRunning(running) {

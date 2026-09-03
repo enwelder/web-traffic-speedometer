@@ -53,6 +53,20 @@ async function context(extra = {}) {
       headers: {'access-control-allow-origin': '*'},
       body: 'fl=1\nip=2a09:bac5::9\nts=1\ncolo=AMS\n'});
   });
+  // Playwright routes cannot intercept STUN, since it is not a fetch. Stubbing the peer
+  // connection keeps the suite hermetic and lets the UDP path be failed on demand.
+  await ctx.addInitScript(() => {
+    window.RTCPeerConnection = class {
+      addTransceiver(kind, opts) { window.__wtsTransceiver = {kind, ...opts}; }
+      async createOffer() { return {type: 'offer', sdp: 'v=0'}; }
+      async setLocalDescription() {
+        if (window.__wtsUdpBlocked) return;
+        setTimeout(() => this.onicecandidate?.({candidate: {type: 'srflx', address: '2a09:bac5::9'}}), 5);
+        setTimeout(() => this.onicecandidate?.({candidate: null}), 10);
+      }
+      close() { window.__wtsClosed = (window.__wtsClosed || 0) + 1; }
+    };
+  });
   return {ctx, state};
 }
 
@@ -132,6 +146,14 @@ b.test('a session records, survives a reload, and exports losslessly', async () 
   assert.ok(db.samples.every(x => x.probes.down), 'every round carries a download');
   const hosts = db.samples.map(x => x.probes.dns.host);
   assert.equal(new Set(hosts).size, hosts.length, 'the DNS probe never repeats a hostname');
+
+  const udp = db.samples.map(x => x.probes.udp).filter(u => u.ok);
+  assert.ok(udp.length > 0, 'the UDP path is probed every round');
+  assert.ok(udp.every(u => u.public_ips.includes('2a09:bac5::9')), 'and reports its NAT mapping');
+  assert.ok(db.samples.every(x => x.probes.ip6.ms_samples), 'reachability is sampled, not measured once');
+  assert.ok(db.samples.filter(x => x.probes.ip6.ok).every(x => x.probes.ip6.samples_ok >= 1),
+            'and its ms is the median of what succeeded');
+  assert.equal(await page.$eval('#m-udp', e => /ms|—/.test(e.textContent)), true, 'UDP shows in the readout');
   assert.equal(new Set(db.samples.map(x => x.probes.dns_ctl.host)).size, 1, 'the control never changes one');
 
   const before = db.samples.length;
@@ -167,7 +189,7 @@ b.test('a session records, survives a reload, and exports losslessly', async () 
   assert.equal(file.format, 'wts/session');
   assert.equal(file.samples.length, db.samples.length, 'every stored round is in the file');
   assert.equal(file.events.length, db.events.length);
-  assert.equal(file.probes.length, 6, 'the probe set travels with the data');
+  assert.equal(file.probes.length, 7, 'the probe set travels with the data');
   assert.ok(db.sessions[0].exportedAt, 'and the export is recorded on the session');
   await ctx.close();
 });
@@ -210,7 +232,7 @@ b.test('the content security policy blocks nothing the probes need', async () =>
   assert.deepEqual(blocked, [], 'no probe is refused by the policy');
   const db = await readDb(page);
   const last = db.samples.at(-1).probes;
-  for (const id of ['ip6', 'dns', 'dns_ctl', 'web', 'down']) {
+  for (const id of ['ip6', 'dns', 'dns_ctl', 'web', 'down', 'udp']) {
     assert.equal(last[id].ok, true, `${id} reached its endpoint under the policy`);
   }
   await ctx.close();

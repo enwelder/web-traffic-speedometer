@@ -88,6 +88,108 @@ s.test('an absent IPv4 path is settled once and flagged, not rediscovered', asyn
                'where IPv4 exists, a failure is a real failure');
 });
 
+s.test('a repeated probe reports the median and keeps every sample', async () => {
+  const times = [10, 90, 20];
+  let i = 0;
+  globalThis.fetch = async () => {
+    const wait = times[i++ % times.length];
+    await new Promise(r => setTimeout(r, wait));
+    return {ok: true, status: 200, text: async () => TRACE};
+  };
+  const r = await probe.runProbe(P.ip6, {timeoutMs: 3000});
+  assert.equal(r.samples_ok, 3, 'all three samples fitted the budget');
+  assert.equal(r.ms_samples.length, 3, 'and every one is kept');
+  const sorted = [...r.ms_samples].sort((a, b) => a - b);
+  assert.equal(r.ms, sorted[1], `ms is the median, not the last: ${r.ms} of ${r.ms_samples}`);
+  assert.ok(r.ms < sorted[2], 'so one slow sample cannot drag the round');
+});
+
+s.test('repetition stops at the first failure rather than spending the round on it', async () => {
+  let calls = 0;
+  globalThis.fetch = async () => { calls++; throw netError(); };
+  const r = await probe.runProbe(P.ip6, {timeoutMs: 3000});
+  assert.equal(calls, 1, 'a failed probe is not retried within its own round');
+  assert.equal(r.ok, false);
+  assert.equal(r.samples_ok, 0);
+});
+
+s.test('sampling never overruns the probe deadline', async () => {
+  globalThis.fetch = async (url, o) => {
+    await new Promise((res, rej) => {
+      const t = setTimeout(res, 5000);
+      o.signal?.addEventListener('abort', () => { clearTimeout(t); rej(Object.assign(new Error('x'), {name: 'AbortError'})); }, {once: true});
+    });
+    return {ok: true, status: 200, text: async () => TRACE};
+  };
+  const t0 = Date.now();
+  const r = await probe.runProbe(P.ip6, {timeoutMs: 600});
+  const spent = Date.now() - t0;
+  assert.ok(spent < 1200, `the whole sampled probe stayed inside its budget: ${spent} ms`);
+  assert.equal(r.fail, 'timeout');
+});
+
+s.test('a trace body must describe the request that was actually made', async () => {
+  const body = extra => `fl=1\nip=2a09:bac5::9\nts=1\ncolo=AMS\nvisit_scheme=https\n${extra}`;
+  const check = async (text, expected) => {
+    globalThis.fetch = async () => ({ok: true, status: 200, text: async () => text});
+    const r = await probe.runProbe(P.ip4, {timeoutMs: 500});
+    if (expected === null) return assert.equal(r.ok, true, `should have passed: ${text}`);
+    assert.equal(r.fail, 'parse', `should have been rejected: ${text}`);
+    assert.match(r.parse_reason, expected);
+  };
+  await check(body('h=1.1.1.1\n'), null);
+  await check('fl=1\ncolo=AMS\n', /missing fields/);
+  await check('ip=not-an-address\ncolo=AMS\n', /not an address/);
+  await check('ip=1.2.3.4\ncolo=amsterdam\n', /not a PoP code/);
+  await check(body('') + 'visit_scheme=http\n', /downgraded/);
+  await check(body('h=proxy.example.net\n'), /host rewritten/);
+});
+
+s.test('the UDP probe gathers candidates and can send nothing', async () => {
+  const opened = [];
+  globalThis.RTCPeerConnection = class {
+    constructor(cfg) { this.cfg = cfg; opened.push(this); this.closed = false; }
+    addTransceiver(kind, opts) { this.transceiver = {kind, ...opts}; }
+    async createOffer() { return {type: 'offer', sdp: 'v=0'}; }
+    async setLocalDescription() {
+      // Two families, as a dual-stack network reports, then completion.
+      setTimeout(() => this.onicecandidate({candidate: {type: 'host', address: '10.0.0.1'}}), 1);
+      setTimeout(() => this.onicecandidate({candidate: {type: 'srflx', address: '80.60.65.96'}}), 5);
+      setTimeout(() => this.onicecandidate({candidate: {type: 'srflx', address: '2a09:bac5::9'}}), 8);
+      setTimeout(() => this.onicecandidate({candidate: null}), 12);
+    }
+    close() { this.closed = true; }
+  };
+  const r = await probe.runProbe(P.udp, {timeoutMs: 1000});
+  assert.equal(r.ok, true);
+  assert.deepEqual(r.public_ips, ['80.60.65.96', '2a09:bac5::9'], 'one mapping per address family');
+  assert.equal(r.candidates, 3, 'every candidate is counted, host ones included');
+  assert.ok(r.ms >= 0, 'timed to the first server-reflexive candidate');
+  assert.equal(opened[0].transceiver.direction, 'recvonly', 'the transceiver can only receive');
+  assert.ok(opened.every(pc => pc.closed), 'the connection is always closed again');
+  delete globalThis.RTCPeerConnection;
+});
+
+s.test('a blocked UDP path fails rather than hanging the round', async () => {
+  globalThis.RTCPeerConnection = class {
+    addTransceiver() {}
+    async createOffer() { return {}; }
+    async setLocalDescription() { /* no candidate ever arrives */ }
+    close() { this.closed = true; }
+  };
+  const t0 = Date.now();
+  const r = await probe.runProbe(P.udp, {timeoutMs: 300});
+  assert.equal(r.ok, false);
+  assert.equal(r.fail, 'timeout');
+  assert.ok(Date.now() - t0 < 900, 'and gives up on time');
+  delete globalThis.RTCPeerConnection;
+});
+
+s.test('a browser without WebRTC reports unsupported, not a network failure', async () => {
+  const r = await probe.runProbe(P.udp, {timeoutMs: 300});
+  assert.deepEqual([r.ok, r.fail], [false, 'unsupported']);
+});
+
 s.test('the download is streamed, counted, and reported as two labelled rates', async () => {
   globalThis.fetch = async () => ({
     ok: true, status: 200, body: bodyOf(probe.DEFAULT_DOWNLOAD_BYTES),
@@ -95,7 +197,13 @@ s.test('the download is streamed, counted, and reported as two labelled rates', 
       ? 'cfL4;desc="?rtt=6212&min_rtt=6209&rtt_var=2336&lost=0&retrans=3&delivery_rate=648180&cwnd=53"'
       : ({'cf-meta-colo': 'AMS'})[k] ?? null}
   });
+  globalThis.RTCPeerConnection = class {
+    addTransceiver() {} async createOffer() { return {}; }
+    async setLocalDescription() { setTimeout(() => this.onicecandidate({candidate: null}), 1); }
+    close() {}
+  };
   const round = await probe.runRound({});
+  delete globalThis.RTCPeerConnection;
   const d = round.down;
   assert.equal(Object.keys(round).length, probe.PROBES.length, 'every probe runs every round');
   assert.equal(d.bytes, probe.DEFAULT_DOWNLOAD_BYTES);
@@ -236,7 +344,8 @@ await l.run();
 const c = suite('classification');
 const OK = (extra = {}) => ({ok: true, ms: 20, fail: null, ...extra});
 const BAD = (extra = {}) => ({ok: false, ms: 20, fail: 'network', ...extra});
-const healthy = () => ({ip6: OK(), ip4: BAD({expected: true}), dns: OK(), dns_ctl: OK(), web: OK(), down: OK()});
+const healthy = () => ({ip6: OK(), ip4: BAD({expected: true}), dns: OK(), dns_ctl: OK(),
+                        web: OK(), down: OK(), udp: OK()});
 
 c.test('an expected failure colours nothing and counts as nothing', () => {
   assert.equal(ui.counts(BAD({expected: true})), false);
