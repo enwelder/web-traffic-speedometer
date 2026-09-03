@@ -22,7 +22,7 @@
 </head>
 <body>
 
-<h1>Web Traffic Speedometer</h1>
+<h1>Web Traffic Speedometer<button id="btn-help" type="button" aria-label="Explain the measurements">?</button></h1>
 
 <main>
 
@@ -71,7 +71,7 @@
   <div id="readout" hidden>
     <div class="signals" id="signals">
       <div class="signal" id="sig-ip6">
-        <div class="name">reachable</div>
+        <div class="name">link</div>
         <div><span class="value" id="val-ip6">—</span><span class="unit">ms</span></div>
         <div class="sub" id="sub-ip6">—</div>
       </div>
@@ -81,7 +81,7 @@
         <div class="sub" id="sub-dns">—</div>
       </div>
       <div class="signal" id="sig-web">
-        <div class="name">other host</div>
+        <div class="name">other provider</div>
         <div><span class="value" id="val-web">—</span><span class="unit">ms</span></div>
         <div class="sub" id="sub-web">—</div>
       </div>
@@ -90,6 +90,12 @@
         <div><span class="value" id="val-down">—</span></div>
         <div class="sub" id="sub-down">—</div>
       </div>
+    </div>
+
+    <div class="lamps">
+      <span class="lamp" id="lamp-ip6">IPv6</span>
+      <span class="lamp" id="lamp-ip4">IPv4</span>
+      <span class="lamp" id="lamp-udp">UDP</span>
     </div>
 
     <div>
@@ -131,8 +137,10 @@
 </main>
 
 <nav>
-  <button data-view="measure" class="on">Measure</button>
-  <button data-view="sessions">Sessions</button>
+  <div class="tabs">
+    <button data-view="measure" class="on">Measure</button>
+    <button data-view="sessions">Sessions</button>
+  </div>
 </nav>
 
 <script type="module" src="js/main.js"></script>

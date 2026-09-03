@@ -208,7 +208,7 @@ b.test('the shell and the recorded sessions survive with no network at all', asy
   await ctx.setOffline(true);
   await page.reload({waitUntil: 'domcontentloaded'});
   await page.waitForTimeout(1200);
-  assert.equal(await page.textContent('h1'), 'Web Traffic Speedometer', 'the shell loads offline');
+  assert.match(await page.textContent('h1'), /^Web Traffic Speedometer/, 'the shell loads offline');
   await page.click('nav button[data-view="sessions"]');
   await page.waitForTimeout(500);
   assert.match(await page.textContent('#session-list'), /not exported/,
@@ -262,6 +262,66 @@ b.test('the newest log line is on top and nothing hides behind the controls', as
   await ctx.close();
 });
 
+b.test('the lamps report each path without a sentence to read', async () => {
+  const {ctx, state} = await context();
+  const page = await ctx.newPage();
+  await page.goto(BASE, {waitUntil: 'networkidle'});
+  await page.click('#btn-start');
+  await page.waitForTimeout(5000);
+
+  const lamps = () => page.$$eval('.lamp', els =>
+    Object.fromEntries(els.map(e => [e.textContent, e.className.replace('lamp ', '')])));
+  let l = await lamps();
+  assert.equal(l.IPv6, 'on', 'the working path is lit');
+  assert.equal(l.IPv4, 'na', 'an absent path is dim, not alarming');
+  assert.equal(l.UDP, 'on');
+
+  state.mode = 'fail';
+  await page.waitForTimeout(4000);
+  l = await lamps();
+  assert.equal(l.IPv6, 'off', 'and a failing path is unmistakable');
+
+  // The verdict belongs in the log and the file, not in a standing banner.
+  assert.match(await page.textContent('#log'), /IPv4 absent/, 'the IPv4 verdict is logged once');
+  assert.ok(!/IPv4 probe failures are expected/.test(await page.textContent('#notice')),
+            'and no longer occupies the screen');
+  await page.click('#btn-start');
+  await ctx.close();
+});
+
+b.test('the header, the tabs and the content share one column', async () => {
+  for (const [w, h] of [[1100, 900], [393, 852]]) {
+    const {ctx} = await context({viewport: {width: w, height: h}});
+    const page = await ctx.newPage();
+    await page.goto(BASE, {waitUntil: 'networkidle'});
+    const g = await page.evaluate(() => {
+      const r = s => document.querySelector(s).getBoundingClientRect();
+      return {main: r('main'), tabs: r('nav .tabs'), h1: r('h1')};
+    });
+    for (const [name, box] of [['tabs', g.tabs], ['h1', g.h1]]) {
+      assert.ok(Math.abs(box.left - g.main.left) < 2 && Math.abs(box.right - g.main.right) < 2,
+                `${w}px: ${name} spans ${Math.round(box.left)}-${Math.round(box.right)} but content is ${Math.round(g.main.left)}-${Math.round(g.main.right)}`);
+    }
+    await ctx.close();
+  }
+});
+
+b.test('the log grows into the space a taller window gives it', async () => {
+  const heights = {};
+  for (const h of [852, 1100]) {
+    const {ctx} = await context({viewport: {width: 393, height: h}});
+    const page = await ctx.newPage();
+    await page.goto(BASE, {waitUntil: 'networkidle'});
+    await page.click('#btn-start');
+    await page.waitForTimeout(2500);
+    heights[h] = await page.$eval('#log', e => Math.round(e.getBoundingClientRect().height));
+    await page.click('#btn-start');
+    await ctx.close();
+  }
+  assert.ok(heights[1100] > heights[852] + 50,
+            `a taller window gives the log more room: ${heights[852]} then ${heights[1100]}`);
+});
+
 b.test('a tile explains itself on tap and gives the numbers back', async () => {
   const {ctx} = await context();
   const page = await ctx.newPage();
@@ -271,14 +331,23 @@ b.test('a tile explains itself on tap and gives the numbers back', async () => {
 
   const sub = () => page.textContent('#sub-web');
   const numbers = await sub();
-  assert.ok(!/provider/.test(numbers), 'it shows measurements by default');
+  assert.ok(!/Google/.test(numbers), 'it shows measurements by default');
   await page.click('#sig-web');
-  assert.match(await sub(), /different provider/, 'tapping says what the probe measures');
+  assert.match(await sub(), /Google, not Cloudflare/, 'tapping says what the probe measures');
   await page.waitForTimeout(2500);
-  assert.match(await sub(), /different provider/, 'and the next round does not overwrite it');
+  assert.match(await sub(), /Google, not Cloudflare/, 'and the next round does not overwrite it');
   await page.click('#sig-web');
   await page.waitForTimeout(2500);
-  assert.ok(!/provider/.test(await sub()), 'tapping again returns the numbers');
+  assert.ok(!/Google/.test(await sub()), 'tapping again returns the numbers');
+
+  // Tapping is not discoverable on its own, so one control turns them all on.
+  await page.click('#btn-help');
+  await page.waitForTimeout(200);
+  const shown = await page.$$eval('.signal .sub', els => els.filter(e => e.textContent.length > 40).length);
+  assert.equal(shown, 4, 'the help button explains every tile at once');
+  await page.click('#btn-help');
+  await page.waitForTimeout(2500);
+  assert.ok(!/Google/.test(await sub()), 'and turns them all back off');
 
   // The explanation replaced a paragraph that used to sit permanently under the tiles.
   const clutter = await page.$$eval('#readout .hint', els => els.length);

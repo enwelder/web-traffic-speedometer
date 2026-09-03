@@ -10,10 +10,10 @@ const P90_WINDOW_MS = 5 * 60 * 1000;
 // Tapped, a tile says what it measures. Keeping this off the screen by default is the
 // difference between a readout and a wall of text.
 const EXPLAIN = {
-  ip6: 'Cloudflare by IP address, so no name lookup happens. If this is up, the radio link works.',
-  dns: 'A hostname never used before, so your operator has to resolve it for real. Compare with the cached one beside it.',
-  web: 'A different provider than the other probes. If only this fails, the fault is theirs, not the network.',
-  down: 'A page-sized download. Reachability can look fine while there is no usable speed.'
+  ip6: 'Reaches Cloudflare by IP address, so no name lookup is involved. If this answers, the connection itself is working.',
+  dns: 'Resolves a hostname never used before, so your operator has to look it up for real. The cached figure beside it is the same server with the name already known.',
+  web: 'Google, not Cloudflare. If this is the only one failing, the fault is at one provider rather than on your connection.',
+  down: 'A page-sized download. Everything above can answer quickly while there is still no usable speed.'
 };
 
 export const $ = id => document.getElementById(id);
@@ -154,7 +154,32 @@ export function pushStrip(kind) {
 
 export function setStripWindow(intervalMs) {
   const minutes = Math.round((STRIP_BARS * intervalMs) / 60000);
-  $('strip-span').textContent = minutes >= 1 ? `last ${minutes} min` : `last ${Math.round(STRIP_BARS * intervalMs / 1000)}s`;
+  $('strip-span').textContent = minutes >= 1
+    ? `${minutes} min ago`
+    : `${Math.round(STRIP_BARS * intervalMs / 1000)}s ago`;
+}
+
+// Lit, dim or unlit: which paths are carrying traffic, with no sentence to read.
+export function setLamps(sample) {
+  const set = (id, state) => {
+    const el = $(`lamp-${id}`);
+    el.classList.remove('on', 'off', 'na');
+    el.classList.add(state);
+  };
+  const p = sample && !sample.skipped ? sample.probes : null;
+  if (!p) { for (const id of ['ip6', 'ip4', 'udp']) set(id, 'na'); return; }
+  set('ip6', p.ip6.ok ? 'on' : 'off');
+  set('ip4', p.ip4.expected ? 'na' : p.ip4.ok ? 'on' : 'off');
+  set('udp', p.udp?.ok ? 'on' : 'off');
+}
+
+// One control turns every explanation on, since a tile that only reacts to being tapped is
+// not discoverable.
+export function setExplainAll(on) {
+  for (const id of TILES) {
+    $(`sig-${id}`).dataset.explain = on ? 'on' : 'off';
+    if (on) $(`sub-${id}`).textContent = EXPLAIN[id];
+  }
 }
 
 // Newest first. Appending put the line that matters at the bottom, where the controls sit

@@ -16,7 +16,7 @@ const REFUSED_BYTES = 100;      // an IPv4 literal with no path never gets a con
 // STUN is UDP: there is no handshake to charge, and no connection to resume.
 const cost = p => (WARM_BYTES[p.kind] * (p.samples || 1)) + (p.kind === 'stun' ? 0 : RESUMED_BYTES);
 
-export const APP_VERSION = '2.0.0';
+export const APP_VERSION = '2.1.0';
 
 // Two profiles instead of loose settings. The download is the only probe that measures
 // throughput rather than reachability, so it runs every round and the interval carries the
@@ -373,7 +373,10 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
       session.ipv4_available = v4.available;
       session.ipv4_check = v4;
       await store.putSession(session);
-      if (!v4.available) onNotice?.(`No IPv4 path (${v4.fail} in ${v4.ms} ms). IPv4 probe failures are expected and not counted.`);
+      // Recorded once in the log and on the session; the lamps carry it from then on.
+      record({sessionId: session.id, t: Date.now(), mono: Math.round(mono()), type: 'note',
+              lat: null, lon: null,
+              text: `IPv4 ${v4.available ? 'available' : `absent (${v4.fail} in ${v4.ms} ms)`}`});
     }
 
     if (resumedGapMs) {

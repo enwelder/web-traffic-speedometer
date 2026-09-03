@@ -46,6 +46,7 @@ const recorder = createRecorder({
     }
     ui.trackLatency(sample);
     ui.setSignals(sample, fails, scoredRounds);
+    ui.setLamps(sample);
     const kind = ui.classify(sample);
     ui.pushStrip(kind);
     ui.pushLog(ui.sampleLine(sample), sample.skipped ? 'warn' : kind === 'up' || kind === 'slow' ? '' : 'bad');
@@ -275,6 +276,13 @@ $('btn-start').onclick = () => (recorder.status().running ? end() : begin());
 $('btn-mark').onclick = () => recorder.mark();
 for (const id of ['f-connection', 'f-operator', 'f-profile']) $(id).onchange = syncSetup;
 ui.bindExplanations();
+
+let helpOn = false;
+$('btn-help').onclick = () => {
+  helpOn = !helpOn;
+  $('btn-help').setAttribute('aria-pressed', String(helpOn));
+  ui.setExplainAll(helpOn);
+};
 $('btn-export-all').onclick = async () => {
   try {
     const sessions = await exportAll();
