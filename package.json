@@ -1,6 +1,6 @@
 {
   "name": "web-traffic-speedometer",
-  "version": "2.2.0",
+  "version": "2.3.0",
   "description": "Mobile connectivity and throughput logger for train journeys \u2014 seven parallel probes, GPS, one JSON file per ride. Runs in the browser, no backend.",
   "license": "0BSD",
   "private": false,

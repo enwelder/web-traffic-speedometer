@@ -37,7 +37,7 @@ main{flex:1;overflow-y:auto;overscroll-behavior:contain;-webkit-overflow-scrolli
 .view,#readout{display:flex;flex-direction:column;gap:12px}
 /* The controls are sticky, so they float over whatever is behind them. This lets the
    content scroll clear of them instead of ending underneath. */
-#readout{padding-bottom:12px;flex:1 1 auto;min-height:0}
+#readout{flex:1 1 auto;min-height:0}
 .view{min-height:100%}
 [hidden]{display:none!important}
 

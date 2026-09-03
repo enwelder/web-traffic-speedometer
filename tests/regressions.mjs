@@ -174,5 +174,63 @@ r.test('rounds inside a bridged gap are flagged on the row', async () => {
   assert.ok(store.written.samples.some(x => x.in_pause === false), 'ordinary rounds are not flagged');
 });
 
+// One ride held the screen awake the whole way; the ride back kept letting it sleep. The
+// system can take the lock back without the page ever becoming hidden — Low Power Mode
+// engaging is the likely trigger — and the released sentinel stayed in the variable, so the
+// only retry was guarded by a check that could no longer be true.
+r.test('a wake lock taken back by the system is reacquired, not lost for the session', async () => {
+  stubStun();
+  globalThis.fetch = async () => okResponse();
+
+  const grants = [];
+  let refuse = false;
+  const wakeLock = {
+    request: async () => {
+      if (refuse) throw Object.assign(new Error('denied'), {name: 'NotAllowedError'});
+      const listeners = [];
+      const sentinel = {
+        released: false,
+        addEventListener: (_, fn) => listeners.push(fn),
+        // What the platform does when it reclaims the lock.
+        systemRelease() { this.released = true; listeners.forEach(fn => fn()); }
+      };
+      grants.push(sentinel);
+      return sentinel;
+    }
+  };
+  Object.defineProperty(globalThis, 'navigator', {
+    value: {userAgent: 'node-test', language: 'en', geolocation: null, wakeLock},
+    configurable: true
+  });
+
+  const store = fakeStore();
+  const rec = createRecorder({store});
+  await rec.start(session());
+  await sleep(250);
+  assert.equal(grants.length, 1, 'the lock is taken at the start');
+  assert.ok(store.written.samples.every(x => x.wake_lock === true), 'and rows say the screen is held');
+
+  grants[0].systemRelease();
+  await sleep(400);
+  assert.ok(grants.length >= 2, `the lock is taken back again, not abandoned (${grants.length} grants)`);
+  assert.equal(grants.at(-1).released, false, 'and the current one is live');
+  assert.ok(store.written.events.some(e => /wake lock released/.test(e.text)),
+            'the loss is in the record, so a journey explains its own gaps');
+
+  // A refusal must not leave it wedged either: it retries and recovers.
+  refuse = true;
+  grants.at(-1).systemRelease();
+  await sleep(400);
+  const held = grants.length;
+  refuse = false;
+  await sleep(400);
+  assert.ok(grants.length > held, 'once the platform allows it again, the lock comes back');
+
+  await rec.stop();
+  stubBrowser();
+  Object.defineProperty(globalThis, 'navigator', {
+    value: {userAgent: 'node-test', language: 'en', geolocation: null}, configurable: true});
+});
+
 const ok = await r.run();
 process.exit(ok ? 0 : 1);

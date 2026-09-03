@@ -274,6 +274,7 @@ GeoJSON are a few lines to derive from it wherever the analysis happens.
 | `pos_error` | `denied`, `timeout` or `unavailable` when there is no position |
 | `intervalMs` | interval in force for this round |
 | `in_pause` | this round followed a bridged gap, so it can be filtered without matching timestamps |
+| `wake_lock` | whether the screen was being held awake for this round |
 | `prev_round_ms` | how long the previous round actually took. A frozen tab suspends the abort timers too, so a round can outlast every deadline in it; without this an overlap cannot be told from the app stalling |
 | `speed_derived` `speed_source` | speed computed from consecutive fixes, and whether the reported value is `gps` or `derived` |
 
@@ -376,8 +377,12 @@ than filled in with the derived one.
 
 ## iOS notes
 
-- Wake lock is requested at start and re-requested when the tab becomes visible. If it is
-  refused, set auto-lock to a longer interval.
+- The screen is held awake for the length of a session. The system can take that lock back
+  on its own — Low Power Mode engaging is the usual reason, and it does so without the page
+  ever becoming hidden — so the lock is reacquired on release, on every round, and whenever
+  the tab becomes visible. Losses and recoveries are written to the log, and every sample
+  carries `wake_lock`, so a journey where the display kept sleeping explains its own gaps.
+  If it is refused outright the screen says so once; check Low Power Mode and auto-lock.
 - Locking the screen or backgrounding the tab freezes JavaScript. The gap is recorded as a
   `pause` event, as `late_ms` on the next row, and as `visible: false`.
 - Safari can evict storage for sites left unvisited for about a week. Sessions that have

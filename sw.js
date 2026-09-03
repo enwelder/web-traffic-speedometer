@@ -1,7 +1,7 @@
 // Offline shell. Recovery after a crash means the page has to load on a degraded network,
 // which is exactly the condition the tool exists to measure.
 
-const CACHE = 'wts-v2.2.0';
+const CACHE = 'wts-v2.3.0';
 
 const SHELL = [
   './',

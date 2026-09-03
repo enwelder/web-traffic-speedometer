@@ -269,6 +269,8 @@ export function bindExplanations() {
 export function switchView(name) {
   for (const view of document.querySelectorAll('.view')) view.hidden = view.id !== `view-${name}`;
   for (const tab of document.querySelectorAll('nav button')) tab.classList.toggle('on', tab.dataset.view === name);
+  // Start and Mark belong to measuring; on the session list they would act on nothing.
+  $('controls').hidden = name !== 'measure';
 }
 
 // Short, because the generated name already carries date and time; this is what keeps the
