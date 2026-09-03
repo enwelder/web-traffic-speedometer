@@ -13,6 +13,6 @@
     "serve": "python3 -m http.server 8731"
   },
   "devDependencies": {
-    "playwright": "1.49.1"
+    "playwright": "^1.62.1"
   }
 }
