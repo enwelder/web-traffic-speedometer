@@ -3,7 +3,7 @@
 // be represented by a missing row.
 
 import {PROBES, runRound, checkIpv4, clearTimings, timeoutFor} from './probe.js';
-import * as store from './store.js';
+import * as realStore from './store.js';
 
 // Estimates. Safari opens a fresh connection per request rather than reusing one, so every
 // repeat contact is charged a resumed TLS handshake; only the first contact with an origin
@@ -13,7 +13,7 @@ const RESUMED_BYTES = 1500;
 const WARM_BYTES = {trace: 420, opaque: 220, download: 400};
 const REFUSED_BYTES = 100;      // an IPv4 literal with no path never gets a connection up
 
-export const APP_VERSION = '6.0.0';
+export const APP_VERSION = '1.0.0';
 
 export function projectedBytes(intervalMs, downloadBytes, minutes = 40) {
   const rounds = Math.round((minutes * 60000) / intervalMs);
@@ -40,7 +40,9 @@ export function environment(intervalMs, downloadBytes) {
   };
 }
 
-export function createRecorder({onSample, onEvent, onStatus, onNotice}) {
+// `store` is injectable so the round loop can be exercised against a fake one; everything
+// else defaults to the real module.
+export function createRecorder({onSample, onEvent, onStatus, onNotice, store = realStore}) {
   let session = null;
   let running = false;
   let timer = null;

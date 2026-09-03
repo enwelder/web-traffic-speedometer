@@ -19,13 +19,11 @@ export const DOWNLOAD_TIMEOUT_MS = 20000; // a full page on a bad cell can legit
 export const MIN_TIMEOUT_MS = 1000;
 export const IPV4_PREFLIGHT_MS = 2000;
 
-const DNS_CONTROL_HOST = 'webspeed-dns-control.github.io';
-
 export const PROBES = [
   {id: 'ip6',     label: 'no DNS · v6', kind: 'trace',    url: 'https://[2606:4700:4700::1111]/cdn-cgi/trace'},
   {id: 'ip4',     label: 'no DNS · v4', kind: 'trace',    url: 'https://1.1.1.1/cdn-cgi/trace'},
   {id: 'dns',     label: 'DNS fresh',   kind: 'opaque',   url: 'https://%RANDOM%.github.io/',      method: 'HEAD'},
-  {id: 'dns_ctl', label: 'DNS cached',  kind: 'opaque',   url: `https://${DNS_CONTROL_HOST}/`,     method: 'HEAD'},
+  {id: 'dns_ctl', label: 'DNS cached',  kind: 'opaque',   url: 'https://wts-dns-control.github.io/', method: 'HEAD'},
   {id: 'web',     label: 'other net',   kind: 'opaque',   url: 'https://www.gstatic.com/generate_204'},
   {id: 'down',    label: 'throughput',  kind: 'download', url: 'https://speed.cloudflare.com/__down'}
 ];

@@ -4,19 +4,25 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#0E1620">
+<!-- Everything that can be locked to this origin is. connect-src cannot be: the CSP
+     host-source grammar has no way to express a bracketed IPv6 literal, so naming the
+     IPv6 probe endpoint makes the browser ignore the source and block the probe. The
+     real allowlist is therefore enforced in CI (tests/security.mjs), which fails on any
+     outbound origin outside the six probes and on any code path that could upload. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; manifest-src 'self'; worker-src 'self'; connect-src 'self' https:; base-uri 'none'; form-action 'none'">
 <meta name="description" content="Offline-capable mobile connectivity logger for train journeys.">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="apple-mobile-web-app-title" content="Webspeed">
+<meta name="apple-mobile-web-app-title" content="Speedometer">
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="icon.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="icon-180.png">
 <link rel="stylesheet" href="app.css">
-<title>Webspeed Speedometer</title>
+<title>Web Traffic Speedometer</title>
 </head>
 <body>
 
-<h1>Webspeed Speedometer</h1>
+<h1>Web Traffic Speedometer</h1>
 
 <main>
 

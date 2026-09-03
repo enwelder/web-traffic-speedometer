@@ -1,4 +1,4 @@
-# Webspeed Speedometer
+# Web Traffic Speedometer
 
 ## What this is for
 
@@ -25,6 +25,55 @@ secure context, so geolocation, wake lock and service workers all work without c
 A service worker caches the shell, so the page loads and a crashed session recovers on a
 network too degraded to fetch anything, which is the condition the tool exists to record.
 
+## Development
+
+```
+npm ci          # playwright, the only development dependency
+npm test        # every suite
+npm run test:unit / test:security / test:browser
+npm run serve   # http://localhost:8731
+```
+
+`tests/unit.mjs` exercises the probes, the round loop, classification and export with no
+browser and no network; the store is injected, so failure and retry paths are reachable.
+`tests/browser.mjs` drives a real browser for the parts that only exist there — IndexedDB,
+crash recovery, the service worker, downloads, the CSP and the phone layout — against a
+simulated IPv6-only network. `tests/security.mjs` is described below.
+
+Every push runs the functional and security suites and CodeQL. A push to `main` that passes
+publishes to GitHub Pages; if `package.json` has a new version, that push is also tagged and
+released. The version is stated once in `package.json`, and a security test fails the build
+if `APP_VERSION` or the service worker cache name has drifted from it — a stale cache name
+would leave clients on the old build.
+
+## Security properties
+
+This records a person's location and network behaviour for forty minutes at a time, so what
+is worth guarding is narrow and checkable. `tests/security.mjs` fails the build if any of it
+stops being true:
+
+- **It contacts nothing but its six probes.** Every URL in the source is checked against the
+  allowlist.
+- **It has no way to upload what it records.** No request may carry a body; no `sendBeacon`,
+  `WebSocket`, `EventSource` or `RTCPeerConnection` may appear. Data leaves only when you
+  export it.
+- **It sends no credentials or referrer** to any of those origins.
+- **It executes no dynamic code** and writes no markup: no `eval`, no `new Function`, no
+  `innerHTML`. Everything reaches the DOM as text.
+- **It ships no third-party code**, at build time or at runtime.
+- The service worker never touches a probe, and never takes over a tab mid-session.
+
+The page also carries a Content Security Policy that pins scripts, styles, images, the
+manifest and the worker to its own origin, with `default-src 'none'`. `connect-src` is the
+exception: the CSP host-source grammar cannot express a bracketed IPv6 literal, and naming
+the IPv6 probe endpoint makes the browser ignore the source and block that probe outright.
+It is therefore `'self' https:`, and the real allowlist is the CI check above.
+
+## Licence
+
+[0BSD](LICENSE) — the BSD Zero Clause Licence. Public-domain-equivalent: use it for
+anything, no attribution required.
+
 ## How a round works
 
 Six probes run in parallel, once per interval. Each isolates a different layer, so a failure
@@ -35,7 +84,7 @@ can be attributed rather than merely noted.
 | `ip6` | `https://[2606:4700:4700::1111]/cdn-cgi/trace` | is the radio link up, over IPv6, with no name resolution involved |
 | `ip4` | `https://1.1.1.1/cdn-cgi/trace` | the same, over IPv4 |
 | `dns` | `https://<random>.github.io/` (HEAD) | can the carrier's resolver resolve a name it cannot have cached |
-| `dns_ctl` | `https://webspeed-dns-control.github.io/` (HEAD) | is that same destination reachable with the name already cached |
+| `dns_ctl` | `https://wts-dns-control.github.io/` (HEAD) | is that same destination reachable with the name already cached |
 | `web` | `https://www.gstatic.com/generate_204` | is a provider other than Cloudflare reachable |
 | `down` | `https://speed.cloudflare.com/__down?bytes=N` | how fast does a page-sized payload actually arrive |
 

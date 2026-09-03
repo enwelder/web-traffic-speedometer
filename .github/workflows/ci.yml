@@ -1,0 +1,49 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches-ignore: [main]
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  functional:
+    name: functional tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: unit and integration
+        run: node tests/run.mjs unit
+      - name: install browser
+        run: npx playwright install --with-deps chromium
+      - name: end to end in a browser
+        run: node tests/run.mjs browser
+
+  security:
+    name: security tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: allowlist, exfiltration, CSP, secrets, version consistency
+        run: node tests/run.mjs security
+      - name: no runtime dependencies may be introduced
+        run: |
+          if node -e "process.exit(JSON.parse(require('fs').readFileSync('package.json')).dependencies ? 1 : 0)"; then
+            echo "no runtime dependencies"
+          else
+            echo "::error::a runtime dependency was added; this app must ship no third-party code"
+            exit 1
+          fi
+      - name: audit development dependencies
+        run: npm audit --audit-level=high

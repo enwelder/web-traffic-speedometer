@@ -1,6 +1,6 @@
 {
-  "name": "Webspeed Speedometer",
-  "short_name": "Webspeed",
+  "name": "Web Traffic Speedometer",
+  "short_name": "Speedometer",
   "description": "Mobile connectivity logger for train journeys.",
   "start_url": "./",
   "scope": "./",

@@ -2,9 +2,9 @@
 // alongside them, because where the line falls between noise and outage is an analysis
 // decision that belongs downstream and has to stay revisable.
 
-const DB_NAME = 'webspeed';
+const DB_NAME = 'wts';
 const DB_VERSION = 1;
-const ACTIVE_KEY = 'webspeed.active';
+const ACTIVE_KEY = 'wts.active';
 
 let dbPromise = null;
 

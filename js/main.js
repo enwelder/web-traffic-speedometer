@@ -4,7 +4,7 @@ import {PROBES, DOWNLOAD_SIZES, DEFAULT_DOWNLOAD_BYTES} from './probe.js';
 import {createRecorder, environment, projectedBytes} from './session.js';
 import {exportSession, exportAll} from './export.js';
 
-const PREFS_KEY = 'webspeed.prefs';
+const PREFS_KEY = 'wts.prefs';
 const $ = ui.$;
 
 const fails = {};
