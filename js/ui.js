@@ -38,12 +38,14 @@ const P90_WINDOW_MS = 5 * 60 * 1000;
 
 // Tapped, a tile says what it measures. Keeping this off the screen by default is the
 // difference between a readout and a wall of text.
+// Each says what this probe varies against the others: no lookup, a fresh lookup, a
+// different company, a different transport, bytes instead of a round trip.
 const EXPLAIN = {
-  ip6: 'Cloudflare, reached by IP address so no name lookup is involved. If this answers, the connection itself is working.',
-  dns: 'A GitHub Pages hostname never used before, so your operator has to resolve it for real. The figure beside it is the same host asked for again once its name is known.',
-  web: 'Google, not Cloudflare. If this is the only one failing, the fault is at one company rather than on your connection.',
-  udp: 'A STUN request, the only probe that leaves over UDP. Calls and streaming ride on UDP, and a carrier can treat it differently from the rest.',
-  down: 'A page-sized download from Cloudflare. Everything above can answer quickly while there is still no usable speed.'
+  ip6: 'Round trip to Cloudflare by IP address, so no name lookup happens at all. If this answers, the connection itself is working.',
+  dns: 'Round trip to a GitHub Pages hostname never used before, so your operator has to resolve it for real. The figure beside it is the same host once its name is known.',
+  web: 'Round trip to Google rather than Cloudflare. If this is the only one failing, the fault is at one company rather than on your connection.',
+  udp: 'Round trip over UDP, via a STUN request. Calls and streaming ride on UDP and a carrier can treat it differently from everything else here.',
+  down: 'A page-sized download, measured as a rate rather than a round trip. Everything above can answer quickly while there is still no usable speed.'
 };
 
 export const $ = id => document.getElementById(id);

@@ -93,9 +93,14 @@ b.test('the tiles are named for where they go', async () => {
   const {ctx} = await context();
   const page = await ctx.newPage();
   await page.goto(BASE, {waitUntil: 'networkidle'});
-  const names = await page.$$eval('.signal .name', els => els.map(e => e.textContent));
-  assert.deepEqual(names, ['Cloudflare', 'DNS', 'Google', 'UDP', 'throughput'],
-                   `every probe has a tile: ${names.join(', ')}`);
+  const names = await page.$$eval('.signal .name', els => els.map(e => e.textContent.trim()));
+  assert.deepEqual(names, [
+    'latency direct (Cloudflare)', 'latency DNS (GitHub)', 'latency (Google)',
+    'latency UDP (Cloudflare)', 'rate (Cloudflare)'
+  ], `one axis for all five — metric, then what varies, then who answered: ${names.join(' | ')}`);
+  // Four latencies and one rate: the labels have to make that obvious at a glance.
+  assert.equal(names.filter(n => n.startsWith('latency')).length, 4);
+  assert.equal(names.filter(n => n.startsWith('rate')).length, 1);
   // UDP is a probe like the rest, so it belongs with them rather than among the counters.
   assert.equal(await page.locator('#m-udp').count(), 0, 'and not in the statistics block');
   assert.equal(await page.locator('#lamp-udp').count(), 0, 'nor duplicated as a lamp');
@@ -351,9 +356,9 @@ b.test('a tile explains itself on tap and gives the numbers back', async () => {
   const numbers = await sub();
   assert.ok(!/Google/.test(numbers), 'it shows measurements by default');
   await page.click('#sig-web');
-  assert.match(await sub(), /Google, not Cloudflare/, 'tapping says what the probe measures');
+  assert.match(await sub(), /Google rather than Cloudflare/, 'tapping says what the probe measures');
   await page.waitForTimeout(2500);
-  assert.match(await sub(), /Google, not Cloudflare/, 'and the next round does not overwrite it');
+  assert.match(await sub(), /Google rather than Cloudflare/, 'and the next round does not overwrite it');
   await page.click('#sig-web');
   await page.waitForTimeout(2500);
   assert.ok(!/Google/.test(await sub()), 'tapping again returns the numbers');

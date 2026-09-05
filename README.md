@@ -348,12 +348,23 @@ screen full of green used to sit above latencies nobody would call healthy.
 
 ### Reading it while travelling
 
-The four tiles are named for where they go — **Cloudflare**, **DNS**, **Google**,
-**throughput** — so a failure can be placed by reading down them: if Cloudflare answers the
-connection works, if DNS fails beside it the fault is resolution, if only Google fails the
-fault is at one company, and if all three answer while throughput collapses the cell is
-congested. Tapping a tile says what it measures; the **?** in the header turns all four
-explanations on at once.
+Every tile is labelled on one axis — the metric, then what this probe varies, then who
+answered — so the five read as a set rather than as five unrelated things:
+
+| tile | varies |
+|---|---|
+| latency direct *(Cloudflare)* | no name lookup at all |
+| latency DNS *(GitHub)* | a fresh lookup every round |
+| latency *(Google)* | a different company |
+| latency UDP *(Cloudflare)* | the other transport |
+| rate *(Cloudflare)* | bytes, not a round trip |
+
+Four latencies and one rate, which is what makes a failure placeable by reading down them:
+if the direct one answers the connection works, if DNS fails beside it the fault is
+resolution, if only Google fails the fault is at one company, if only UDP fails the carrier
+is treating real-time traffic differently, and if all four answer while the rate collapses
+the cell is congested. Tapping a tile says what it measures; the **?** in the header turns
+all five explanations on at once.
 
 Below them, three lamps show which paths are carrying traffic — IPv6, IPv4, UDP — lit, dim
 where a path is known absent, red where it has failed. That replaces a standing sentence
