@@ -34,6 +34,12 @@ network too degraded to fetch anything, which is the condition the tool exists t
 
 ## Development
 
+Anything local to one machine goes in `.dev/` — recorded journeys, scratch files, notes.
+The directory is ignored as a whole rather than by filename, because a recording carries a
+home address, a workplace and a daily timetable, and this repository is public. Two security
+tests enforce it: nothing under `.dev/` may be tracked, and no committed file may have the
+shape of a journey export, wherever it was put.
+
 ```
 npm ci          # playwright, the only development dependency
 npm test        # every suite

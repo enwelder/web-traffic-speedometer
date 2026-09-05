@@ -4,8 +4,10 @@
 // dynamic code, and it ships no third-party code at all.
 import assert from 'node:assert';
 import {readFileSync, readdirSync} from 'node:fs';
+import {execFileSync} from 'node:child_process';
 import {suite} from './helpers.mjs';
 
+const root = new URL('..', import.meta.url).pathname;
 const read = f => readFileSync(new URL(`../${f}`, import.meta.url), 'utf8');
 const jsFiles = readdirSync(new URL('../js', import.meta.url)).map(f => `js/${f}`);
 const sources = [...jsFiles, 'sw.js'].map(f => [f, read(f)]);
@@ -140,6 +142,40 @@ s.test('there are no runtime dependencies to trust', () => {
   assert.deepEqual(pkg.dependencies, undefined, 'no runtime dependencies');
   assert.ok(!/from\s+['"][^.]/.test(sources.map(([, s]) => s).join('\n')),
             'no module is imported from outside this repository');
+});
+
+// A recorded journey is a home address, a workplace and a daily timetable. Nothing local
+// may reach a public repository because a filename happened to match a pattern.
+s.test('nothing under .dev is tracked, and the directory is ignored outright', () => {
+  const tracked = execFileSync('git', ['ls-files'], {cwd: root, encoding: 'utf8'})
+    .split('\n').filter(Boolean);
+  const leaked = tracked.filter(f => f.startsWith('.dev/'));
+  assert.deepEqual(leaked, [], `local-only files are tracked: ${leaked.join(', ')}`);
+
+  // The rule must be the directory itself, not a filename pattern that happens to match:
+  // renaming an export would silently remove the protection.
+  const rules = readFileSync(new URL('../.gitignore', import.meta.url), 'utf8')
+    .split('\n').map(l => l.trim());
+  assert.ok(rules.includes('.dev/'), '.gitignore ignores the directory as a whole');
+
+  // And prove it with git rather than by reading the file: a probe path that does not exist
+  // is still answered by the ignore rules.
+  const check = execFileSync('git', ['check-ignore', '-v', '.dev/anything/at/all.json'],
+                             {cwd: root, encoding: 'utf8'});
+  assert.match(check, /\.dev\//, `git ignores anything under it: ${check.trim()}`);
+});
+
+s.test('no journey recording is tracked anywhere in the tree', () => {
+  const tracked = execFileSync('git', ['ls-files'], {cwd: root, encoding: 'utf8'})
+    .split('\n').filter(Boolean);
+  // An export is recognisable by its shape, wherever it was put.
+  for (const f of tracked) {
+    if (!f.endsWith('.json') || f.endsWith('package.json') || f.endsWith('package-lock.json')) continue;
+    const text = readFileSync(new URL(`../${f}`, import.meta.url), 'utf8');
+    assert.ok(!/"format"\s*:\s*"wts\/(session|bundle)"/.test(text),
+              `${f} is a recorded journey and must not be committed`);
+    assert.ok(!/"lat"\s*:\s*-?\d/.test(text), `${f} contains coordinates`);
+  }
 });
 
 s.test('no credential-shaped string is committed', () => {

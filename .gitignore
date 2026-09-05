@@ -1,6 +1,12 @@
+# Everything local to one machine lives here and never leaves it: recorded journeys carry a
+# home address, a workplace and a daily timetable, and this repository is public.
+.dev/
+
 node_modules/
 test-results/
 playwright-report/
+
+# Kept as a second line of defence, in case an export lands outside .dev by accident.
 wts-*.json
-spoormeter-*.json
 webspeed-*.json
+spoormeter-*.json
