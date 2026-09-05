@@ -6,7 +6,7 @@ stubBrowser();
 const probe = await import('../js/probe.js');
 const {createRecorder, projectedBytes, environment, PROFILES} = await import('../js/session.js');
 const ui = await import('../js/ui.js');
-const {sessionJson, filename} = await import('../js/export.js');
+const {sessionJson, filename, summarise} = await import('../js/export.js');
 
 const P = Object.fromEntries(probe.PROBES.map(p => [p.id, p]));
 const s = suite('probes');
@@ -363,15 +363,41 @@ c.test('an expected failure colours nothing and counts as nothing', () => {
   assert.equal(ui.counts(undefined), false, 'a probe with no record is not a failure');
   assert.equal(ui.counts({}), false);
   assert.equal(ui.counts(BAD()), true);
-  assert.equal(ui.classify({probes: healthy()}), 'up', 'a missing IPv4 path is not a degraded round');
+  assert.equal(ui.classify({probes: healthy()}), 'good', 'a missing IPv4 path is not a degraded round');
 });
 
 c.test('each failure shape maps to its own reading', () => {
-  assert.equal(ui.classify({probes: {...healthy(), dns: BAD()}}), 'dns', 'resolution while the link holds');
-  assert.equal(ui.classify({probes: {...healthy(), ip6: BAD(), web: BAD()}}), 'down', 'the radio link');
-  assert.equal(ui.classify({probes: {...healthy(), web: BAD()}}), 'part');
-  assert.equal(ui.classify({probes: {...healthy(), down: BAD()}}), 'part');
+  assert.equal(ui.classify({probes: {...healthy(), dns: BAD()}}), 'poor', 'nothing loads without names');
+  assert.equal(ui.classify({probes: {...healthy(), ip6: BAD(), web: BAD()}}), 'bad', 'the radio link');
+  assert.equal(ui.classify({probes: {...healthy(), web: BAD()}}), 'bad');
   assert.equal(ui.classify({probes: healthy(), skipped: 'overlap'}), 'skip');
+});
+
+c.test('a round is graded by what the connection could actually carry', () => {
+  const fast = {ok: true, ms: 40, fail: null};
+  const withRate = bps => ({ok: true, ms: 200, fail: null, bps_transfer: bps});
+  const round = (over = {}) => ({probes: {ip6: fast, ip4: BAD({expected: true}), dns: fast,
+                                          dns_ctl: fast, web: fast, udp: fast,
+                                          down: withRate(20e6), ...over}});
+
+  assert.equal(ui.classify(round()), 'good', 'quick and fast is good');
+
+  // Latency alone can sink a round: pages spend several round trips before they render.
+  assert.equal(ui.classify(round({ip6: {ok: true, ms: 600}})), 'ok', 'sluggish but usable');
+  assert.equal(ui.classify(round({ip6: {ok: true, ms: 1500}})), 'poor', 'pages barely load');
+  assert.equal(ui.classify(round({ip6: {ok: true, ms: 5000}})), 'bad');
+
+  // And so can throughput, while every latency still looks healthy — the case a green
+  // screen used to hide.
+  assert.equal(ui.classify(round({down: withRate(1e6)})), 'ok', 'music fine, pages slow');
+  assert.equal(ui.classify(round({down: withRate(2e5)})), 'poor', 'music stutters');
+  assert.equal(ui.classify(round({down: withRate(5e4)})), 'bad', 'nothing usable');
+
+  assert.equal(ui.gradeLatency(299), 'good');
+  assert.equal(ui.gradeLatency(300), 'ok', 'the boundary belongs to the worse grade');
+  assert.equal(ui.gradeRate(3e6), 'good');
+  assert.equal(ui.gradeRate(3e6 - 1), 'ok');
+  assert.equal(ui.gradeLatency(null), null, 'a missing measurement is not a grade');
 });
 
 c.test('the worst recent value is the slow end for a rate and the high end for a latency', () => {
@@ -442,6 +468,43 @@ e.test('a hostile session name cannot corrupt the file or the filename', () => {
   assert.ok(!/["',\n\\]/.test(f), `filename is sanitised: ${f}`);
   assert.match(f, /^wts-20260903-\d{4}-k-p-n\.json$/, f);
   assert.deepEqual(JSON.parse(sessionJson(sess, [], [])).session.name, 'x", y\n\\');
+});
+
+e.test('the rollup describes the session without judging it', () => {
+  const probe = (ok, ms, extra = {}) => ({ok, ms, fail: ok ? null : 'timeout', ...extra});
+  const row = (i, over = {}) => ({
+    seq: i, t: 1000 + i * 1000, skipped: null, round_error: null, in_pause: false,
+    wake_lock: true, accuracy_class: 'gps',
+    probes: {ip6: probe(true, 10 * (i + 1)), ip4: probe(false, 5, {expected: true}),
+             dns: probe(true, 100), dns_ctl: probe(true, 20), web: probe(true, 30),
+             udp: probe(true, 15),
+             down: probe(true, 400, {bps_transfer: 1e6 * (i + 1), bytes: 250000})},
+    ...over
+  });
+  const samples = [...Array(10)].map((_, i) => row(i));
+  samples.push(row(10, {skipped: 'overlap', probes: {}}));
+  samples.push(row(11, {probes: {...row(11).probes, web: probe(false, 8000)}}));
+
+  const sum = summarise(samples);
+  assert.equal(sum.rounds, 12);
+  assert.equal(sum.ran, 11, 'a skipped round did not run');
+  assert.equal(sum.skipped, 1);
+  assert.equal(sum.degraded, 1, 'one round had a real failure');
+  assert.equal(sum.probes.ip4.expected, 11, 'a known-absent path is counted apart from failures');
+  assert.deepEqual(sum.probes.ip4.fails, {}, 'and never as a failure');
+  assert.equal(sum.probes.web.fails.timeout, 1);
+  // Eleven rounds ran: ten at 10..100 ms and the twelfth row at 120, the skipped one apart.
+  assert.equal(sum.probes.ip6.ms_p50, 60);
+  assert.equal(sum.probes.ip6.ms_max, 120);
+  assert.ok(sum.probes.down.bps_transfer_p10 < sum.probes.down.bps_transfer_p50,
+            'the rate has a low end reported separately');
+  assert.equal(sum.probes.down.bytes_total, 250000 * 11);
+  assert.equal(sum.fixes_gps, 11);
+
+  // Everything in it is recomputable, so the samples stay the only source of truth.
+  const out = JSON.parse(sessionJson({id: 'a', name: 'n', started: 1000}, samples, []));
+  assert.deepEqual(out.summary, sum, 'the file carries the same rollup');
+  assert.equal(out.samples.length, samples.length, 'alongside every raw row');
 });
 
 await e.run();

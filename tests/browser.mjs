@@ -94,8 +94,11 @@ b.test('the tiles are named for where they go', async () => {
   const page = await ctx.newPage();
   await page.goto(BASE, {waitUntil: 'networkidle'});
   const names = await page.$$eval('.signal .name', els => els.map(e => e.textContent));
-  assert.deepEqual(names, ['Cloudflare', 'DNS', 'Google', 'throughput'],
-                   `destinations, not concepts: ${names.join(', ')}`);
+  assert.deepEqual(names, ['Cloudflare', 'DNS', 'Google', 'UDP', 'throughput'],
+                   `every probe has a tile: ${names.join(', ')}`);
+  // UDP is a probe like the rest, so it belongs with them rather than among the counters.
+  assert.equal(await page.locator('#m-udp').count(), 0, 'and not in the statistics block');
+  assert.equal(await page.locator('#lamp-udp').count(), 0, 'nor duplicated as a lamp');
   await ctx.close();
 });
 
@@ -164,7 +167,7 @@ b.test('a session records, survives a reload, and exports losslessly', async () 
   assert.ok(db.samples.every(x => x.probes.ip6.ms_samples), 'reachability is sampled, not measured once');
   assert.ok(db.samples.filter(x => x.probes.ip6.ok).every(x => x.probes.ip6.samples_ok >= 1),
             'and its ms is the median of what succeeded');
-  assert.equal(await page.$eval('#m-udp', e => /ms|—/.test(e.textContent)), true, 'UDP shows in the readout');
+  assert.match(await page.textContent('#val-udp'), /^\d+$/, 'the UDP round trip has its own tile');
   assert.equal(new Set(db.samples.map(x => x.probes.dns_ctl.host)).size, 1, 'the control never changes one');
 
   const before = db.samples.length;
@@ -201,6 +204,9 @@ b.test('a session records, survives a reload, and exports losslessly', async () 
   assert.equal(file.samples.length, db.samples.length, 'every stored round is in the file');
   assert.equal(file.events.length, db.events.length);
   assert.equal(file.probes.length, 7, 'the probe set travels with the data');
+  assert.ok(file.summary, 'and a rollup so a reader need not recompute the basics');
+  assert.equal(file.summary.rounds, file.samples.length);
+  assert.ok(file.summary.probes.ip6, 'per probe');
   assert.ok(db.sessions[0].exportedAt, 'and the export is recorded on the session');
   await ctx.close();
 });
@@ -259,15 +265,18 @@ b.test('the newest log line is on top and nothing hides behind the controls', as
   assert.ok(stamps.length >= 2, 'several lines are logged');
   assert.ok(stamps[0] >= stamps[stamps.length - 1], `newest is first: ${stamps[0]} then ${stamps.at(-1)}`);
 
-  // The controls are sticky, so they float; no log line may end up underneath them.
-  const overlap = await page.evaluate(() => {
-    const bar = document.querySelector('.controls').getBoundingClientRect();
-    return [...document.querySelectorAll('#log div')].filter(el => {
-      const r = el.getBoundingClientRect();
-      return r.top < bar.bottom && r.bottom > bar.top && r.height > 0;
-    }).length;
+  // The bar sits outside the scrolling area, which is what makes an overlap impossible
+  // rather than something to keep re-checking after every layout change. Measuring the log
+  // lines instead would report the ones main has already clipped.
+  const box = await page.evaluate(() => {
+    const r = s => document.querySelector(s).getBoundingClientRect();
+    const m = r('main'), bar = r('.controls');
+    return {mainBottom: Math.round(m.bottom), barTop: Math.round(bar.top),
+            scrolls: getComputedStyle(document.querySelector('main')).overflowY};
   });
-  assert.equal(overlap, 0, 'no log line sits under the control bar');
+  assert.equal(box.scrolls, 'auto', 'the content area is the thing that scrolls');
+  assert.ok(box.barTop >= box.mainBottom - 1,
+            `the bar starts where the scroll area ends: bar ${box.barTop}, content ends ${box.mainBottom}`);
   await page.click('#btn-start');
   await ctx.close();
 });
@@ -284,7 +293,6 @@ b.test('the lamps report each path without a sentence to read', async () => {
   let l = await lamps();
   assert.equal(l.IPv6, 'on', 'the working path is lit');
   assert.equal(l.IPv4, 'na', 'an absent path is dim, not alarming');
-  assert.equal(l.UDP, 'on');
 
   state.mode = 'fail';
   await page.waitForTimeout(4000);
@@ -354,7 +362,7 @@ b.test('a tile explains itself on tap and gives the numbers back', async () => {
   await page.click('#btn-help');
   await page.waitForTimeout(200);
   const shown = await page.$$eval('.signal .sub', els => els.filter(e => e.textContent.length > 40).length);
-  assert.equal(shown, 4, 'the help button explains every tile at once');
+  assert.equal(shown, 5, 'the help button explains every tile at once');
 
   // Dismissing must restore the numbers now. Waiting for the next round would leave prose
   // on the tile for a whole interval — half a minute on the coarse profile.

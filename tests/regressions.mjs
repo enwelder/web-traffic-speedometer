@@ -232,5 +232,34 @@ r.test('a wake lock taken back by the system is reacquired, not lost for the ses
     value: {userAgent: 'node-test', language: 'en', geolocation: null}, configurable: true});
 });
 
+// A journey's p90 read high and did not look like the data. Rounding the rank down put a
+// ten-sample window on its own last element, so the figure labelled p90 was the maximum.
+r.test('a percentile is the nearest rank, not the largest value that fits', async () => {
+  const ui = await import('../js/ui.js');
+  const asc = n => Array.from({length: n}, (_, i) => i + 1);
+
+  for (const n of [3, 5, 8, 10, 15, 20]) {
+    const v = asc(n);
+    const p90 = ui.quantile(v, 0.9);
+    assert.ok(p90 <= n, 'within range');
+    if (n >= 10) assert.ok(p90 < n, `n=${n}: p90 must not be the maximum, got rank ${p90}/${n}`);
+    assert.equal(p90, Math.ceil(n * 0.9), `n=${n}: nearest rank`);
+  }
+  assert.equal(ui.quantile(asc(10), 0.1), 1, 'the low end is the first rank, not the second');
+  assert.equal(ui.quantile(asc(20), 0.9), 18);
+  assert.equal(ui.quantile([], 0.9), null);
+  assert.equal(ui.quantile([7], 0.9), 7);
+
+  // And through the tile: nine identical samples with one spike must not read as the spike.
+  ui.resetHistory();
+  const t = Date.now();
+  [10, 10, 10, 10, 10, 10, 10, 10, 10, 900].forEach((ms, i) =>
+    ui.trackLatency({t: t + i * 1000, skipped: null, probes: {ip6: {ok: true, ms}}}));
+  const w = ui.worst('ip6');
+  assert.equal(w.label, 'p90');
+  assert.equal(w.value, 10, `one outlier in ten is not the ninetieth percentile, got ${w.value}`);
+  ui.resetHistory();
+});
+
 const ok = await r.run();
 process.exit(ok ? 0 : 1);

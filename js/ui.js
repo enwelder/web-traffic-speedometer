@@ -3,8 +3,37 @@
 import {PROBES} from './probe.js';
 
 const STRIP_BARS = 48;
-const SLOW_MS = 400;
-const TILES = ['ip6', 'dns', 'web', 'down'];   // ip4 and dns_ctl ride along in subtitles
+
+// Grades named for what the connection can actually carry, not for round numbers.
+//
+//   good    pages open promptly, music streams, chat is instant
+//   ok      music and chat fine, pages noticeably slow
+//   poor    chat still works, music stutters, pages barely load
+//   bad     nothing usable
+//
+// Latency bounds come from page loads, which spend several round trips before anything
+// renders: under 300 ms feels immediate, beyond a second it feels broken. Rate bounds come
+// from the two things actually being done on a train — streamed audio needs about 0.3 Mb/s
+// sustained, so 0.5 is the floor with room to buffer, and a 2 MB page needs 3 Mb/s to
+// arrive in a few seconds rather than half a minute.
+const LATENCY_BANDS = [[300, 'good'], [1000, 'ok'], [3000, 'poor']];
+const RATE_BANDS = [[3e6, 'good'], [5e5, 'ok'], [1e5, 'poor']];
+const GRADE_RANK = {good: 0, ok: 1, poor: 2, bad: 3};
+
+export function gradeLatency(ms) {
+  if (ms == null) return null;
+  for (const [limit, grade] of LATENCY_BANDS) if (ms < limit) return grade;
+  return 'bad';
+}
+
+export function gradeRate(bps) {
+  if (bps == null) return null;
+  for (const [floor, grade] of RATE_BANDS) if (bps >= floor) return grade;
+  return 'bad';
+}
+
+const worseOf = (a, b) => (GRADE_RANK[a] >= GRADE_RANK[b] ? a : b);
+const TILES = ['ip6', 'dns', 'web', 'udp', 'down'];   // ip4 and dns_ctl ride along in subtitles
 const P90_WINDOW_MS = 5 * 60 * 1000;
 
 // Tapped, a tile says what it measures. Keeping this off the screen by default is the
@@ -13,6 +42,7 @@ const EXPLAIN = {
   ip6: 'Cloudflare, reached by IP address so no name lookup is involved. If this answers, the connection itself is working.',
   dns: 'A GitHub Pages hostname never used before, so your operator has to resolve it for real. The figure beside it is the same host asked for again once its name is known.',
   web: 'Google, not Cloudflare. If this is the only one failing, the fault is at one company rather than on your connection.',
+  udp: 'A STUN request, the only probe that leaves over UDP. Calls and streaming ride on UDP, and a carrier can treat it differently from the rest.',
   down: 'A page-sized download from Cloudflare. Everything above can answer quickly while there is still no usable speed.'
 };
 
@@ -45,14 +75,26 @@ export function notice(text) { $('notice').textContent = text || ''; }
 // not a failure, and neither is an IPv4 literal on a network with no IPv4 path.
 export const counts = r => !!r && r.ok === false && !r.expected;
 
+// The grade of a round is the worst thing about it: a fast link that cannot resolve names
+// is not a good connection, and neither is a responsive one delivering no bytes.
 export function classify(sample) {
   if (sample.skipped) return 'skip';
   const r = id => sample.probes[id] || {};
   const reachable = r('ip6').ok || r('ip4').ok;
-  if (!reachable && !r('web').ok) return 'down';
-  if (!r('dns').ok && reachable) return 'dns';
-  if (counts(r('web')) || counts(r('down'))) return 'part';
-  return PROBES.some(p => p.kind === 'trace' && r(p.id).ok && r(p.id).ms > SLOW_MS) ? 'slow' : 'up';
+  if (!reachable && !r('web').ok) return 'bad';
+  // Names not resolving means nothing loads, however quick the link is.
+  if (!r('dns').ok && reachable) return 'poor';
+
+  let grade = 'good';
+  for (const id of ['ip6', 'dns', 'web']) {
+    const p = r(id);
+    if (counts(p)) return 'bad';
+    if (p.ok) grade = worseOf(grade, gradeLatency(p.ms));
+  }
+  const d = r('down');
+  if (counts(d)) grade = worseOf(grade, 'poor');
+  else if (d.ok && d.bps_transfer != null) grade = worseOf(grade, gradeRate(d.bps_transfer));
+  return grade;
 }
 
 const FLOOR_MS = 2;   // below this the transfer window is shorter than the clock resolves
@@ -92,6 +134,14 @@ export function trackLatency(sample) {
 const P90_MIN = 8;
 const WORST_MIN = 3;
 
+// Nearest-rank: the smallest value at or above the quantile. Rounding the index down
+// instead put a ten-sample window on its last element, so anything labelled p90 was in fact
+// the maximum, and it read high for a quarter of a journey's windows.
+export function quantile(sorted, q) {
+  if (!sorted.length) return null;
+  return sorted[Math.min(sorted.length - 1, Math.max(0, Math.ceil(sorted.length * q) - 1))];
+}
+
 export function worst(id) {
   const h = history[id];
   if (!h || h.length < WORST_MIN) return null;
@@ -101,11 +151,11 @@ export function worst(id) {
   if (id === 'down') {
     return h.length < P90_MIN
       ? {label: 'slowest', value: v[0]}
-      : {label: 'p10', value: v[Math.floor(v.length * 0.1)]};
+      : {label: 'p10', value: quantile(v, 0.1)};
   }
   return h.length < P90_MIN
     ? {label: 'max', value: v[v.length - 1]}
-    : {label: 'p90', value: v[Math.min(v.length - 1, Math.floor(v.length * 0.9))]};
+    : {label: 'p90', value: quantile(v, 0.9)};
 }
 
 export function resetHistory() {
@@ -118,8 +168,13 @@ export function setSignals(sample, fails, rounds) {
   for (const id of TILES) {
     const cell = $(`sig-${id}`);
     const r = sample && !sample.skipped ? sample.probes[id] : null;
-    cell.classList.remove('up', 'slow', 'down');
-    if (r) cell.classList.add(!r.ok ? 'down' : (id !== 'down' && r.ms > SLOW_MS) ? 'slow' : 'up');
+    cell.classList.remove('good', 'ok', 'poor', 'bad');
+    if (r) {
+      const g = !r.ok ? 'bad'
+        : id === 'down' ? (gradeRate(r.bps_transfer) || 'good')
+        : (gradeLatency(r.ms) || 'good');
+      cell.classList.add(g);
+    }
     $(`val-${id}`).textContent = sample && sample.skipped ? '–' : tileValue(id, r);
   }
   renderSubtitles();
@@ -186,14 +241,14 @@ export function setStripWindow(intervalMs) {
 export function setLamps(sample) {
   const set = (id, state) => {
     const el = $(`lamp-${id}`);
+    if (!el) return;
     el.classList.remove('on', 'off', 'na');
     el.classList.add(state);
   };
   const p = sample && !sample.skipped ? sample.probes : null;
-  if (!p) { for (const id of ['ip6', 'ip4', 'udp']) set(id, 'na'); return; }
+  if (!p) { for (const id of ['ip6', 'ip4']) set(id, 'na'); return; }
   set('ip6', p.ip6.ok ? 'on' : 'off');
   set('ip4', p.ip4.expected ? 'na' : p.ip4.ok ? 'on' : 'off');
-  set('udp', p.udp?.ok ? 'on' : 'off');
 }
 
 // One control turns every explanation on, since a tile that only reacts to being tapped is
@@ -233,14 +288,13 @@ export function sampleLine(sample) {
          (d ? `  ${d.bps_transfer ? rate(d.bps_transfer) : 'fast'}` : '');
 }
 
-export function setStats({rounds, elapsed, pos, speed, data, marks, udp, degraded}) {
+export function setStats({rounds, elapsed, pos, speed, data, marks, degraded}) {
   $('m-rounds').textContent = rounds;
   $('m-time').textContent = elapsed;
   $('m-pos').textContent = pos;
   $('m-speed').textContent = speed;
   $('m-data').textContent = data;
   $('m-marks').textContent = marks;
-  $('m-udp').textContent = udp;
   $('m-degraded').textContent = degraded;
 }
 

@@ -105,7 +105,14 @@ async function readTiming(url) {
   }
   if (!e || !e.responseStart) return null;
   const reused = e.connectEnd === e.connectStart;
+  const ms = (a, b) => (a > 0 && b > 0 && b >= a ? Math.round(b - a) : null);
   return {
+    // The phases before the payload starts. On the download endpoint they are most of the
+    // round trip, which is why a rate computed over the whole request describes the
+    // handshake as much as the link.
+    lookup_ms: ms(e.domainLookupStart, e.domainLookupEnd),
+    connect_ms: reused ? 0 : ms(e.connectStart, e.connectEnd),
+    tls_ms: reused ? 0 : ms(e.secureConnectionStart, e.connectEnd),
     ttfb_ms: Math.round(e.responseStart - e.requestStart),
     transfer_ms: Math.round(e.responseEnd - e.responseStart),
     handshake: !reused && e.secureConnectionStart > 0 && e.secureConnectionStart < e.connectEnd,
@@ -253,7 +260,12 @@ export async function runProbe(probe, opts = {}) {
   const good = runs.filter(r => r.ok).map(r => r.ms);
   last.ms_samples = runs.map(r => r.ms);
   last.samples_ok = good.length;
-  if (good.length) last.ms = median(good);
+  if (good.length) {
+    last.ms = median(good);
+    // A median of [893, 4275, 52] hides everything interesting about that round.
+    last.ms_min = Math.min(...good);
+    last.ms_max = Math.max(...good);
+  }
   return last;
 }
 

@@ -255,7 +255,14 @@ no failure is represented only by an absence.
 ## The data
 
 Sessions live in IndexedDB until exported. One button per session writes one JSON file
-containing the session metadata, the environment, every sample and every event. CSV, GPX or
+containing the session metadata, the environment, a descriptive rollup, every sample and
+every event.
+
+The `summary` block holds per-probe p50, p90, max, ok and failure counts, the download's rate
+percentiles and total bytes, and counts of skipped, paused and degraded rounds. It states no
+verdict — no outage definition, no thresholds — and every figure in it is recomputable from
+the samples, which is what keeps the raw rows the only source of truth. It exists so a reader
+does not rebuild the same six aggregates every time. CSV, GPX or
 GeoJSON are a few lines to derive from it wherever the analysis happens.
 
 ### Per round
@@ -270,6 +277,7 @@ GeoJSON are a few lines to derive from it wherever the analysis happens.
 | `round_error` | exception message if the round itself threw |
 | `visible` | whether the tab was foregrounded for this round |
 | `lat` `lon` `accuracy` `speed` `heading` | GPS fix; `speed` in m/s, and often absent — see `speed_derived` |
+| `accuracy_class` | `gps` under 100 m, `coarse` above it. A coarse fix is a tower estimate: usable as a rough location, not for speed or distance |
 | `pos_t` | timestamp **of the fix**, not of the round. A stale fix on a moving train is off by a kilometre, and this is the only way to see it |
 | `pos_error` | `denied`, `timeout` or `unavailable` when there is no position |
 | `intervalMs` | interval in force for this round |
@@ -287,7 +295,7 @@ GeoJSON are a few lines to derive from it wherever the analysis happens.
 | `expected` | `ip4` | the failure was a known-absent path rather than an outage, and is excluded from tallies |
 | `stuck` | any | the probe was failing alone and has been rested to clear its connection |
 | `egress_ip` `colo` | `ip6` `ip4` `down` | the operator's public address and the Cloudflare PoP |
-| `ms_samples` `samples_ok` | `ip6` | every latency sample taken this round, and how many succeeded; `ms` is their median |
+| `ms_samples` `samples_ok` `ms_min` `ms_max` | `ip6` | every latency sample taken this round, how many succeeded, and the spread; `ms` is their median. A median of [893, 4275, 52] hides the round's whole story |
 | `parse_reason` | `ip6` `ip4` | why a trace body was rejected as not Cloudflare's |
 | `public_ips` `candidates` | `udp` | the NAT mapping per address family, and how many ICE candidates were gathered |
 | `host` | `dns` `dns_ctl` | the hostname used — random each round for `dns`, constant for `dns_ctl` |
@@ -303,10 +311,34 @@ Connection setup and `server` are readable only because `speed.cloudflare.com` s
 specification sets that field to `fetchStart` — so it is counted only when a TLS phase falls
 inside a real connect window.
 
-**`server` is usually all zeros on iOS.** Those fields need a connection that has
-accumulated round-trip samples, and Safari opens a fresh connection per request, so the
-response header arrives before any exist. Read an all-zero `cfL4` block as *no data*, never
-as a measurement of zero. It costs nothing to keep, since the header arrives either way.
+`environment.user_agent` is stored raw and should be treated as untrusted: some browsers
+freeze or fake it, so an OS version parsed out of it may be fiction.
+
+**`server` can be all zeros.** Those fields need a connection that has accumulated
+round-trip samples. With a page-sized download every round they are populated; with a small
+or infrequent one the header can arrive before any samples exist. Read an all-zero `cfL4`
+block as *no data*, never as a measurement of zero.
+
+### Colours mean what the connection can carry
+
+Four grades, named for the experience rather than for round numbers:
+
+| grade | what still works |
+|---|---|
+| **good** | pages open promptly, music streams, chat is instant |
+| **ok** | music and chat fine, pages noticeably slow |
+| **poor** | chat still works, music stutters, pages barely load |
+| **bad** | nothing usable |
+
+Latency bounds — 300 ms, 1 s, 3 s — come from page loads, which spend several round trips
+before anything renders. Rate bounds — 3 Mb/s, 0.5 Mb/s, 0.1 Mb/s — come from the two things
+actually being done on a train: streamed audio needs about 0.3 Mb/s sustained, so 0.5 is the
+floor with room to buffer, and a 2 MB page needs 3 Mb/s to arrive in a few seconds rather
+than half a minute.
+
+A round takes the worst grade of anything in it. A fast link that cannot resolve names is not
+a good connection, and neither is a responsive one delivering no bytes — which is how a
+screen full of green used to sit above latencies nobody would call healthy.
 
 ### Reading it while travelling
 
@@ -321,7 +353,10 @@ Below them, three lamps show which paths are carrying traffic — IPv6, IPv4, UD
 where a path is known absent, red where it has failed. That replaces a standing sentence
 about IPv4; the verdict is written to the log once and to `ipv4_available` in the file.
 
-The live view shows a rolling p90 over the last five minutes beside each current value. A
+The live view shows a rolling p90 over the last five minutes beside each current value,
+computed by nearest rank — under about ten samples the figure is labelled `max` instead,
+because at that size a ninetieth percentile *is* the largest value and calling it p90
+overstates it. A
 median across a whole journey came out at 82 ms and said nothing about the experience; the
 p90 over a few minutes is the number that moves when the connection does.
 
@@ -367,13 +402,18 @@ start of a dropout more precisely than 30 seconds. The estimate charges a TLS ha
 probe per round rather than assuming connection reuse, which Safari does not do, so it is
 deliberately conservative.
 
-### On iOS, speed is mostly absent
+### On iOS, position quality varies within a journey
 
-`coords.speed` came back on 0, 2 and 51 of 158, 75 and 243 rounds across three journeys,
-with `enableHighAccuracy` already set. There is no way to press the platform harder from a
-browser, so speed is also computed from consecutive fixes and their own timestamps.
-`speed_source` says which value is being reported and the measured field is left empty rather
-than filled in with the derived one.
+`coords.speed` is filled only sporadically, and accuracy swings between a few metres and a
+tower estimate — one journey spent 30 of 74 rounds at exactly 1414 m, the signature of a
+coarse fix. There is no way to press the platform harder than `enableHighAccuracy` from a
+browser, so instead: fixes are never taken from cache, a speed is derived from consecutive
+fixes only when *both* are under 100 m, and `accuracy_class` lets a consumer filter without
+reimplementing the threshold. Deriving from coarse fixes produced 682 km/h on a train — two
+tower estimates hundreds of metres apart look exactly like motion.
+
+When precision changes mid-journey it is logged, the way a wake-lock change is, so a stretch
+of unusable coordinates explains itself.
 
 ## iOS notes
 

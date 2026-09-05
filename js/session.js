@@ -16,7 +16,7 @@ const REFUSED_BYTES = 100;      // an IPv4 literal with no path never gets a con
 // STUN is UDP: there is no handshake to charge, and no connection to resume.
 const cost = p => (WARM_BYTES[p.kind] * (p.samples || 1)) + (p.kind === 'stun' ? 0 : RESUMED_BYTES);
 
-export const APP_VERSION = '2.3.0';
+export const APP_VERSION = '3.0.0';
 
 // Two profiles instead of loose settings. The download is the only probe that measures
 // throughput rather than reachability, so it runs every round and the interval carries the
@@ -27,6 +27,10 @@ export const PROFILES = {
 };
 
 const EARTH_M = 6371000;
+// Above this a fix is a cell-tower estimate, not a position. Deriving a speed from one
+// produced 682 km/h on a train: two coarse fixes hundreds of metres apart in opposite
+// directions look like motion. iOS reports exactly 1414 m for that class of fix.
+const FINE_ACCURACY_M = 100;
 // Haversine. iOS fills coords.speed only sporadically — three journeys returned it on 0,
 // 2 and 51 of 158, 75 and 243 rounds — so it is derived from consecutive fixes instead,
 // with the measured value kept whenever the platform does supply one.
@@ -85,9 +89,9 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
   let lastSpeed = null;
   let lastSpeedSource = null;
   let wakeLockLost = false;
+  let fineFix = null;
   const consecutiveFails = {};
   const restingUntil = {};
-  let lastEgress = null;
   let throughput = null;
   let udpMs = null;
   let flushing = false;
@@ -147,14 +151,21 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
 
   function position() {
     if (!lastPos) {
-      return {lat: null, lon: null, accuracy: null, speed: null, speed_derived: null,
-              speed_source: null, heading: null, pos_t: null, pos_error: posError};
+      return {lat: null, lon: null, accuracy: null, accuracy_class: null, speed: null,
+              speed_derived: null, speed_source: null, heading: null, pos_t: null,
+              pos_error: posError};
     }
     const c = lastPos.coords;
     const fix = {lat: c.latitude, lon: c.longitude, t: lastPos.timestamp};
 
+    const accuracy = c.accuracy == null ? null : Math.round(c.accuracy);
+    const fine = accuracy != null && accuracy <= FINE_ACCURACY_M;
+    fix.fine = fine;
+
+    // Only a pair of fine fixes can produce a speed. A coarse one anywhere in the pair makes
+    // the distance meaningless, so nothing is reported rather than something invented.
     let derived = null;
-    if (prevFix && fix.t > prevFix.t) {
+    if (fine && prevFix?.fine && fix.t > prevFix.t) {
       const seconds = (fix.t - prevFix.t) / 1000;
       // Two fixes at the same place seconds apart give a meaningless rate; a gap of minutes
       // averages away everything that happened between them.
@@ -165,7 +176,11 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
     const measured = c.speed == null || c.speed < 0 ? null : c.speed;
     return {
       lat: fix.lat, lon: fix.lon,
-      accuracy: c.accuracy == null ? null : Math.round(c.accuracy),
+      accuracy,
+      // gps: good enough to place and to derive from. coarse: a tower estimate, usable as a
+      // rough location but not for speed or distance. Consumers filter on this rather than
+      // reimplementing the threshold.
+      accuracy_class: accuracy == null ? null : fine ? 'gps' : 'coarse',
       speed: measured,
       speed_derived: derived == null ? null : Math.round(derived * 100) / 100,
       speed_source: measured != null ? 'gps' : derived != null ? 'derived' : null,
@@ -286,14 +301,6 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
     if (row.probes.down?.ok) throughput = row.probes.down.bps_transfer;
     if (row.probes.udp) udpMs = row.probes.udp.ok ? row.probes.udp.ms : null;
 
-    const egress = row.probes.ip6.egress_ip || row.probes.down?.egress_ip;
-    if (egress) {
-      if (lastEgress && egress !== lastEgress) {
-        onNotice?.(`Egress IP changed (${lastEgress} → ${egress}) while the label still says ${session.operator}.`);
-      }
-      lastEgress = egress;
-    }
-
     keep(row);
   }
 
@@ -377,13 +384,29 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
   function startGeolocation() {
     if (!navigator.geolocation) { posError = 'unavailable'; return; }
     watchId = navigator.geolocation.watchPosition(
-      p => { lastPos = p; posError = null; emit(); },
+      p => {
+        lastPos = p;
+        posError = null;
+        // Location quality changes mid-journey — a tunnel, or the platform falling back to
+        // towers — and it changes what the coordinates are worth. Logged the way a wake lock
+        // change is, so a stretch of unusable positions explains itself.
+        const acc = p.coords.accuracy;
+        const nowFine = acc != null && acc <= FINE_ACCURACY_M;
+        if (running && fineFix !== null && nowFine !== fineFix) {
+          noteEvent(nowFine ? `location precise again (${Math.round(acc)} m)`
+                            : `location degraded to ${Math.round(acc)} m — speed and distance withheld`);
+        }
+        fineFix = nowFine;
+        emit();
+      },
       e => {
         posError = e.code === 1 ? 'denied' : e.code === 3 ? 'timeout' : 'unavailable';
         onNotice?.(`No location (${posError}). Measurement continues without coordinates.`);
         emit();
       },
-      {enableHighAccuracy: true, maximumAge: 2000, timeout: 8000}
+      // maximumAge 0: a cached fix is often the coarse one the platform kept from before,
+      // and reusing it is how a journey ends up with half its rounds at tower accuracy.
+      {enableHighAccuracy: true, maximumAge: 0, timeout: 12000}
     );
   }
 

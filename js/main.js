@@ -49,7 +49,8 @@ const recorder = createRecorder({
     ui.setLamps(sample);
     const kind = ui.classify(sample);
     ui.pushStrip(kind);
-    ui.pushLog(ui.sampleLine(sample), sample.skipped ? 'warn' : kind === 'up' || kind === 'slow' ? '' : 'bad');
+    ui.pushLog(ui.sampleLine(sample),
+               sample.skipped ? 'warn' : kind === 'good' || kind === 'ok' ? '' : 'bad');
   },
   onEvent(event) {
     if (event.type === 'pause') ui.pushStrip('pause');
@@ -65,7 +66,6 @@ const recorder = createRecorder({
       speed: c && c.speed != null ? `${Math.round(c.speed * 3.6)} km/h` : '—',
       data: ui.bytes(s.bytes) + (s.pending ? ` (${s.pending} held)` : ''),
       marks: s.marks,
-      udp: s.udpMs == null ? '—' : `${s.udpMs} ms`,
       degraded: scoredRounds ? `${Math.round((degradedRounds / scoredRounds) * 100)}%` : '—'
     });
   },

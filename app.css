@@ -2,6 +2,9 @@
   --ground:#0E1620; --panel:#18232E; --line:#26333F;
   --text:#E8EDF2; --muted:#7E8C9A;
   --green:#35B37E; --amber:#E5A02C; --red:#E4574C;
+  /* Four steps, because three cannot separate "slow but working" from "barely working",
+     and that is the distinction a journey turns on. */
+  --good:#35B37E; --ok:#C9B93C; --poor:#E0822F; --bad:#E4574C;
   --rail:#4C9BE8;
   --num:ui-monospace,"SF Mono",Menlo,monospace;
   color-scheme:dark;
@@ -43,6 +46,7 @@ main{flex:1;overflow-y:auto;overscroll-behavior:contain;-webkit-overflow-scrolli
 
 /* signals: the part that has to read at a glance */
 .signals{display:grid;grid-template-columns:repeat(2,1fr);gap:8px}
+.signal.wide{grid-column:1/-1}
 .signal{background:var(--panel);border:1px solid var(--line);border-radius:10px;
         padding:12px 10px 11px;position:relative;overflow:hidden;cursor:pointer}
 .signal[data-explain="on"]{border-color:var(--rail)}
@@ -50,13 +54,15 @@ main{flex:1;overflow-y:auto;overscroll-behavior:contain;-webkit-overflow-scrolli
                                 font-size:11.5px;line-height:1.35}
 .signal::before{content:"";position:absolute;inset:0 auto 0 0;width:3px;
                 background:var(--line);transition:background .18s}
-.signal.up::before{background:var(--green)}
-.signal.slow::before{background:var(--amber)}
-.signal.down::before{background:var(--red)}
+.signal.good::before{background:var(--good)}
+.signal.ok::before{background:var(--ok)}
+.signal.poor::before{background:var(--poor)}
+.signal.bad::before{background:var(--bad)}
 .signal .name{font-size:11px;color:var(--muted);margin-bottom:5px}
 .signal .value{font-family:var(--num);font-size:23px;font-variant-numeric:tabular-nums;letter-spacing:-.02em}
 .signal .unit{font-size:11px;color:var(--muted);margin-left:2px}
-.signal.down .value{color:var(--red)}
+.signal.bad .value{color:var(--bad)}
+.signal.poor .value{color:var(--poor)}
 .signal .sub{font-size:11px;color:var(--muted);margin-top:3px;font-family:var(--num);
               line-height:1.35;min-height:2.7em}
 
@@ -70,11 +76,10 @@ main{flex:1;overflow-y:auto;overscroll-behavior:contain;-webkit-overflow-scrolli
        background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:4px;overflow:hidden}
 .strip i{min-width:0;border-radius:1px;background:var(--line)}
 .strip i.none{opacity:.3}
-.strip i.up{background:var(--green)}
-.strip i.slow{background:var(--amber)}
-.strip i.dns{background:var(--rail)}
-.strip i.part{background:var(--amber);opacity:.55}
-.strip i.down{background:var(--red)}
+.strip i.good{background:var(--good)}
+.strip i.ok{background:var(--ok)}
+.strip i.poor{background:var(--poor)}
+.strip i.bad{background:var(--bad)}
 .strip i.skip{background:var(--muted);opacity:.5}
 .strip i.pause{background:repeating-linear-gradient(45deg,var(--muted),var(--muted) 2px,transparent 2px,transparent 4px)}
 .strip-axis{display:flex;justify-content:space-between;font-size:10.5px;color:var(--muted);
@@ -120,12 +125,12 @@ input:focus,select:focus{outline:2px solid var(--rail);outline-offset:1px}
 /* pinned to the bottom of the viewport, and sticky once the page scrolls: the primary
    action stays under the thumb in both states. While recording, the readout takes the free
    space instead, so the log grows rather than leaving a hole above the buttons. */
-#readout:not([hidden]) ~ .controls{margin-top:0}
-.controls{display:flex;gap:8px;margin-top:auto;
-          position:sticky;bottom:0;z-index:2;background:var(--ground);padding:8px 0 2px}
-/* A fade above the bar, so a line disappearing under it reads as scroll, not as truncation */
-.controls::before{content:"";position:absolute;left:0;right:0;bottom:100%;height:14px;
-                  background:linear-gradient(transparent,var(--ground));pointer-events:none}
+/* Outside the scrolling area entirely. As a sticky element inside it the bar floated over
+   whatever happened to be behind it, and every layout change was another chance for a log
+   line to end up underneath. */
+.controls{flex:0 0 auto;display:flex;gap:8px;background:var(--ground);
+          padding:8px 14px 10px;max-width:560px;width:100%;margin:0 auto;
+          border-top:1px solid var(--line)}
 .controls button{flex:1}
 button{font:inherit;font-size:15px;font-weight:600;color:var(--text);background:var(--panel);
        border:1px solid var(--line);border-radius:10px;padding:15px 10px;cursor:pointer;
