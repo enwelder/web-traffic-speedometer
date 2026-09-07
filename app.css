@@ -54,19 +54,19 @@ main{flex:1;overflow-y:auto;overscroll-behavior:contain;-webkit-overflow-scrolli
                                 font-size:11.5px;line-height:1.35}
 .signal::before{content:"";position:absolute;inset:0 auto 0 0;width:3px;
                 background:var(--line);transition:background .18s}
-.signal.good::before{background:var(--good)}
-.signal.ok::before{background:var(--ok)}
-.signal.poor::before{background:var(--poor)}
-.signal.bad::before{background:var(--bad)}
+.signal.green::before{background:var(--good)}
+.signal.yellow::before{background:var(--ok)}
+.signal.orange::before{background:var(--poor)}
+.signal.red::before{background:var(--bad)}
 .signal .name{font-size:11px;color:var(--muted);margin-bottom:5px;line-height:1.3;
-              min-height:2.6em}
+              min-height:1.3em}
 /* The target is the qualifier, not the measurement: dimmer, so the metric reads first. */
 .signal .name span{opacity:.65}
 .signal.wide .name{min-height:0}
 .signal .value{font-family:var(--num);font-size:23px;font-variant-numeric:tabular-nums;letter-spacing:-.02em}
 .signal .unit{font-size:11px;color:var(--muted);margin-left:2px}
-.signal.bad .value{color:var(--bad)}
-.signal.poor .value{color:var(--poor)}
+.signal.red .value{color:var(--bad)}
+.signal.orange .value{color:var(--poor)}
 .signal .sub{font-size:11px;color:var(--muted);margin-top:3px;font-family:var(--num);
               line-height:1.35;min-height:2.7em}
 
@@ -80,10 +80,10 @@ main{flex:1;overflow-y:auto;overscroll-behavior:contain;-webkit-overflow-scrolli
        background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:4px;overflow:hidden}
 .strip i{min-width:0;border-radius:1px;background:var(--line)}
 .strip i.none{opacity:.3}
-.strip i.good{background:var(--good)}
-.strip i.ok{background:var(--ok)}
-.strip i.poor{background:var(--poor)}
-.strip i.bad{background:var(--bad)}
+.strip i.green{background:var(--good)}
+.strip i.yellow{background:var(--ok)}
+.strip i.orange{background:var(--poor)}
+.strip i.red{background:var(--bad)}
 .strip i.skip{background:var(--muted);opacity:.5}
 .strip i.pause{background:repeating-linear-gradient(45deg,var(--muted),var(--muted) 2px,transparent 2px,transparent 4px)}
 .strip-axis{display:flex;justify-content:space-between;font-size:10.5px;color:var(--muted);
@@ -132,6 +132,14 @@ input:focus,select:focus{outline:2px solid var(--rail);outline-offset:1px}
 /* Outside the scrolling area entirely. As a sticky element inside it the bar floated over
    whatever happened to be behind it, and every layout change was another chance for a log
    line to end up underneath. */
+/* Three taps that say what it felt like. Sat above the controls, outside the scroll area,
+   so they are reachable the instant something goes wrong. */
+.labels{flex:0 0 auto;display:flex;gap:8px;max-width:560px;width:100%;margin:0 auto;
+        padding:8px 14px 0;background:var(--ground)}
+.labels button{flex:1;font-size:13px;font-weight:500;padding:11px 8px;color:var(--muted)}
+.labels button[data-label="fine"].on{background:var(--good);border-color:var(--good);color:#06231A}
+.labels button[data-label="slow"].on{background:var(--ok);border-color:var(--ok);color:#1E1B04}
+.labels button[data-label="broken"].on{background:var(--bad);border-color:var(--bad);color:#2A0A08}
 .controls{flex:0 0 auto;display:flex;gap:8px;background:var(--ground);
           padding:8px 14px 10px;max-width:560px;width:100%;margin:0 auto;
           border-top:1px solid var(--line)}

@@ -1,52 +1,10 @@
 // DOM rendering only. Nothing here is persisted; the screen is a live readout.
 
 import {PROBES} from './probe.js';
+import {CAPABILITIES, GRADES, gradeRound, worse, stability, capabilityValue} from './grade.js';
 
 const STRIP_BARS = 48;
-
-// Grades named for what the connection can actually carry, not for round numbers.
-//
-//   good    pages open promptly, music streams, chat is instant
-//   ok      music and chat fine, pages noticeably slow
-//   poor    chat still works, music stutters, pages barely load
-//   bad     nothing usable
-//
-// Latency bounds come from page loads, which spend several round trips before anything
-// renders: under 300 ms feels immediate, beyond a second it feels broken. Rate bounds come
-// from the two things actually being done on a train — streamed audio needs about 0.3 Mb/s
-// sustained, so 0.5 is the floor with room to buffer, and a 2 MB page needs 3 Mb/s to
-// arrive in a few seconds rather than half a minute.
-const LATENCY_BANDS = [[300, 'good'], [1000, 'ok'], [3000, 'poor']];
-const RATE_BANDS = [[3e6, 'good'], [5e5, 'ok'], [1e5, 'poor']];
-const GRADE_RANK = {good: 0, ok: 1, poor: 2, bad: 3};
-
-export function gradeLatency(ms) {
-  if (ms == null) return null;
-  for (const [limit, grade] of LATENCY_BANDS) if (ms < limit) return grade;
-  return 'bad';
-}
-
-export function gradeRate(bps) {
-  if (bps == null) return null;
-  for (const [floor, grade] of RATE_BANDS) if (bps >= floor) return grade;
-  return 'bad';
-}
-
-const worseOf = (a, b) => (GRADE_RANK[a] >= GRADE_RANK[b] ? a : b);
-const TILES = ['ip6', 'dns', 'web', 'udp', 'down'];   // ip4 and dns_ctl ride along in subtitles
-const P90_WINDOW_MS = 5 * 60 * 1000;
-
-// Tapped, a tile says what it measures. Keeping this off the screen by default is the
-// difference between a readout and a wall of text.
-// Each says what this probe varies against the others: no lookup, a fresh lookup, a
-// different company, a different transport, bytes instead of a round trip.
-const EXPLAIN = {
-  ip6: 'Round trip to Cloudflare by IP address, so no name lookup happens at all. If this answers, the connection itself is working.',
-  dns: 'Round trip to a GitHub Pages hostname never used before, so your operator has to resolve it for real. The figure beside it is the same host once its name is known.',
-  web: 'Round trip to Google rather than Cloudflare. If this is the only one failing, the fault is at one company rather than on your connection.',
-  udp: 'Round trip over UDP, via a STUN request. Calls and streaming ride on UDP and a carrier can treat it differently from everything else here.',
-  down: 'A page-sized download, measured as a rate rather than a round trip. Everything above can answer quickly while there is still no usable speed.'
-};
+const STABILITY_ROUNDS = 10;
 
 export const $ = id => document.getElementById(id);
 const pad = n => String(n).padStart(2, '0');
@@ -75,109 +33,63 @@ export function notice(text) { $('notice').textContent = text || ''; }
 
 // A failure counts only if the probe ran and was not expected to fail: an absent record is
 // not a failure, and neither is an IPv4 literal on a network with no IPv4 path.
-export const counts = r => !!r && r.ok === false && !r.expected;
+export const counts = r => !!r && r.ok === false && !r.expected &&
+                           r.fail !== 'resting' && r.fail !== 'data_cap';
 
-// The grade of a round is the worst thing about it: a fast link that cannot resolve names
-// is not a good connection, and neither is a responsive one delivering no bytes.
+// The round's colour on the strip is the worst capability in it.
 export function classify(sample) {
   if (sample.skipped) return 'skip';
-  const r = id => sample.probes[id] || {};
-  const reachable = r('ip6').ok || r('ip4').ok;
-  if (!reachable && !r('web').ok) return 'bad';
-  // Names not resolving means nothing loads, however quick the link is.
-  if (!r('dns').ok && reachable) return 'poor';
-
-  let grade = 'good';
-  for (const id of ['ip6', 'dns', 'web']) {
-    const p = r(id);
-    if (counts(p)) return 'bad';
-    if (p.ok) grade = worseOf(grade, gradeLatency(p.ms));
-  }
-  const d = r('down');
-  if (counts(d)) grade = worseOf(grade, 'poor');
-  else if (d.ok && d.bps_transfer != null) grade = worseOf(grade, gradeRate(d.bps_transfer));
-  return grade;
+  const g = sample.grades || gradeRound(sample);
+  let worstGrade = null;
+  for (const cap of CAPABILITIES) worstGrade = worse(worstGrade, g?.[cap] ?? null);
+  return worstGrade || 'green';
 }
 
-const FLOOR_MS = 2;   // below this the transfer window is shorter than the clock resolves
+// Tapped, a tile says what it measures. Keeping this off the screen by default is the
+// difference between a readout and a wall of text.
+const EXPLAIN = {
+  realtime: 'Round trip to Cloudflare by IP address and over UDP, whichever is worse. Calls and live audio break on this before anything else does.',
+  tap:      'Round trip to Google, a host your phone already knows. What a tap on a link costs before the page starts arriving.',
+  newsite:  'Resolving a hostname never seen before, then reaching it. What visiting somewhere new costs, lookup included.',
+  video:    'Sustained rate after the connection has finished ramping up. The ramp is discarded, so this is what the link carries rather than how fast it accelerates.'
+};
 
-function tileValue(id, r) {
-  if (!r) return '—';
-  if (!r.ok) return r.fail === 'timeout' ? 'to' : r.fail === 'http' ? String(r.status) : 'gone';
-  if (id !== 'down') return String(r.ms);
-  // An unmeasurably short transfer still bounds the rate from below, which beats showing
-  // nothing for a download that plainly succeeded.
-  return r.bps_transfer ? rate(r.bps_transfer) : `>${rate((r.bytes * 8) / (FLOOR_MS / 1000))}`;
-}
-
-// A rolling p90 per probe. The median across a whole journey was 82 ms and said nothing;
-// the p90 over the last few minutes is the number that moves when the connection does.
 const history = {};
-let last = {sample: null, fails: {}, rounds: 0};
+let last = {sample: null, fails: {}, rounds: 0, shown: {}};
 
-// Latency probes contribute their round trip; the download contributes its rate, since a
-// millisecond figure rendered as a bitrate is how the tile came to read "p90 0 kb/s".
 export function trackLatency(sample) {
   if (!sample || sample.skipped) return;
-  for (const id of TILES) {
-    const r = sample.probes[id];
-    if (!r || !r.ok) continue;
-    const v = id === 'down' ? r.bps_transfer : r.ms;
+  for (const cap of CAPABILITIES) {
+    const v = capabilityValue(cap, sample);
     if (v == null) continue;
-    (history[id] ??= []).push({t: sample.t, v});
-    const cutoff = sample.t - P90_WINDOW_MS;
-    while (history[id].length && history[id][0].t < cutoff) history[id].shift();
+    (history[cap] ??= []).push({t: sample.t, v});
+    while (history[cap].length > STABILITY_ROUNDS) history[cap].shift();
   }
-}
-
-// Under eight samples a ninetieth percentile is just the largest value, so it is labelled
-// as the maximum until there are enough for the word to mean anything. On a 30 s interval
-// that fills after a minute and a half instead of showing a dash for four.
-const P90_MIN = 8;
-const WORST_MIN = 3;
-
-// Nearest-rank: the smallest value at or above the quantile. Rounding the index down
-// instead put a ten-sample window on its last element, so anything labelled p90 was in fact
-// the maximum, and it read high for a quarter of a journey's windows.
-export function quantile(sorted, q) {
-  if (!sorted.length) return null;
-  return sorted[Math.min(sorted.length - 1, Math.max(0, Math.ceil(sorted.length * q) - 1))];
-}
-
-export function worst(id) {
-  const h = history[id];
-  if (!h || h.length < WORST_MIN) return null;
-  const v = h.map(x => x.v).sort((a, b) => a - b);
-  // For a rate the bad end is the bottom, so the worst recent throughput is the low
-  // percentile, not the high one.
-  if (id === 'down') {
-    return h.length < P90_MIN
-      ? {label: 'slowest', value: v[0]}
-      : {label: 'p10', value: quantile(v, 0.1)};
-  }
-  return h.length < P90_MIN
-    ? {label: 'max', value: v[v.length - 1]}
-    : {label: 'p90', value: quantile(v, 0.9)};
 }
 
 export function resetHistory() {
   for (const k of Object.keys(history)) delete history[k];
-  last = {sample: null, fails: {}, rounds: 0};
+  last = {sample: null, fails: {}, rounds: 0, shown: {}};
 }
 
-export function setSignals(sample, fails, rounds) {
-  last = {sample, fails, rounds};
-  for (const id of TILES) {
-    const cell = $(`sig-${id}`);
-    const r = sample && !sample.skipped ? sample.probes[id] : null;
-    cell.classList.remove('good', 'ok', 'poor', 'bad');
-    if (r) {
-      const g = !r.ok ? 'bad'
-        : id === 'down' ? (gradeRate(r.bps_transfer) || 'good')
-        : (gradeLatency(r.ms) || 'good');
-      cell.classList.add(g);
-    }
-    $(`val-${id}`).textContent = sample && sample.skipped ? '–' : tileValue(id, r);
+export function stabilityOf(cap) {
+  return stability((history[cap] || []).map(x => x.v));
+}
+
+function displayValue(cap, value) {
+  if (value == null) return '—';
+  return cap === 'video' ? rate(value) : String(Math.round(value));
+}
+
+export function setSignals(sample, fails, rounds, shown) {
+  last = {sample, fails, rounds, shown};
+  for (const cap of CAPABILITIES) {
+    const cell = $(`cap-${cap}`);
+    cell.classList.remove(...GRADES);
+    const grade = shown?.[cap];
+    if (grade) cell.classList.add(grade);
+    $(`val-${cap}`).textContent = sample && sample.skipped
+      ? '–' : displayValue(cap, capabilityValue(cap, sample));
   }
   renderSubtitles();
 }
@@ -186,29 +98,28 @@ export function setSignals(sample, fails, rounds) {
 // keeps showing prose until the next measurement lands — which on the coarse profile would
 // leave it there for half a minute.
 export function renderSubtitles() {
-  const {sample, fails, rounds} = last;
+  const {sample, shown} = last;
   const p = sample && !sample.skipped ? sample.probes : null;
 
-  for (const id of TILES) {
-    if ($(`sig-${id}`).dataset.explain === 'on') { $(`sub-${id}`).textContent = EXPLAIN[id]; continue; }
-    const w = worst(id);
-    const head = w == null ? '' : id === 'down' ? `${w.label} ${rate(w.value)}` : `${w.label} ${w.value} ms`;
-    const n = fails[id] || 0;
-    const tail = n ? `${n}/${rounds} failed` : '';
-    const extra = [];
-
-    if (id === 'ip6' && p) extra.push(`v4 ${p.ip4.expected ? 'n/a' : p.ip4.ok ? 'ok' : 'no'}`);
-    // Named so it reads as a comparison: the same host, asked for again once its name is
-    // already known. The gap between the two is what a lookup costs.
-    if (id === 'dns' && p?.dns_ctl) {
-      extra.push(p.dns_ctl.ok ? `same host cached ${p.dns_ctl.ms} ms` : 'same host unreachable');
+  for (const cap of CAPABILITIES) {
+    if ($(`cap-${cap}`).dataset.explain === 'on') { $(`sub-${cap}`).textContent = EXPLAIN[cap]; continue; }
+    const parts = [];
+    // Variance sits beside the colour and never inside it: a link alternating between 40 ms
+    // and 900 ms is a different thing from one steady at 400.
+    const st = stabilityOf(cap);
+    if (st) parts.push(st.ratio >= 2 ? `swinging ×${st.ratio}` : `steady ×${st.ratio}`);
+    if (cap === 'realtime' && p) parts.push(`v4 ${p.ip4?.expected ? 'n/a' : p.ip4?.ok ? 'ok' : 'no'}`);
+    if (cap === 'newsite' && p?.dns_ctl) {
+      parts.push(p.dns_ctl.ok ? `known host ${p.dns_ctl.ms} ms` : 'known host unreachable');
+      if (p.dns?.retry_suspected) parts.push('resolver retried');
     }
-    if (id === 'down' && p?.down) {
-      if (p.down.truncated) extra.push(`cut short at ${(p.down.bytes / 1000) | 0} kB`);
-      else if (p.down.bps_end_to_end) extra.push(`${rate(p.down.bps_end_to_end)} end to end`);
+    if (cap === 'video' && p?.down) {
+      if (p.down.fail === 'data_cap') parts.push('stopped at data cap');
+      else if (p.down.insufficient_sample) parts.push('sample too short to rate');
+      else if (p.down.bps_peak) parts.push(`peak ${rate(p.down.bps_peak)}`);
     }
-
-    $(`sub-${id}`).textContent = [head, ...extra, tail].filter(Boolean).join(' · ') || '—';
+    if (shown?.[cap]) parts.push(shown[cap]);
+    $(`sub-${cap}`).textContent = parts.filter(Boolean).join(' · ') || '—';
   }
 }
 
@@ -255,10 +166,7 @@ export function setLamps(sample) {
 
 // One control turns every explanation on, since a tile that only reacts to being tapped is
 // not discoverable.
-export function setExplainAll(on) {
-  for (const id of TILES) $(`sig-${id}`).dataset.explain = on ? 'on' : 'off';
-  renderSubtitles();
-}
+
 
 // Newest first. Appending put the line that matters at the bottom, where the controls sit
 // over it and reading it meant scrolling on a moving train.
@@ -290,7 +198,7 @@ export function sampleLine(sample) {
          (d ? `  ${d.bps_transfer ? rate(d.bps_transfer) : 'fast'}` : '');
 }
 
-export function setStats({rounds, elapsed, pos, speed, data, marks, degraded}) {
+export function setStats({rounds, elapsed, pos, speed, data, marks, degraded, firstPacket}) {
   $('m-rounds').textContent = rounds;
   $('m-time').textContent = elapsed;
   $('m-pos').textContent = pos;
@@ -298,6 +206,7 @@ export function setStats({rounds, elapsed, pos, speed, data, marks, degraded}) {
   $('m-data').textContent = data;
   $('m-marks').textContent = marks;
   $('m-degraded').textContent = degraded;
+  $('m-first').textContent = firstPacket;
 }
 
 export function setRunning(running) {
@@ -308,18 +217,25 @@ export function setRunning(running) {
   $('btn-mark').hidden = !running;
   $('btn-mark').disabled = !running;
   $('setup').hidden = running;
+  $('labels').hidden = !running;
 }
 
 // Tap a tile to see what it measures; tap again to get the numbers back.
+
+
 export function bindExplanations() {
-  for (const id of TILES) {
-    const cell = $(`sig-${id}`);
+  for (const cap of CAPABILITIES) {
+    const cell = $(`cap-${cap}`);
     cell.onclick = () => {
-      const on = cell.dataset.explain === 'on';
-      cell.dataset.explain = on ? 'off' : 'on';
+      cell.dataset.explain = cell.dataset.explain === 'on' ? 'off' : 'on';
       renderSubtitles();
     };
   }
+}
+
+export function setExplainAll(on) {
+  for (const cap of CAPABILITIES) $(`cap-${cap}`).dataset.explain = on ? 'on' : 'off';
+  renderSubtitles();
 }
 
 export function switchView(name) {

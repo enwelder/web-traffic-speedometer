@@ -1,13 +1,16 @@
 import * as store from './store.js';
 import * as ui from './ui.js';
 import {PROBES} from './probe.js';
-import {createRecorder, environment, projectedBytes, PROFILES} from './session.js';
+import {createRecorder, environment, projectedBytes, downloadRoundsBeforeCap,
+        PROFILES, DOWNLOAD_DEFAULTS} from './session.js';
+import {createDisplay} from './grade.js';
 import {exportSession, exportAll} from './export.js';
 
 const PREFS_KEY = 'wts.prefs';
 const $ = ui.$;
 
 const fails = {};
+const display = createDisplay();
 let degradedRounds = 0;
 let scoredRounds = 0;
 let listDirty = true;
@@ -25,6 +28,8 @@ function profile() {
   const override = testInterval();
   return override ? {...base, intervalMs: override} : base;
 }
+
+let lastFirstPacket = null;
 
 const uuid = () => (crypto.randomUUID ? crypto.randomUUID()
   : 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
@@ -45,12 +50,16 @@ const recorder = createRecorder({
       if (PROBES.some(p => ui.counts(sample.probes[p.id]))) degradedRounds++;
     }
     ui.trackLatency(sample);
-    ui.setSignals(sample, fails, scoredRounds);
+    // Hysteresis lives here: the tiles show a state the window has agreed with twice, so a
+    // single slow round does not repaint the screen on a moving train.
+    const shown = sample.skipped ? display.current() : display.push(sample.grades);
+    ui.setSignals(sample, fails, scoredRounds, shown);
     ui.setLamps(sample);
     const kind = ui.classify(sample);
     ui.pushStrip(kind);
+    if (sample.first_packet_ms != null) lastFirstPacket = sample.first_packet_ms;
     ui.pushLog(ui.sampleLine(sample),
-               sample.skipped ? 'warn' : kind === 'good' || kind === 'ok' ? '' : 'bad');
+               sample.skipped ? 'warn' : kind === 'green' || kind === 'yellow' ? '' : 'bad');
   },
   onEvent(event) {
     if (event.type === 'pause') ui.pushStrip('pause');
@@ -66,7 +75,8 @@ const recorder = createRecorder({
       speed: c && c.speed != null ? `${Math.round(c.speed * 3.6)} km/h` : '—',
       data: ui.bytes(s.bytes) + (s.pending ? ` (${s.pending} held)` : ''),
       marks: s.marks,
-      degraded: scoredRounds ? `${Math.round((degradedRounds / scoredRounds) * 100)}%` : '—'
+      degraded: scoredRounds ? `${Math.round((degradedRounds / scoredRounds) * 100)}%` : '—',
+      firstPacket: lastFirstPacket == null ? '—' : `${lastFirstPacket} ms`
     });
   },
   onNotice: ui.notice
@@ -103,10 +113,17 @@ function syncSetup() {
   const wifi = $('f-connection').value === 'wifi';
   $('row-operator').hidden = wifi;
   $('f-operator-other').hidden = $('f-operator').value !== '__other';
-  const {intervalMs, downloadBytes} = profile();
-  const mb = projectedBytes(intervalMs, downloadBytes) / 1048576;
+  const {intervalMs} = profile();
+  const mb = projectedBytes(intervalMs, DOWNLOAD_DEFAULTS) / 1048576;
+  const rounds = downloadRoundsBeforeCap(DOWNLOAD_DEFAULTS);
+  const minutes = Math.round((rounds * intervalMs) / 60000);
   const el = $('budget');
-  el.textContent = `≈ ${Math.round(mb)} MB for a 40-minute run. A full page download every round is almost all of it.`;
+  // The throughput probe pulls for a fixed span, so on a fast link it reaches its ceiling
+  // every round and the cap arrives long before the journey ends. Better said here than
+  // discovered halfway.
+  el.textContent = `≈ ${Math.round(mb)} MB for a 40-minute run. The speed probe stops after ` +
+    `${DOWNLOAD_DEFAULTS.sessionDataCapMB} MB — about ${minutes} minutes on a fast link — ` +
+    `and everything else keeps running.`;
   // Past this the run costs more than a chunk of a monthly bundle, which is worth seeing
   // before pressing Start rather than afterwards.
   el.classList.toggle('warn', mb > 50);
@@ -129,7 +146,7 @@ function generatedName(operator, connection, started) {
 }
 
 function newSession() {
-  const {intervalMs, downloadBytes} = profile();
+  const {intervalMs} = profile();
   const connection = $('f-connection').value;
   const operator = operatorName();
   const started = Date.now();
@@ -141,12 +158,12 @@ function newSession() {
     started,
     stopped: null,
     intervalMs,
-    downloadBytes,
+    download: {...DOWNLOAD_DEFAULTS},
     profile: $('f-profile').value,
     // Determined by a preflight at start rather than assumed; null until then.
     ipv4_available: null,
     ipv4_check: null,
-    environment: environment(intervalMs, downloadBytes),
+    environment: environment(intervalMs, DOWNLOAD_DEFAULTS),
     exportedAt: null
   };
 }
@@ -156,6 +173,8 @@ function newSession() {
 async function begin() {
   for (const p of PROBES) fails[p.id] = 0;
   degradedRounds = scoredRounds = 0;
+  lastFirstPacket = null;
+  display.reset();
   ui.resetHistory();
   ui.clearLog();
   ui.clearStrip();
@@ -199,6 +218,8 @@ async function checkRecovery() {
     $('recover').hidden = true;
     for (const p of PROBES) fails[p.id] = 0;
     degradedRounds = scoredRounds = 0;
+    lastFirstPacket = null;
+    display.reset();
     ui.resetHistory();
     ui.clearLog();
     ui.clearStrip();
@@ -274,6 +295,14 @@ const handlers = {
 
 $('btn-start').onclick = () => (recorder.status().running ? end() : begin());
 $('btn-mark').onclick = () => recorder.mark();
+for (const b of document.querySelectorAll('#labels button')) {
+  b.onclick = () => {
+    recorder.label(b.dataset.label);
+    // A brief confirmation, because a tap with no feedback gets tapped twice.
+    b.classList.add('on');
+    setTimeout(() => b.classList.remove('on'), 900);
+  };
+}
 for (const id of ['f-connection', 'f-operator', 'f-profile']) $(id).onchange = syncSetup;
 ui.bindExplanations();
 

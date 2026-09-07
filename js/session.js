@@ -2,8 +2,10 @@
 // the ones that could not run at all — a failed attempt is the measurement, and must never
 // be represented by a missing row.
 
-import {PROBES, runRound, checkIpv4, clearTimings, timeoutFor,
-        STUCK_AFTER, STUCK_COOLDOWN, DEFAULT_DOWNLOAD_BYTES} from './probe.js';
+import {PROBES, runRound, checkIpv4, clearTimings, timeoutFor, looksLikeRetry,
+        STUCK_AFTER, STUCK_COOLDOWN, DEFAULT_DOWN_BUDGET_MS, DEFAULT_DOWN_MAX_BYTES,
+        DEFAULT_SESSION_CAP_MB} from './probe.js';
+import {gradeRound} from './grade.js';
 import * as realStore from './store.js';
 
 // Estimates. Safari opens a fresh connection per request rather than reusing one, so every
@@ -16,14 +18,20 @@ const REFUSED_BYTES = 100;      // an IPv4 literal with no path never gets a con
 // STUN is UDP: there is no handshake to charge, and no connection to resume.
 const cost = p => (WARM_BYTES[p.kind] * (p.samples || 1)) + (p.kind === 'stun' ? 0 : RESUMED_BYTES);
 
-export const APP_VERSION = '3.1.0';
+export const APP_VERSION = '3.2.0';
 
 // Two profiles instead of loose settings. The download is the only probe that measures
 // throughput rather than reachability, so it runs every round and the interval carries the
 // cost instead.
 export const PROFILES = {
-  fine:   {label: 'Fine — every 15 s',  intervalMs: 15000, downloadBytes: DEFAULT_DOWNLOAD_BYTES},
-  coarse: {label: 'Coarse — every 30 s', intervalMs: 30000, downloadBytes: DEFAULT_DOWNLOAD_BYTES}
+  fine:   {label: 'Fine — every 15 s',   intervalMs: 15000},
+  coarse: {label: 'Coarse — every 30 s', intervalMs: 30000}
+};
+
+export const DOWNLOAD_DEFAULTS = {
+  downBudgetMs: DEFAULT_DOWN_BUDGET_MS,
+  downMaxBytes: DEFAULT_DOWN_MAX_BYTES,
+  sessionDataCapMB: DEFAULT_SESSION_CAP_MB
 };
 
 const EARTH_M = 6371000;
@@ -42,12 +50,22 @@ function metresBetween(a, b) {
   return 2 * EARTH_M * Math.asin(Math.min(1, Math.sqrt(h)));
 }
 
-export function projectedBytes(intervalMs, downloadBytes, minutes = 40) {
+// The download is time-boxed, so its size depends on the link. The projection assumes it
+// reaches its byte ceiling, which is what happens on anything fast, and stops at the session
+// cap — which on a quick connection arrives well before the journey ends.
+export function projectedBytes(intervalMs, settings = DOWNLOAD_DEFAULTS, minutes = 40) {
   const rounds = Math.round((minutes * 60000) / intervalMs);
-  return rounds * (PROBES.reduce((n, p) => n + cost(p), 0) + downloadBytes);
+  const small = PROBES.reduce((n, p) => n + cost(p), 0);
+  const capBytes = settings.sessionDataCapMB * 1e6;
+  const downloadRounds = Math.min(rounds, Math.floor(capBytes / settings.downMaxBytes));
+  return rounds * small + downloadRounds * settings.downMaxBytes;
 }
 
-export function environment(intervalMs, downloadBytes) {
+export function downloadRoundsBeforeCap(settings = DOWNLOAD_DEFAULTS) {
+  return Math.floor((settings.sessionDataCapMB * 1e6) / settings.downMaxBytes);
+}
+
+export function environment(intervalMs, downloadSettings = DOWNLOAD_DEFAULTS) {
   const c = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
   return {
     app_version: APP_VERSION,
@@ -56,7 +74,7 @@ export function environment(intervalMs, downloadBytes) {
     timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
     screen: `${screen.width}x${screen.height}@${devicePixelRatio}`,
     interval_ms: intervalMs,
-    download_bytes: downloadBytes,
+    download: {...DOWNLOAD_DEFAULTS, ...downloadSettings},
     timeouts_ms: Object.fromEntries(PROBES.map(p => [p.id, timeoutFor(p, intervalMs)])),
     probes: PROBES.map(p => ({id: p.id, url: p.url, kind: p.kind,
                               mode: p.kind === 'opaque' ? 'no-cors' : 'cors',
@@ -94,6 +112,9 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
   const restingUntil = {};
   let throughput = null;
   let udpMs = null;
+  let downloadBytesUsed = 0;
+  let capReached = false;
+  let lastGrades = null;
   let flushing = false;
   let writeFailed = false;
   let current = null;
@@ -107,7 +128,8 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
 
   function status() {
     return {
-      running, session, seq, marks, bytes, throughput, udpMs,
+      running, session, seq, marks, bytes, throughput, udpMs, grades: lastGrades,
+      capReached, downloadMB: Math.round(downloadBytesUsed / 1e5) / 10,
       speedKmh: lastSpeed == null ? null : Math.round(lastSpeed * 3.6),
       speedSource: lastSpeedSource,
       pending: pendingSamples.length + pendingEvents.length,
@@ -197,6 +219,7 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
       const r = row.probes[p.id];
       if (!r) continue;
       if (r.expected && !r.ok) { bytes += REFUSED_BYTES; continue; }
+      if (r.fail === 'data_cap' || r.fail === 'resting') continue;
       const attempts = r.ms_samples ? r.ms_samples.length : 1;
       bytes += WARM_BYTES[p.kind] * attempts + (p.kind === 'download' ? r.bytes || 0 : 0);
       if (p.kind !== 'stun') {
@@ -279,10 +302,11 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
     try {
       row.probes = await runRound({
         signal: abort.signal,
-        downloadBytes: session.downloadBytes,
+        download: session.download || DOWNLOAD_DEFAULTS,
         intervalMs: interval(),
         ipv4Available: session.ipv4_available,
-        resting: resting()
+        resting: resting(),
+        skipDownload: capReached
       });
     } catch (e) {
       row.round_error = String(e && e.message || e);
@@ -295,10 +319,34 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
     }
 
     if (!holdingWakeLock()) acquireWakeLock();
+    // The download is the only probe with an open-ended appetite, so it is the only one the
+    // cap can stop. Everything else keeps running: reachability still matters after the
+    // budget for measuring speed has gone.
+    const pulled = row.probes.down?.bytes || 0;
+    downloadBytesUsed += pulled;
+    const capMB = (session.download || DOWNLOAD_DEFAULTS).sessionDataCapMB;
+    if (!capReached && downloadBytesUsed >= capMB * 1e6) {
+      capReached = true;
+      noteEvent(`download probe stopped: ${Math.round(downloadBytesUsed / 1e6)} MB data cap reached`);
+      onNotice?.('Data cap reached — the throughput probe has stopped. Everything else continues.');
+    }
+
+    // The radio has to wake before anything answers; the quickest first response in the
+    // round is the closest measure of that cost. Reported, never graded.
+    const firsts = [row.probes.ip6?.ms_samples?.[0], row.probes.web?.ms_samples?.[0],
+                    row.probes.dns_ctl?.ms_samples?.[0], row.probes.udp?.ms_samples?.[0],
+                    row.probes.down?.connect_ms].filter(v => v != null && v >= 0);
+    row.first_packet_ms = firsts.length ? Math.min(...firsts) : null;
+
+    // Resolved here, once, so the file says what was shown and the screen does not
+    // recompute a second opinion from the same rows.
+    row.grades = gradeRound(row);
+    lastGrades = row.grades;
+
     updateStuck(row);
     charge(row);
     clearTimings();
-    if (row.probes.down?.ok) throughput = row.probes.down.bps_transfer;
+    if (row.probes.down?.ok) throughput = row.probes.down.bps_steady;
     if (row.probes.udp) udpMs = row.probes.udp.ok ? row.probes.udp.ms : null;
 
     keep(row);
@@ -422,6 +470,9 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
     bytes = 0;
     throughput = null;
     udpMs = null;
+    downloadBytesUsed = 0;
+    capReached = false;
+    lastGrades = null;
     wakeLockLost = false;
     inFlight = false;
     contacted.clear();
@@ -481,6 +532,16 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
     emit();
   }
 
+  // What the connection felt like, from the person using it. The probes cannot see this,
+  // and without it there is nothing to check the thresholds against.
+  function label(value) {
+    if (!running) return;
+    const p = position();
+    record({sessionId: session.id, t: Date.now(), mono: Math.round(mono()), type: 'label',
+            lat: p.lat, lon: p.lon, text: value});
+    emit();
+  }
+
   function note(text) {
     if (!running || !text) return;
     const p = position();
@@ -492,5 +553,5 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
     if (document.visibilityState === 'visible' && running) acquireWakeLock();
   });
 
-  return {start, stop, mark, note, status, flush};
+  return {start, stop, mark, note, label, status, flush};
 }

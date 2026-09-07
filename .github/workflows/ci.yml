@@ -22,6 +22,8 @@ jobs:
       - run: npm ci
       - name: unit and integration
         run: node tests/run.mjs unit
+      - name: grading, and replay against real recordings
+        run: node tests/run.mjs grading replay regressions
       - name: install browser
         run: npx playwright install --with-deps chromium
       - name: end to end in a browser

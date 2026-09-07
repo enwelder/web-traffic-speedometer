@@ -4,16 +4,12 @@
 
 import {PROBES} from './probe.js';
 import {APP_VERSION} from './session.js';
+import {CAPABILITIES, THRESHOLDS, quantile} from './grade.js';
 import * as store from './store.js';
 
 // A descriptive rollup, so a reader does not recompute the same six aggregates every time.
 // It states no verdict — no outage definition, no thresholds — and every figure in it can be
 // rebuilt from the samples, which is what keeps the raw rows the only source of truth.
-function quantile(sorted, q) {
-  if (!sorted.length) return null;
-  return sorted[Math.min(sorted.length - 1, Math.max(0, Math.ceil(sorted.length * q) - 1))];
-}
-
 export function summarise(samples) {
   const ran = samples.filter(s => !s.skipped && !s.round_error);
   const probes = {};
@@ -38,8 +34,22 @@ export function summarise(samples) {
     probes[p.id] = entry;
   }
 
+  // Per capability, the grades actually resolved during the run. Counting them here means a
+  // reader can check thresholds against what was felt without recomputing anything.
+  const grades = {};
+  for (const cap of CAPABILITIES) {
+    const seen = {};
+    for (const s of ran) {
+      const g = s.grades?.[cap];
+      if (g) seen[g] = (seen[g] || 0) + 1;
+    }
+    grades[cap] = seen;
+  }
+
   const fixed = ran.filter(s => s.accuracy_class === 'gps');
   return {
+    thresholds: THRESHOLDS,
+    grades,
     generated_by: `wts ${APP_VERSION}`,
     rounds: samples.length,
     ran: ran.length,
@@ -69,6 +79,10 @@ export function sessionJson(session, samples, events) {
     exported: new Date().toISOString(),
     probes: PROBES.map(p => ({id: p.id, url: p.url, kind: p.kind})),
     summary: summarise(samples),
+    // Pulled out of the event list so a confusion matrix of label against grade is one join
+    // rather than a filter: this is what the thresholds get checked against.
+    labels: events.filter(e => e.type === 'label')
+                  .map(e => ({t: e.t, mono: e.mono, label: e.text, lat: e.lat, lon: e.lon})),
     session, samples, events
   }, null, 1);
 }

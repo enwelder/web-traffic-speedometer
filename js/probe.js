@@ -12,8 +12,21 @@
 // stays cached for an hour — so dns failing while dns_ctl succeeds is a resolution failure
 // and nothing else, with the destination held constant.
 
-export const DOWNLOAD_SIZES = [100000, 250000, 500000];
-export const DEFAULT_DOWNLOAD_BYTES = 250000;
+// Time-boxed rather than fixed-size. A 250 kB body never leaves TCP slow start, so the rate
+// it implies is how fast the congestion window ramps, not what the link can carry — 4 Mb/s
+// on 5G. The probe now pulls for a fixed span, discards the ramp, and measures what is left.
+export const DOWNLOAD_REQUEST_BYTES = 50000000;   // asked for; abandoned long before it arrives
+export const DEFAULT_DOWN_BUDGET_MS = 2000;
+export const DEFAULT_DOWN_MAX_BYTES = 5000000;
+export const DEFAULT_SESSION_CAP_MB = 250;
+// Slow start is over once the window has had time to grow: whichever of these comes later.
+export const WARMUP_MS = 500;
+export const WARMUP_BYTES = 131072;
+// A window this short is still thousands of packets on a fast link; the limit exists for
+// clock resolution, not sample size. It also has to be reachable when the byte ceiling ends
+// the transfer in a couple of hundred milliseconds.
+export const MIN_STEADY_MS = 100;
+export const PEAK_WINDOW_MS = 500;
 // 8 s for everything that uses TCP. Journey data showed small probes succeeding at 3885 ms
 // against a 4000 ms ceiling, so the old limit was recording slow-but-working rounds as
 // failures and destroying the distinction between slow and gone.
@@ -35,13 +48,15 @@ export const PROBES = [
   {id: 'ip6',     label: 'no DNS · v6', kind: 'trace',    url: 'https://[2606:4700:4700::1111]/cdn-cgi/trace', samples: 3},
   {id: 'ip4',     label: 'no DNS · v4', kind: 'trace',    url: 'https://1.1.1.1/cdn-cgi/trace'},
   {id: 'dns',     label: 'DNS fresh',   kind: 'opaque',   url: 'https://%RANDOM%.github.io/',      method: 'HEAD'},
-  {id: 'dns_ctl', label: 'DNS cached',  kind: 'opaque',   url: 'https://wts-dns-control.github.io/', method: 'HEAD'},
-  {id: 'web',     label: 'other net',   kind: 'opaque',   url: 'https://www.gstatic.com/generate_204'},
+  // Sampled like ip6, so the four latency probes are comparable: one of them discarding a
+  // cold first sample while the others kept theirs made their medians mean different things.
+  {id: 'dns_ctl', label: 'DNS cached',  kind: 'opaque',   url: 'https://wts-dns-control.github.io/', method: 'HEAD', samples: 3},
+  {id: 'web',     label: 'other net',   kind: 'opaque',   url: 'https://www.gstatic.com/generate_204', samples: 3},
   {id: 'down',    label: 'throughput',  kind: 'download', url: 'https://speed.cloudflare.com/__down'},
   // The only probe that leaves over UDP. Streaming and calls use UDP, and a carrier can
   // treat it differently from TCP, so a UDP path that fails while TCP holds is its own
   // finding — and the address it reports is the NAT mapping for a different transport.
-  {id: 'udp',     label: 'UDP',         kind: 'stun',     url: STUN_SERVER}
+  {id: 'udp',     label: 'UDP',         kind: 'stun',     url: STUN_SERVER, samples: 3}
 ];
 
 const rand = () => {
@@ -121,18 +136,27 @@ async function readTiming(url) {
   };
 }
 
-function probeUrl(probe, downloadBytes) {
+function probeUrl(probe) {
   const base = probe.id === 'dns' ? probe.url.replace('%RANDOM%', rand())
-             : probe.id === 'down' ? `${probe.url}?bytes=${downloadBytes}`
+             : probe.id === 'down' ? `${probe.url}?bytes=${DOWNLOAD_REQUEST_BYTES}`
              : probe.url;
   return base + (base.includes('?') ? '&' : '?') + '_=' + Date.now() + rand().slice(0, 4);
+}
+
+// A resolver that gets no answer retries on a fixed timer, so a cluster of near-identical
+// multi-second values is packet loss wearing latency's clothes. Three readings 23 ms apart
+// at 2.2 s in one journey is a timer, not a slow lookup.
+const RETRY_TIMERS_MS = [2000, 5000];
+const RETRY_TOLERANCE_MS = 300;
+export function looksLikeRetry(ms) {
+  return ms != null && RETRY_TIMERS_MS.some(t => Math.abs(ms - t) <= RETRY_TOLERANCE_MS);
 }
 
 // `fail` is the reason, never merely the fact: timeout | network | http | parse | abort.
 // `ms` is filled in on failure too, since how long a probe took to fail separates a refused
 // connection from a link that hung until the deadline.
 // One attempt. `runProbe` wraps this with repetition for probes that ask for samples.
-async function runOnce(probe, {timeoutMs = TIMEOUT_MS, signal, downloadBytes = DEFAULT_DOWNLOAD_BYTES} = {}) {
+async function runOnce(probe, {timeoutMs = TIMEOUT_MS, signal, download = {}} = {}) {
   if (probe.kind === 'stun') return runStun(probe, {timeoutMs, signal});
   const r = {ok: false, ms: null, status: null, fail: null};
   const ctl = new AbortController();
@@ -142,7 +166,7 @@ async function runOnce(probe, {timeoutMs = TIMEOUT_MS, signal, downloadBytes = D
   const relay = () => ctl.abort();
   if (signal) signal.addEventListener('abort', relay, {once: true});
 
-  const url = probeUrl(probe, downloadBytes);
+  const url = probeUrl(probe);
   if (probe.id === 'dns' || probe.id === 'dns_ctl') r.host = new URL(url).hostname;
   const t0 = performance.now();
   const since = () => Math.round(performance.now() - t0);
@@ -161,16 +185,18 @@ async function runOnce(probe, {timeoutMs = TIMEOUT_MS, signal, downloadBytes = D
       // Opaque: the status is genuinely unknowable, so success means the request completed.
       r.ok = true;
       r.ms = since();
+      if (probe.id === 'dns' && looksLikeRetry(r.ms)) r.retry_suspected = true;
       return r;
     }
 
     r.status = res.status;
     if (!res.ok) { r.ms = since(); r.fail = 'http'; return r; }
 
-    if (probe.kind === 'download') return await readDownload(res, r, url, since, timedOut);
+    if (probe.kind === 'download') return await readDownload(res, r, url, since, timedOut, ctl, download);
 
     const trace = parseTrace(await res.text());
     r.ms = since();
+    if (probe.id === 'dns' && looksLikeRetry(r.ms)) r.retry_suspected = true;
     const bad = validateTrace(trace, url);
     if (bad) { r.fail = 'parse'; r.parse_reason = bad; return r; }
     r.ok = true;
@@ -187,50 +213,104 @@ async function runOnce(probe, {timeoutMs = TIMEOUT_MS, signal, downloadBytes = D
   }
 }
 
-// The body is streamed rather than awaited whole, so a download cut short by the deadline
-// still yields a throughput figure — on a saturated cell that partial number is the
-// measurement, and discarding it would throw away the case being investigated.
-async function readDownload(res, r, url, since, timedOut) {
+// Pulls for a fixed span rather than a fixed size, discards the ramp, and measures what is
+// left. A 250 kB body finishes inside TCP slow start, so the rate it implies describes the
+// congestion window growing, not the link — 4 Mb/s on a 5G connection that carries far more.
+// Aborted early on purpose: the request asks for far more than will ever be read.
+async function readDownload(res, r, url, since, timedOut, ctl, opts) {
+  const budgetMs = opts.budgetMs ?? DEFAULT_DOWN_BUDGET_MS;
+  const maxBytes = opts.maxBytes ?? DEFAULT_DOWN_MAX_BYTES;
   const server = parseServerTiming(res.headers.get('server-timing'));
-  const firstByteAt = performance.now();
+  const t0 = performance.now();
+  // One mark per chunk. Everything below is a question about this series.
+  const marks = [{t: 0, bytes: 0}];
   let bytes = 0;
+  let reason = 'eof';
   let truncated = false;
 
   try {
     const reader = res.body.getReader();
     for (;;) {
       const {done, value} = await reader.read();
-      if (done) break;
+      if (done) { reason = 'eof'; break; }
       bytes += value.byteLength;
+      marks.push({t: performance.now() - t0, bytes});
+      if (bytes >= maxBytes) { reason = 'bytes'; break; }
+      if (performance.now() - t0 >= budgetMs) { reason = 'time'; break; }
     }
+    // Stop the transfer rather than letting the rest of a 50 MB body arrive unread.
+    try { await reader.cancel(); } catch { /* already closed */ }
+    if (reason !== 'eof') ctl.abort();
   } catch {
     truncated = true;
+    reason = timedOut ? 'timeout' : 'aborted';
   }
 
+  const duration = Math.round(marks[marks.length - 1].t);
   r.ms = since();
   r.bytes = bytes;
+  r.duration_ms = duration;
+  r.aborted_reason = reason;
   r.truncated = truncated;
   r.server = server;
   Object.assign(r, await readTiming(url) || {});
 
-  // Prefer the browser's own responseStart..responseEnd window; the stream loop only sees
-  // the body once buffered, which on a fast link reads as near-zero time.
-  const window = r.transfer_ms != null ? r.transfer_ms : Math.round(performance.now() - firstByteAt);
-  r.transfer_ms = window;
+  const warm = warmupMark(marks, duration, reason);
+  r.warmup_ms = warm ? Math.round(warm.t) : null;
+  r.warmup_bytes = warm ? warm.bytes : null;
 
-  // Two rates, because they answer different questions. bps_transfer is the payload phase
-  // alone, which is what a stalled article download actually experiences. bps_end_to_end
-  // includes connection setup, which at small sizes is the handshake wearing a throughput
-  // costume. Below a 2 ms window the clock cannot resolve the phase, so no rate is given
-  // rather than an invented one; bytes and transfer_ms always stand.
-  r.bps_transfer = window >= 2 && bytes > 0 ? Math.round((bytes * 8) / (window / 1000)) : null;
-  r.bps_end_to_end = r.ms >= 2 && bytes > 0 ? Math.round((bytes * 8) / (r.ms / 1000)) : null;
+  const steadyMs = warm ? duration - warm.t : 0;
+  // Enough wall clock to divide by, and enough of the transfer that the ramp is not most of
+  // what is being rated.
+  if (!warm || steadyMs < MIN_STEADY_MS || steadyMs < duration / 3) {
+    // Nothing outside the ramp to divide by. Say so rather than grade the ramp.
+    r.bps_steady = null;
+    r.insufficient_sample = true;
+  } else {
+    r.bps_steady = Math.round(((bytes - warm.bytes) * 8) / (steadyMs / 1000));
+    r.insufficient_sample = false;
+  }
+  // The peak window has to fit inside the steady portion, or it drags the ramp back in and
+  // reports a "peak" below the sustained rate.
+  r.bps_peak = bestWindow(marks, Math.min(PEAK_WINDOW_MS, Math.max(100, duration / 3)));
 
   r.ok = bytes > 0 && !truncated;
   if (!r.ok) r.fail = truncated ? (timedOut ? 'timeout' : 'abort') : 'network';
   r.colo = res.headers.get('cf-meta-colo') || null;
   r.egress_ip = res.headers.get('cf-meta-ip') || null;
   return r;
+}
+
+// Where the ramp ends. A fixed 500 ms fails at both extremes: on a fast link the byte
+// ceiling arrives first — 5 MB lands in 300 ms at 133 Mb/s, so 500 ms never comes and the
+// round would report nothing — and on a very slow one 128 kB never arrives inside the
+// budget, which would discard exactly the congested cell worth measuring.
+function warmupMark(marks, duration, reason) {
+  // Normal case, with the time requirement capped so there is always something left to rate.
+  const gate = Math.min(WARMUP_MS, duration / 3);
+  const found = marks.find(m => m.t >= gate && m.bytes >= WARMUP_BYTES);
+  if (found) return found;
+
+  // Slower than 128 kB in the whole budget. On a link like that the congestion window is
+  // not the limit — the link is — so the ramp is not worth discarding beyond a fraction.
+  if (reason === 'time' && marks[marks.length - 1].bytes > 0) {
+    return marks.find(m => m.t >= duration * 0.25) || null;
+  }
+  return null;
+}
+
+// The best sustained rate over any window of the given width — the closest this gets to
+// "what the link managed at its best", uncontaminated by the ramp at either end.
+function bestWindow(marks, widthMs) {
+  let best = null;
+  for (let i = 0, j = 0; j < marks.length; j++) {
+    while (marks[j].t - marks[i].t > widthMs) i++;
+    const span = marks[j].t - marks[i].t;
+    if (span < widthMs / 2) continue;
+    const bps = ((marks[j].bytes - marks[i].bytes) * 8) / (span / 1000);
+    if (best == null || bps > best) best = bps;
+  }
+  return best == null ? null : Math.round(best);
 }
 
 const median = xs => {
@@ -336,15 +416,19 @@ function runStun(probe, {timeoutMs, signal}) {
   });
 }
 
-export async function runRound({signal, downloadBytes = DEFAULT_DOWNLOAD_BYTES,
-                                intervalMs = 5000, ipv4Available = true, resting = null} = {}) {
+export async function runRound({signal, download = {}, intervalMs = 5000,
+                                ipv4Available = true, resting = null, skipDownload = false} = {}) {
   const results = await Promise.all(PROBES.map(p => {
     // A probe resting to clear a wedged connection still produces a row, so the round stays
     // complete and the reason is in the data rather than looking like twenty more timeouts.
     if (resting?.has(p.id)) {
       return Promise.resolve({ok: false, ms: null, status: null, fail: 'resting', stuck: true});
     }
-    return runProbe(p, {signal, downloadBytes, timeoutMs: timeoutFor(p, intervalMs)});
+    // Past the session's data cap the download stops while everything else carries on.
+    if (p.kind === 'download' && skipDownload) {
+      return Promise.resolve({ok: false, ms: null, status: null, fail: 'data_cap'});
+    }
+    return runProbe(p, {signal, download, timeoutMs: timeoutFor(p, intervalMs)});
   }));
   const out = {};
   PROBES.forEach((p, i) => {

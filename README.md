@@ -34,6 +34,12 @@ network too degraded to fetch anything, which is the condition the tool exists t
 
 ## Development
 
+Recordings are anonymised into fixtures with `node tools/anonymise.mjs <recording> <fixture>`.
+Coordinates are removed rather than fuzzed, addresses and user agents redacted, timestamps
+shifted to a fixed epoch with intervals preserved, and every measurement left untouched. The
+tool refuses to write a file that still carries anything identifying, and a security test
+re-checks every committed fixture.
+
 Anything local to one machine goes in `.dev/` — recorded journeys, scratch files, notes.
 The directory is ignored as a whole rather than by filename, because a recording carries a
 home address, a workplace and a daily timetable, and this repository is public. Two security
@@ -49,6 +55,12 @@ npm run serve   # http://localhost:8731
 
 `tests/unit.mjs` exercises the probes, the round loop, classification and export with no
 browser and no network; the store is injected, so failure and retry paths are reachable.
+`tests/grading.mjs` covers the thresholds, the window and the hysteresis.
+`tests/replay.mjs` runs three anonymised real journeys — a good 5G run, a commute with pauses
+and coarse positions, and the one where a probe wedged for twenty rounds — through the
+grading and the rollup. Synthetic fixtures agree with whatever the code does; recordings do
+not, and both times the grading was wrong it was a recording that said so.
+`tests/regressions.mjs` pins bugs found in the field rather than in review.
 `tests/browser.mjs` drives a real browser for the parts that only exist there — IndexedDB,
 crash recovery, the service worker, downloads, the CSP and the phone layout — against a
 simulated IPv6-only network. `tests/security.mjs` is described below.
@@ -325,6 +337,42 @@ round-trip samples. With a page-sized download every round they are populated; w
 or infrequent one the header can arrive before any samples exist. Read an all-zero `cfL4`
 block as *no data*, never as a measurement of zero.
 
+### Grades are capabilities, not probes
+
+A probe's number means nothing on its own. The fresh-lookup probe costs about 200 ms on a
+perfect link — a real lookup plus a hostname the edge has never seen are part of what it
+measures — so holding it to the same scale as a warm round trip marked a healthy afternoon
+yellow for hours. Each capability is graded on thresholds that belong to it:
+
+| capability | read from | green | yellow | orange | red |
+|---|---|---|---|---|---|
+| calls & real-time | direct round trip; either transport failing | <100 ms | 100–200 | 200–400 | >400 or loss |
+| tapping a link | round trip to a known host | <300 ms | 300–1000 | 1000–3000 | >3000 |
+| opening a new site | fresh lookup and reach | <400 ms | 400–1200 | 1200–3000 | >3000 |
+| video & downloads | sustained rate after the ramp | >10 Mb/s | 5–10 | 1.5–5 | <1.5 |
+
+Every edge is a constant in `THRESHOLDS`, tunable in one place. Nothing consults the
+session's own statistics: a connection is not good merely because it is no worse than the
+rest of the journey.
+
+A capability with no usable input is graded `null` rather than guessed — a download too short
+to rate is not a slow one. UDP contributes whether the path exists, not how long it took: a
+STUN exchange carries ICE gathering on top of a round trip, and grading its milliseconds as
+the link's put a 33 ms connection in orange.
+
+The grades are resolved once per round and stored in the file, so what was on screen and what
+is in the export cannot disagree.
+
+### Windows and hysteresis
+
+The screen shows the worst of the last three rounds, and changes only after the window has
+agreed with itself twice — in both directions. One slow round does not repaint a screen being
+read on a moving train, and one good round does not clear a bad stretch.
+
+Variance is reported beside the colour and never inside it. A link alternating between 40 ms
+and 900 ms is a different thing from one steady at 400, and folding them into one grade would
+hide exactly the behaviour worth seeing.
+
 ### Colours mean what the connection can carry
 
 Four grades, named for the experience rather than for round numbers:
@@ -412,7 +460,12 @@ roughly 11 kB per round between them, of which the sampled latency probe is abou
 the UDP probe a few hundred bytes. The projection for the chosen settings is shown before
 a run starts and a running estimate during it, and the projection turns amber past 50 MB.
 
-Approximate totals for a 40-minute journey: **Fine ≈ 40 MB**, **Coarse ≈ 20 MB**.
+A time-boxed download reaches its byte ceiling every round on anything fast, so the session
+cap decides the total and the interval decides how much of the journey has throughput data.
+With the defaults — 2 s budget, 5 MB ceiling, 250 MB cap — both profiles land near 250 MB;
+the speed probe stops after about 12 minutes on Fine and 25 on Coarse, and every other probe
+carries on. The projection and the point at which the speed probe stops are both shown before
+Start.
 
 The interval sets both the cost and the resolution: a 30-second interval cannot locate the
 start of a dropout more precisely than 30 seconds. The estimate charges a TLS handshake per

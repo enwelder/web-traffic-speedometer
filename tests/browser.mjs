@@ -93,17 +93,13 @@ b.test('the tiles are named for where they go', async () => {
   const {ctx} = await context();
   const page = await ctx.newPage();
   await page.goto(BASE, {waitUntil: 'networkidle'});
+  // The screen answers what you can do, not which endpoint answered: a probe's number means
+  // nothing until it is held against a threshold that belongs to it.
   const names = await page.$$eval('.signal .name', els => els.map(e => e.textContent.trim()));
-  assert.deepEqual(names, [
-    'latency direct (Cloudflare)', 'latency DNS (GitHub)', 'latency (Google)',
-    'latency UDP (Cloudflare)', 'rate (Cloudflare)'
-  ], `one axis for all five — metric, then what varies, then who answered: ${names.join(' | ')}`);
-  // Four latencies and one rate: the labels have to make that obvious at a glance.
-  assert.equal(names.filter(n => n.startsWith('latency')).length, 4);
-  assert.equal(names.filter(n => n.startsWith('rate')).length, 1);
-  // UDP is a probe like the rest, so it belongs with them rather than among the counters.
-  assert.equal(await page.locator('#m-udp').count(), 0, 'and not in the statistics block');
-  assert.equal(await page.locator('#lamp-udp').count(), 0, 'nor duplicated as a lamp');
+  assert.deepEqual(names, ['calls & real-time', 'tapping a link', 'opening a new site',
+                           'video & downloads'],
+                   `capabilities, not probes: ${names.join(' | ')}`);
+  assert.equal(await page.locator('#m-udp').count(), 0, 'no probe readings among the counters');
   await ctx.close();
 });
 
@@ -126,16 +122,25 @@ b.test('the page loads clean, and the setup asks only what it cannot know', asyn
   await ctx.close();
 });
 
-b.test('the projection tracks the settings and warns when a run gets expensive', async () => {
+b.test('the projection says where the cost goes and when the speed probe stops', async () => {
   const {ctx} = await context();
   const page = await ctx.newPage();
   await page.goto(PLAIN, {waitUntil: 'networkidle'});
-  const read = () => page.$eval('#budget', e => [Number(e.textContent.match(/(\d+) MB/)[1]), e.classList.contains('warn')]);
+  const read = () => page.$eval('#budget', e => e.textContent);
   await page.selectOption('#f-profile', 'coarse');
-  const [cheap] = await read();
+  const coarse = await read();
   await page.selectOption('#f-profile', 'fine');
-  const [dear] = await read();
-  assert.ok(dear > cheap * 1.8, `the finer profile costs about twice as much: ${cheap} vs ${dear} MB`);
+  const fine = await read();
+
+  // A time-boxed download reaches its ceiling every round on a fast link, so the cap decides
+  // the total and the interval decides how much of the journey gets throughput data.
+  const mb = t => Number(t.match(/≈ (\d+) MB/)[1]);
+  assert.ok(Math.abs(mb(fine) - mb(coarse)) < 20,
+            `both land near the cap: ${mb(coarse)} and ${mb(fine)} MB`);
+  const minutes = t => Number(t.match(/about (\d+) minutes/)[1]);
+  assert.ok(minutes(coarse) > minutes(fine) * 1.8,
+            `and the coarse profile keeps measuring longer: ${minutes(fine)} vs ${minutes(coarse)} min`);
+  assert.match(fine, /speed probe stops/, 'and it says so before Start rather than mid-journey');
   await ctx.close();
 });
 
@@ -146,13 +151,18 @@ b.test('a session records, survives a reload, and exports losslessly', async () 
   await page.selectOption('#f-operator', 'Odido');
   await page.click('#btn-start');
   await page.waitForTimeout(3000);
-  assert.match(await page.textContent('#sub-ip6'), /v4 n\/a/, 'an absent IPv4 path is not a failure');
-  assert.match(await page.textContent('#sub-dns'), /cached/, 'the DNS control shares the tile');
+  assert.match(await page.textContent('#sub-realtime'), /v4 n\/a/, 'an absent IPv4 path is not a failure');
+  assert.match(await page.textContent('#sub-newsite'), /known host/, 'the cached control shares the row');
   await page.click('#btn-mark');
 
+  // Hysteresis: the window has to agree with itself before the screen repaints, so one bad
+  // round does not flash red on a moving train.
+  const red = () => page.$eval('#cap-realtime', e => e.classList.contains('red'));
   state.mode = 'fail';
-  await page.waitForTimeout(3000);
-  assert.equal((await page.textContent('#val-ip6')).trim(), 'gone');
+  await page.waitForTimeout(2600);
+  assert.equal(await red(), false, 'a single failing round does not repaint the screen');
+  await page.waitForTimeout(9000);
+  assert.equal(await red(), true, 'sustained failure does');
   state.mode = 'ok';
   await page.waitForTimeout(2500);
 
@@ -163,17 +173,26 @@ b.test('a session records, survives a reload, and exports losslessly', async () 
   assert.ok(session.ipv4_check.fail, 'with the evidence kept');
   assert.ok(db.samples.every(x => x.probes.ip4.expected === true), 'every ip4 failure is flagged');
   assert.ok(db.samples.every(x => x.probes.down), 'every round carries a download');
-  const hosts = db.samples.map(x => x.probes.dns.host);
+  // Rounds where the probe rested to clear a wedged connection have no hostname to compare.
+  const hosts = db.samples.map(x => x.probes.dns?.host).filter(Boolean);
+  assert.ok(hosts.length >= 3, `enough lookups to check: ${hosts.length}`);
   assert.equal(new Set(hosts).size, hosts.length, 'the DNS probe never repeats a hostname');
 
   const udp = db.samples.map(x => x.probes.udp).filter(u => u.ok);
   assert.ok(udp.length > 0, 'the UDP path is probed every round');
   assert.ok(udp.every(u => u.public_ips.includes('2a09:bac5::9')), 'and reports its NAT mapping');
-  assert.ok(db.samples.every(x => x.probes.ip6.ms_samples), 'reachability is sampled, not measured once');
-  assert.ok(db.samples.filter(x => x.probes.ip6.ok).every(x => x.probes.ip6.samples_ok >= 1),
-            'and its ms is the median of what succeeded');
-  assert.match(await page.textContent('#val-udp'), /^\d+$/, 'the UDP round trip has its own tile');
-  assert.equal(new Set(db.samples.map(x => x.probes.dns_ctl.host)).size, 1, 'the control never changes one');
+  // All four latency probes are sampled the same way, so their medians are comparable.
+  for (const id of ['ip6', 'web', 'dns_ctl', 'udp']) {
+    const sampled = db.samples.filter(x => x.probes[id]?.ms_samples);
+    assert.ok(sampled.length >= 3, `${id} is sampled, not measured once`);
+    assert.ok(sampled.filter(x => x.probes[id].ok)
+                     .every(x => x.probes[id].samples_ok >= 1 && x.probes[id].ms_min != null),
+              `${id} keeps the spread beside the median`);
+  }
+  assert.ok(db.samples.every(x => x.grades), 'every round carries the grades it was shown with');
+  assert.ok(db.samples.every(x => 'first_packet_ms' in x), 'and the radio wake-up cost');
+  const ctlHosts = new Set(db.samples.map(x => x.probes.dns_ctl?.host).filter(Boolean));
+  assert.equal(ctlHosts.size, 1, `the control never changes its hostname: ${[...ctlHosts]}`);
 
   const before = db.samples.length;
   const lastSeq = Math.max(...db.samples.map(x => x.seq));
@@ -286,6 +305,29 @@ b.test('the newest log line is on top and nothing hides behind the controls', as
   await ctx.close();
 });
 
+b.test('the label buttons record what it felt like', async () => {
+  const {ctx} = await context();
+  const page = await ctx.newPage();
+  await page.goto(BASE, {waitUntil: 'networkidle'});
+  assert.equal(await page.locator('#labels').isHidden(), true, 'nothing to label before a run');
+  await page.click('#btn-start');
+  await page.waitForTimeout(3000);
+  assert.equal(await page.locator('#labels').isHidden(), false);
+
+  await page.click('#labels button[data-label="slow"]');
+  await page.click('#labels button[data-label="broken"]');
+  await page.waitForTimeout(600);
+  await page.click('#btn-start');
+  await page.waitForTimeout(600);
+
+  const db = await readDb(page);
+  const labels = db.events.filter(e => e.type === 'label').map(e => e.text);
+  assert.deepEqual(labels, ['slow', 'broken'], 'each tap is its own event');
+  assert.ok(db.events.filter(e => e.type === 'label').every(e => e.t && e.mono != null),
+            'timestamped on both clocks, so it lines up with the rounds');
+  await ctx.close();
+});
+
 b.test('the lamps report each path without a sentence to read', async () => {
   const {ctx, state} = await context();
   const page = await ctx.newPage();
@@ -352,29 +394,29 @@ b.test('a tile explains itself on tap and gives the numbers back', async () => {
   await page.click('#btn-start');
   await page.waitForTimeout(5000);
 
-  const sub = () => page.textContent('#sub-web');
+  const sub = () => page.textContent('#sub-tap');
   const numbers = await sub();
-  assert.ok(!/Google/.test(numbers), 'it shows measurements by default');
-  await page.click('#sig-web');
-  assert.match(await sub(), /Google rather than Cloudflare/, 'tapping says what the probe measures');
+  assert.ok(!/tap on a link costs/.test(numbers), 'it shows measurements by default');
+  await page.click('#cap-tap');
+  assert.match(await sub(), /tap on a link costs/, 'tapping says what the row measures');
   await page.waitForTimeout(2500);
-  assert.match(await sub(), /Google rather than Cloudflare/, 'and the next round does not overwrite it');
-  await page.click('#sig-web');
+  assert.match(await sub(), /tap on a link costs/, 'and the next round does not overwrite it');
+  await page.click('#cap-tap');
   await page.waitForTimeout(2500);
-  assert.ok(!/Google/.test(await sub()), 'tapping again returns the numbers');
+  assert.ok(!/tap on a link costs/.test(await sub()), 'tapping again returns the numbers');
 
   // Tapping is not discoverable on its own, so one control turns them all on.
   await page.click('#btn-help');
   await page.waitForTimeout(200);
   const shown = await page.$$eval('.signal .sub', els => els.filter(e => e.textContent.length > 40).length);
-  assert.equal(shown, 5, 'the help button explains every tile at once');
+  assert.equal(shown, 4, 'the help button explains every row at once');
 
   // Dismissing must restore the numbers now. Waiting for the next round would leave prose
   // on the tile for a whole interval — half a minute on the coarse profile.
   await page.click('#btn-help');
   await page.waitForTimeout(150);
   const restored = await page.$$eval('.signal .sub', els => els.map(e => e.textContent));
-  assert.ok(restored.every(t => !/Google|Cloudflare|download/.test(t)),
+  assert.ok(restored.every(t => !/Round trip|Resolving|Sustained/.test(t)),
             `numbers come back immediately, not next round: ${restored.join(' | ')}`);
 
   // The explanation replaced a paragraph that used to sit permanently under the tiles.

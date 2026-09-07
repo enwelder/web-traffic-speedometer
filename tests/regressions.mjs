@@ -235,7 +235,7 @@ r.test('a wake lock taken back by the system is reacquired, not lost for the ses
 // A journey's p90 read high and did not look like the data. Rounding the rank down put a
 // ten-sample window on its own last element, so the figure labelled p90 was the maximum.
 r.test('a percentile is the nearest rank, not the largest value that fits', async () => {
-  const ui = await import('../js/ui.js');
+  const ui = await import('../js/grade.js');
   const asc = n => Array.from({length: n}, (_, i) => i + 1);
 
   for (const n of [3, 5, 8, 10, 15, 20]) {
@@ -250,15 +250,10 @@ r.test('a percentile is the nearest rank, not the largest value that fits', asyn
   assert.equal(ui.quantile([], 0.9), null);
   assert.equal(ui.quantile([7], 0.9), 7);
 
-  // And through the tile: nine identical samples with one spike must not read as the spike.
-  ui.resetHistory();
-  const t = Date.now();
-  [10, 10, 10, 10, 10, 10, 10, 10, 10, 900].forEach((ms, i) =>
-    ui.trackLatency({t: t + i * 1000, skipped: null, probes: {ip6: {ok: true, ms}}}));
-  const w = ui.worst('ip6');
-  assert.equal(w.label, 'p90');
-  assert.equal(w.value, 10, `one outlier in ten is not the ninetieth percentile, got ${w.value}`);
-  ui.resetHistory();
+  // And through the stability figure, which is built on the same ranking: nine identical
+  // readings with one spike must not report as the spike.
+  const st = ui.stability([10, 10, 10, 10, 10, 10, 10, 10, 10, 900]);
+  assert.equal(st.ratio, 1, `one outlier in ten does not become the ninetieth percentile: ×${st.ratio}`);
 });
 
 const ok = await r.run();

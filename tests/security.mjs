@@ -5,6 +5,8 @@
 import assert from 'node:assert';
 import {readFileSync, readdirSync} from 'node:fs';
 import {execFileSync} from 'node:child_process';
+import {createRequire} from 'node:module';
+const require = createRequire(import.meta.url);
 import {suite} from './helpers.mjs';
 
 const root = new URL('..', import.meta.url).pathname;
@@ -129,6 +131,24 @@ s.test('the content security policy locks down everything it can', () => {
   // any browser enforces. The allowlist test above is what constrains it.
 });
 
+// A module missing from the precache list loads fine online and takes the whole app down
+// offline — which is the one condition this tool exists to record. grade.js shipped that way.
+s.test('every file the app loads is in the offline shell', () => {
+  const sw = read('sw.js');
+  const shell = [...sw.matchAll(/'([^']+\.(?:js|css|html|svg|png|webmanifest))'/g)].map(m => m[1]);
+  for (const f of readdirSync(new URL('../js', import.meta.url))) {
+    assert.ok(shell.includes(`js/${f}`), `js/${f} is not precached; the app would break offline`);
+  }
+  for (const f of ['index.html', 'app.css', 'manifest.webmanifest']) {
+    assert.ok(shell.includes(f), `${f} is not precached`);
+  }
+  // And nothing listed that does not exist, which would fail the install and cache nothing.
+  const {existsSync} = require('node:fs');
+  for (const f of shell) {
+    assert.ok(existsSync(new URL(`../${f}`, import.meta.url)), `${f} is precached but missing`);
+  }
+});
+
 s.test('the service worker never intercepts a probe', () => {
   const sw = read('sw.js');
   assert.match(sw, /url\.origin !== self\.location\.origin/, 'cross-origin requests pass through untouched');
@@ -165,6 +185,20 @@ s.test('nothing under .dev is tracked, and the directory is ignored outright', (
   assert.match(check, /\.dev\//, `git ignores anything under it: ${check.trim()}`);
 });
 
+// Fixtures are committed on purpose. They are only safe because the anonymiser stripped
+// them, so the guard has to apply to them by name rather than trust the directory.
+s.test('every committed fixture has been through the anonymiser', async () => {
+  const {assertClean} = await import('../tools/anonymise.mjs');
+  const dir = new URL('../tests/fixtures/', import.meta.url);
+  const files = readdirSync(dir).filter(f => f.endsWith('.json'));
+  assert.ok(files.length > 0, 'there are fixtures to check');
+  for (const f of files) {
+    const j = JSON.parse(readFileSync(new URL(f, dir), 'utf8'));
+    assert.equal(j.format, 'wts/fixture', `${f} must not be mistakable for a real export`);
+    assert.doesNotThrow(() => assertClean(j), `${f} still carries identifying data`);
+  }
+});
+
 s.test('no journey recording is tracked anywhere in the tree', () => {
   const tracked = execFileSync('git', ['ls-files'], {cwd: root, encoding: 'utf8'})
     .split('\n').filter(Boolean);
@@ -174,6 +208,7 @@ s.test('no journey recording is tracked anywhere in the tree', () => {
     const text = readFileSync(new URL(`../${f}`, import.meta.url), 'utf8');
     assert.ok(!/"format"\s*:\s*"wts\/(session|bundle)"/.test(text),
               `${f} is a recorded journey and must not be committed`);
+    // Holds for the fixtures too: they keep every measurement and no position at all.
     assert.ok(!/"lat"\s*:\s*-?\d/.test(text), `${f} contains coordinates`);
   }
 });

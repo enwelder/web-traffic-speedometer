@@ -70,30 +70,25 @@
 
   <div id="readout" hidden>
     <div class="signals" id="signals">
-      <div class="signal" id="sig-ip6">
-        <div class="name">latency direct <span>(Cloudflare)</span></div>
-        <div><span class="value" id="val-ip6">—</span><span class="unit">ms</span></div>
-        <div class="sub" id="sub-ip6">—</div>
+      <div class="signal" id="cap-realtime">
+        <div class="name">calls &amp; real-time</div>
+        <div><span class="value" id="val-realtime">—</span><span class="unit">ms</span></div>
+        <div class="sub" id="sub-realtime">—</div>
       </div>
-      <div class="signal" id="sig-dns">
-        <div class="name">latency DNS <span>(GitHub)</span></div>
-        <div><span class="value" id="val-dns">—</span><span class="unit">ms</span></div>
-        <div class="sub" id="sub-dns">—</div>
+      <div class="signal" id="cap-tap">
+        <div class="name">tapping a link</div>
+        <div><span class="value" id="val-tap">—</span><span class="unit">ms</span></div>
+        <div class="sub" id="sub-tap">—</div>
       </div>
-      <div class="signal" id="sig-web">
-        <div class="name">latency <span>(Google)</span></div>
-        <div><span class="value" id="val-web">—</span><span class="unit">ms</span></div>
-        <div class="sub" id="sub-web">—</div>
+      <div class="signal" id="cap-newsite">
+        <div class="name">opening a new site</div>
+        <div><span class="value" id="val-newsite">—</span><span class="unit">ms</span></div>
+        <div class="sub" id="sub-newsite">—</div>
       </div>
-      <div class="signal" id="sig-udp">
-        <div class="name">latency UDP <span>(Cloudflare)</span></div>
-        <div><span class="value" id="val-udp">—</span><span class="unit">ms</span></div>
-        <div class="sub" id="sub-udp">—</div>
-      </div>
-      <div class="signal wide" id="sig-down">
-        <div class="name">rate <span>(Cloudflare)</span></div>
-        <div><span class="value" id="val-down">—</span></div>
-        <div class="sub" id="sub-down">—</div>
+      <div class="signal" id="cap-video">
+        <div class="name">video &amp; downloads</div>
+        <div><span class="value" id="val-video">—</span></div>
+        <div class="sub" id="sub-video">—</div>
       </div>
     </div>
 
@@ -113,6 +108,7 @@
       <div><span>Position</span><b id="m-pos">—</b></div>
       <div><span>Speed</span><b id="m-speed">—</b></div>
       <div><span>Marks</span><b id="m-marks">0</b></div>
+      <div><span>First packet</span><b id="m-first">—</b></div>
       <div><span>Degraded</span><b id="m-degraded">—</b></div>
       <div><span>Data (est.)</span><b id="m-data">0 kB</b></div>
     </div>
@@ -133,6 +129,14 @@
 </section>
 
 </main>
+
+<!-- What it felt like, said by the person using it. Nothing else records that, and without
+     it the thresholds have nothing to be checked against. -->
+<div class="labels" id="labels" hidden>
+  <button data-label="fine">fine</button>
+  <button data-label="slow">slow</button>
+  <button data-label="broken">broken</button>
+</div>
 
 <div class="controls" id="controls">
   <button id="btn-start" class="start">Start</button>
