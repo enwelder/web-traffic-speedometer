@@ -60,23 +60,25 @@ export function environment(intervalMs, downloadSettings = DOWNLOAD_DEFAULTS) {
   };
 }
 
-// Estimated bytes for one round. `contacted` carries across rounds: only the first request
-// to a host is charged a full handshake.
-function roundBytes(row, contacted) {
-  let n = 0;
-  for (const p of PROBES) {
-    const r = row.probes?.[p.id];
-    if (!r) continue;
-    if (r.expected && !r.ok) { n += REFUSED_BYTES; continue; }
-    if (r.fail === 'resting') continue;
-    const attempts = r.ms_samples ? r.ms_samples.length : 1;
-    n += WARM_BYTES[p.kind] * attempts + (p.kind === 'download' ? r.bytes || 0 : 0);
-    if (p.kind !== 'stun') {
-      n += contacted.has(p.id) ? RESUMED_BYTES : FIRST_CONTACT_BYTES;
-      contacted.add(p.id);
-    }
+// What one probe is estimated to have cost. `contacted` is updated as it is read: only the
+// first request to a host is charged a full handshake.
+function probeBytes(probe, r, contacted) {
+  if (!r) return 0;
+  // An IPv4 literal with no path never gets a connection up.
+  if (r.expected && !r.ok) return REFUSED_BYTES;
+  if (r.fail === 'resting') return 0;
+  const attempts = r.ms_samples ? r.ms_samples.length : 1;
+  let n = WARM_BYTES[probe.kind] * attempts + (probe.kind === 'download' ? r.bytes || 0 : 0);
+  if (probe.kind !== 'stun') {
+    n += contacted.has(probe.id) ? RESUMED_BYTES : FIRST_CONTACT_BYTES;
+    contacted.add(probe.id);
   }
   return n;
+}
+
+// `contacted` carries across rounds, so a session's handshakes are charged once each.
+function roundBytes(row, contacted) {
+  return PROBES.reduce((n, p) => n + probeBytes(p, row.probes?.[p.id], contacted), 0);
 }
 
 // Bytes already charged by the rows on disk, so a resumed session continues its running

@@ -14,6 +14,22 @@ export const FINE_ACCURACY_M = 100;
 // 400 km/h, above the top speed of any train on the routes measured.
 export const MAX_PLAUSIBLE_MS = 111;
 
+// Metres per second between two fixes, or null where the pair cannot support a figure.
+function derivedSpeed(prevFix, fix) {
+  // Both fixes must be fine: a coarse fix anywhere in the pair makes the distance
+  // meaningless.
+  if (!fix.fine || !prevFix?.fine || fix.t <= prevFix.t) return null;
+  const seconds = (fix.t - prevFix.t) / 1000;
+  // Under a second the rate is dominated by fix jitter; over two minutes it averages away
+  // everything that happened in between.
+  if (seconds < 1 || seconds > 120) return null;
+  const rate = metresBetween(prevFix, fix) / seconds;
+  // Two fixes accurate to 10 m can still be hundreds of metres apart if one is wrong, so a
+  // rate above the plausible ceiling is discarded. The coordinates stay on both rows, so the
+  // analysis can derive speed differently.
+  return rate <= MAX_PLAUSIBLE_MS ? rate : null;
+}
+
 // Haversine distance.
 export function metresBetween(a, b) {
   const rad = Math.PI / 180;
@@ -77,21 +93,7 @@ export function createPositionTracker({onNote, onNotice, onChange} = {}) {
     const fine = accuracy != null && accuracy <= FINE_ACCURACY_M;
     fix.fine = fine;
 
-    // Both fixes must be fine: a coarse fix anywhere in the pair makes the distance
-    // meaningless.
-    let derived = null;
-    if (fine && prevFix?.fine && fix.t > prevFix.t) {
-      const seconds = (fix.t - prevFix.t) / 1000;
-      // Under a second the rate is dominated by fix jitter; over two minutes it averages
-      // away everything that happened in between.
-      if (seconds >= 1 && seconds <= 120) {
-        const rate = metresBetween(prevFix, fix) / seconds;
-        // Two fixes accurate to 10 m can still be hundreds of metres apart if one is wrong,
-        // so a rate above the plausible ceiling is discarded. The coordinates stay on both
-        // rows, so the analysis can derive speed differently.
-        derived = rate <= MAX_PLAUSIBLE_MS ? rate : null;
-      }
-    }
+    const derived = derivedSpeed(prevFix, fix);
     if (!prevFix || fix.t !== prevFix.t) prevFix = fix;
 
     const measured = c.speed == null || c.speed < 0 ? null : c.speed;

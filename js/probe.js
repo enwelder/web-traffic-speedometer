@@ -217,6 +217,29 @@ function finishTrace(r, trace, url) {
   return r;
 }
 
+// Returned instead of a chunk when the budget ran out first.
+const EXPIRED = Symbol('expired');
+
+// One chunk, or EXPIRED. The budget bounds each read and not just the loop: checking only
+// between chunks leaves a stalled stream running to the fetch timeout, which records a
+// congested cell as a failure instead of as a slow measurement.
+async function readWithin(reader, ms) {
+  let timer;
+  const budget = new Promise(resolve => { timer = setTimeout(() => resolve(EXPIRED), ms); });
+  try {
+    return await Promise.race([reader.read(), budget]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// Stops the rest of the 50 MB body from arriving unread. Not awaited: a cancel that never
+// settles would hang the round.
+function cancelQuietly(reader) {
+  if (!reader) return;
+  try { reader.cancel(); } catch { /* already closed */ }
+}
+
 // Pulls the body for `budgetMs` or until `maxBytes`, whichever comes first, and reports the
 // byte series with the reason the read ended: eof | time | bytes | aborted | network.
 async function readStream(res, {budgetMs, maxBytes, controller}) {
@@ -231,19 +254,12 @@ async function readStream(res, {budgetMs, maxBytes, controller}) {
   let reader = null;
   try {
     reader = res.body.getReader();
-    // The budget bounds each read, not just the loop: checking only between chunks leaves a
-    // stalled stream running to the fetch timeout, recording a congested cell as a failure
-    // instead of a slow measurement.
     const stopAt = t0 + budgetMs;
     for (;;) {
       const left = stopAt - performance.now();
       if (left <= 0) { reason = 'time'; break; }
-      let timer;
-      const expired = Symbol('expired');
-      const budget = new Promise(resolve => { timer = setTimeout(() => resolve(expired), left); });
-      const next = await Promise.race([reader.read(), budget]);
-      clearTimeout(timer);
-      if (next === expired) { reason = 'time'; break; }
+      const next = await readWithin(reader, left);
+      if (next === EXPIRED) { reason = 'time'; break; }
       if (next.done) break;
       bytes += next.value.byteLength;
       marks.push({t: performance.now() - t0, bytes});
@@ -253,12 +269,11 @@ async function readStream(res, {budgetMs, maxBytes, controller}) {
     truncated = true;
     // The reason comes from the error rather than from the caller's timeout flag, which was
     // captured before the read began.
-    reason = e && e.name === 'AbortError' ? 'aborted' : 'network';
-    fail = e && e.name === 'AbortError' ? 'abort' : 'network';
+    const aborted = e?.name === 'AbortError';
+    reason = aborted ? 'aborted' : 'network';
+    fail = aborted ? 'abort' : 'network';
   }
-  // Stops the rest of the 50 MB body from arriving unread. Not awaited: a cancel that never
-  // settles would hang the round.
-  if (reader) { try { reader.cancel(); } catch { /* already closed */ } }
+  cancelQuietly(reader);
   if (reason !== 'eof') controller.abort();
 
   // Wall clock rather than the last chunk's timestamp, so time spent stalled is charged to
