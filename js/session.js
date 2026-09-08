@@ -6,6 +6,7 @@ import {PROBES, runRound, checkIpv4, clearTimings, timeoutFor,
 import {gradeRound} from './grade.js';
 import {createStuckTracker} from './stuck.js';
 import {createWakeLock} from './wakelock.js';
+import {createPositionTracker} from './position.js';
 import * as realStore from './store.js';
 
 // Byte estimates for the data-used figure. Safari opens a fresh connection per request, so
@@ -31,23 +32,6 @@ export const DOWNLOAD_DEFAULTS = {
   maxBytes: DEFAULT_DOWN_MAX_BYTES
 };
 
-const EARTH_M = 6371000;
-// Above this accuracy a fix is a cell-tower estimate. Two such fixes hundreds of metres
-// apart in opposite directions yield speeds around 680 km/h; iOS reports exactly 1414 m for
-// that class of fix.
-const FINE_ACCURACY_M = 100;
-// 400 km/h, above the top speed of any train on the routes measured.
-const MAX_PLAUSIBLE_MS = 111;
-// Haversine distance. iOS fills coords.speed only sporadically (0, 2 and 51 of 158, 75 and
-// 243 rounds across three journeys), so speed is derived from consecutive fixes and the
-// measured value is kept whenever the platform supplies one.
-function metresBetween(a, b) {
-  const rad = Math.PI / 180;
-  const dLat = (b.lat - a.lat) * rad, dLon = (b.lon - a.lon) * rad;
-  const h = Math.sin(dLat / 2) ** 2 +
-            Math.cos(a.lat * rad) * Math.cos(b.lat * rad) * Math.sin(dLon / 2) ** 2;
-  return 2 * EARTH_M * Math.asin(Math.min(1, Math.sqrt(h)));
-}
 
 // The download is time-boxed, so what it pulls depends on the link. This assumes it reaches
 // its byte ceiling every round, which is the worst case and what a fast link does.
@@ -119,16 +103,11 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
   let abort = null;
   let bytes = 0;
   let marks = 0;
-  let watchId = null;
-  let lastPos = null;
-  let posError = null;
-  let prevFix = null;
   let inPause = false;
   let lastRoundMs = null;
   let lastSpeed = null;
   let lastSpeedSource = null;
   let egressIp = null;
-  let fineFix = null;
   let throughput = null;
   let udpMs = null;
   let downloadBytesUsed = 0;
@@ -143,18 +122,21 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
   const stuck = createStuckTracker({onNotice});
   // The event carries the position and the session id, so it is the recorder's to write.
   const wake = createWakeLock({onNotice, onEvent: text => running && noteEvent(text)});
+  const position = createPositionTracker({onNotice, onChange: () => emit(),
+                                          onNote: text => running && noteEvent(text)});
 
   const mono = () => performance.now() - t0;
   const interval = () => session.intervalMs;
 
   function status() {
+    const fix = position.snapshot();
     return {
       running, session, seq, marks, bytes, throughput, udpMs, grades: lastGrades,
       downloadMB: Math.round(downloadBytesUsed / 1e5) / 10,
       speedKmh: lastSpeed == null ? null : Math.round(lastSpeed * 3.6),
       speedSource: lastSpeedSource,
       pending: pendingSamples.length + pendingEvents.length,
-      writeFailed, pos: lastPos, posError,
+      writeFailed, pos: fix.pos, posError: fix.error,
       elapsed: running ? Math.floor(mono() / 1000) : 0
     };
   }
@@ -195,54 +177,6 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
     try { await flushing; } finally { flushing = null; }
   }
 
-  function position() {
-    if (!lastPos) {
-      return {lat: null, lon: null, accuracy: null, accuracy_class: null, speed: null,
-              speed_derived: null, speed_source: null, heading: null, pos_t: null,
-              pos_error: posError};
-    }
-    const c = lastPos.coords;
-    const fix = {lat: c.latitude, lon: c.longitude, t: lastPos.timestamp};
-
-    const accuracy = c.accuracy == null ? null : Math.round(c.accuracy);
-    const fine = accuracy != null && accuracy <= FINE_ACCURACY_M;
-    fix.fine = fine;
-
-    // Both fixes must be fine: a coarse fix anywhere in the pair makes the distance
-    // meaningless.
-    let derived = null;
-    if (fine && prevFix?.fine && fix.t > prevFix.t) {
-      const seconds = (fix.t - prevFix.t) / 1000;
-      // Under a second the rate is dominated by fix jitter; over two minutes it averages
-      // away everything that happened in between.
-      if (seconds >= 1 && seconds <= 120) {
-        const rate = metresBetween(prevFix, fix) / seconds;
-        // Two fixes accurate to 10 m can still be hundreds of metres apart if one is wrong,
-        // so a rate above the plausible ceiling is discarded. The coordinates stay on both
-        // rows, so the analysis can derive speed differently.
-        derived = rate <= MAX_PLAUSIBLE_MS ? rate : null;
-      }
-    }
-    if (!prevFix || fix.t !== prevFix.t) prevFix = fix;
-
-    const measured = c.speed == null || c.speed < 0 ? null : c.speed;
-    return {
-      lat: fix.lat, lon: fix.lon,
-      accuracy,
-      // gps: usable for position and for deriving speed. coarse: a tower estimate, usable
-      // as a rough location only. Consumers filter on this instead of the raw threshold.
-      accuracy_class: accuracy == null ? null : fine ? 'gps' : 'coarse',
-      speed: measured,
-      speed_derived: derived == null ? null : Math.round(derived * 100) / 100,
-      speed_source: measured != null ? 'gps' : derived != null ? 'derived' : null,
-      heading: c.heading == null || c.heading < 0 ? null : c.heading,
-      // The fix's own timestamp, so its age is visible: a 30 s old fix on a 140 km/h train
-      // is more than a kilometre from the round's position.
-      pos_t: fix.t,
-      pos_error: posError
-    };
-  }
-
   function charge(row) { bytes += roundBytes(row, contacted); }
 
   function keep(row) {
@@ -252,7 +186,7 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
   }
 
   function baseRow(late, skipped) {
-    const pos = position();
+    const pos = position.read();
     lastSpeed = pos.speed ?? pos.speed_derived ?? null;
     lastSpeedSource = pos.speed_source;
     return {
@@ -357,7 +291,7 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
     // so it stays distinguishable from an outage. The threshold is one missed slot: at two,
     // a 13.7 s delay on a 10 s interval goes unlogged.
     if (late >= interval()) {
-      const p = position();
+      const p = position.read();
       inPause = true;
       record({sessionId: session.id, t: Date.now(), mono: Math.round(now), type: 'pause',
               lat: p.lat, lon: p.lon, text: `${(late / 1000).toFixed(1)}s bridged`});
@@ -380,40 +314,12 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
   }
 
   function event(type, text) {
-    const p = position();
+    const p = position.read();
     record({sessionId: session.id, t: Date.now(), mono: Math.round(mono()), type,
             lat: p.lat, lon: p.lon, text});
   }
 
   const noteEvent = text => event('note', text);
-
-  function startGeolocation() {
-    if (!navigator.geolocation) { posError = 'unavailable'; return; }
-    watchId = navigator.geolocation.watchPosition(
-      p => {
-        lastPos = p;
-        posError = null;
-        // Accuracy changes mid-journey (a tunnel, or a fallback to tower positioning) and
-        // changes what the coordinates support, so each transition is logged.
-        const acc = p.coords.accuracy;
-        const nowFine = acc != null && acc <= FINE_ACCURACY_M;
-        if (running && fineFix !== null && nowFine !== fineFix) {
-          noteEvent(nowFine ? `location precise again (${Math.round(acc)} m)`
-                            : `location degraded to ${Math.round(acc)} m — speed and distance withheld`);
-        }
-        fineFix = nowFine;
-        emit();
-      },
-      e => {
-        posError = e.code === 1 ? 'denied' : e.code === 3 ? 'timeout' : 'unavailable';
-        onNotice?.(`No location (${posError}). Measurement continues without coordinates.`);
-        emit();
-      },
-      // maximumAge 0: a cached fix is often a coarse one held from earlier, which puts a
-      // large share of rounds at tower accuracy.
-      {enableHighAccuracy: true, maximumAge: 0, timeout: 12000}
-    );
-  }
 
   // `monoBase` continues the monotonic clock across a reload: performance.now() restarts,
   // so the gap is bridged with the wall clock. Both clocks are on every row, so the bridge
@@ -429,11 +335,8 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
       marks = 0;
       lastRoundMs = null;
       inPause = false;
-      prevFix = null;
+      position.reset();
       egressIp = null;
-      lastPos = null;
-      posError = null;
-      fineFix = null;
       lastSpeed = null;
       lastSpeedSource = null;
     }
@@ -449,7 +352,7 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
     abort = new AbortController();
     store.setActive(session.id);
     clearTimings();
-    startGeolocation();
+    position.start();
     wake.reset();
     await wake.acquire();
 
@@ -488,7 +391,7 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
     abort?.abort();
     // The aborted round still resolves into a row, so it is awaited before the drain.
     if (current) { try { await current; } catch { /* recorded as round_error */ } }
-    if (watchId != null) { navigator.geolocation.clearWatch(watchId); watchId = null; }
+    position.stop();
     await wake.release();
 
     session.stopped = Date.now();
@@ -504,7 +407,7 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
   function mark() {
     if (!running) return;
     marks++;
-    const p = position();
+    const p = position.read();
     record({sessionId: session.id, t: Date.now(), mono: Math.round(mono()), type: 'mark',
             lat: p.lat, lon: p.lon, text: `mark ${marks}`});
     emit();
@@ -512,7 +415,7 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
 
   function note(text) {
     if (!running || !text) return;
-    const p = position();
+    const p = position.read();
     record({sessionId: session.id, t: Date.now(), mono: Math.round(mono()), type: 'note',
             lat: p.lat, lon: p.lon, text});
   }

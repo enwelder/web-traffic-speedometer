@@ -18,7 +18,8 @@ const SHELL = [
   'js/export.js',
   'js/grade.js',
   'js/stuck.js',
-  'js/wakelock.js'
+  'js/wakelock.js',
+  'js/position.js'
 ];
 
 self.addEventListener('install', e => {

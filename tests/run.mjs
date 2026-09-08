@@ -2,7 +2,7 @@
 // Playwright and starts its own server.
 import {spawnSync} from 'node:child_process';
 
-const suites = ['unit', 'stuck', 'wakelock', 'grading', 'edges', 'replay', 'regressions', 'security', 'browser'];
+const suites = ['unit', 'stuck', 'wakelock', 'position', 'grading', 'edges', 'replay', 'regressions', 'security', 'browser'];
 const only = process.argv.slice(2);
 // A mistyped name would otherwise select nothing and exit green, so a typo in the CI
 // workflow would pass without running a case.

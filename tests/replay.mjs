@@ -10,6 +10,9 @@ stubBrowser();
 const g = await import('../js/grade.js');
 const {summarise, sessionJson} = await import('../js/export.js');
 const {anonymise, assertClean} = await import('../tools/anonymise.mjs');
+// Imported rather than restated: a threshold tuned in the source would otherwise leave this
+// suite asserting the old value and still passing.
+const {MAX_PLAUSIBLE_MS, FINE_ACCURACY_M} = await import('../js/position.js');
 
 const dir = new URL('./fixtures/', import.meta.url);
 const load = f => JSON.parse(readFileSync(new URL(f, dir), 'utf8'));
@@ -173,8 +176,6 @@ r.test('every impossible speed in the recordings comes from a fix the rules now 
   // The recordings contain rates up to 189 m/s (681 km/h) from trains doing 140. Every such
   // row must be caught by one of the two rules: a coarse fix, which now produces no speed at
   // all, or a rate above the plausible ceiling.
-  const MAX_PLAUSIBLE_MS = 111;   // 400 km/h, above a Thalys at full speed
-  const FINE_ACCURACY_M = 100;
   let impossible = 0;
   for (const [name, j] of Object.entries(journeys)) {
     for (const s of j.samples) {
