@@ -12,41 +12,43 @@ import * as store from './store.js';
 export const countsAsFailure = r =>
   !!r && r.ok === false && !r.expected && r.fail !== 'resting';
 
-export function summarise(samples) {
-  const ran = samples.filter(s => !s.skipped && !s.round_error);
-  const probes = {};
-  for (const p of PROBES) {
-    const rs = ran.map(s => s.probes[p.id]).filter(Boolean);
-    const ok = rs.filter(r => r.ok);
-    const ms = ok.map(r => r.ms).filter(v => v != null).sort((a, b) => a - b);
-    const fails = {};
-    const stopped = {};
-    for (const r of rs) {
-      if (r.ok || r.expected) continue;
-      // Failures and deliberate stops are counted separately.
-      (countsAsFailure(r) ? fails : stopped)[r.fail] = ((countsAsFailure(r) ? fails : stopped)[r.fail] || 0) + 1;
-    }
-    const entry = {
-      n: rs.length, ok: ok.length,
-      expected: rs.filter(r => r.expected).length,
-      fails, stopped,
-      ms_p50: quantile(ms, 0.5), ms_p90: quantile(ms, 0.9), ms_max: ms.at(-1) ?? null
-    };
-    if (p.id === 'down') {
-      // The rate the grades were taken on, over the rounds that produced one rate.
-      const rate = ok.filter(r => !r.insufficient_sample)
-                     .map(r => r.bps_steady).filter(v => v != null).sort((a, b) => a - b);
-      entry.bps_steady_p10 = quantile(rate, 0.1);
-      entry.bps_steady_p50 = quantile(rate, 0.5);
-      entry.rated = rate.length;
-      entry.insufficient = ok.filter(r => r.insufficient_sample).length;
-      entry.bytes_total = ok.reduce((n, r) => n + (r.bytes || 0), 0);
-    }
-    probes[p.id] = entry;
+// One probe across the rounds that ran. Failures and deliberate stops are counted apart,
+// so neither hides the other.
+function probeSummary(rs) {
+  const ok = rs.filter(r => r.ok);
+  const ms = ok.map(r => r.ms).filter(v => v != null).sort((a, b) => a - b);
+  const fails = {};
+  const stopped = {};
+  for (const r of rs) {
+    if (r.ok || r.expected) continue;
+    const into = countsAsFailure(r) ? fails : stopped;
+    into[r.fail] = (into[r.fail] || 0) + 1;
   }
+  return {
+    n: rs.length, ok: ok.length,
+    expected: rs.filter(r => r.expected).length,
+    fails, stopped,
+    ms_p50: quantile(ms, 0.5), ms_p90: quantile(ms, 0.9), ms_max: ms.at(-1) ?? null
+  };
+}
 
-  // Per capability, the grades resolved during the run, so thresholds can be checked
-  // against them without recomputing.
+// The download probe alone reports a rate, over the rounds that produced one.
+function rateSummary(rs) {
+  const ok = rs.filter(r => r.ok);
+  const rate = ok.filter(r => !r.insufficient_sample)
+                 .map(r => r.bps_steady).filter(v => v != null).sort((a, b) => a - b);
+  return {
+    bps_steady_p10: quantile(rate, 0.1),
+    bps_steady_p50: quantile(rate, 0.5),
+    rated: rate.length,
+    insufficient: ok.filter(r => r.insufficient_sample).length,
+    bytes_total: ok.reduce((n, r) => n + (r.bytes || 0), 0)
+  };
+}
+
+// Per capability, the grades resolved during the run, so thresholds can be checked against
+// what was felt without recomputing anything.
+function gradeTally(ran) {
   const grades = {};
   for (const cap of CAPABILITIES) {
     const seen = {};
@@ -56,11 +58,23 @@ export function summarise(samples) {
     }
     grades[cap] = seen;
   }
+  return grades;
+}
+
+export function summarise(samples) {
+  const ran = samples.filter(s => !s.skipped && !s.round_error);
+  const probes = {};
+  for (const p of PROBES) {
+    const rs = ran.map(s => s.probes[p.id]).filter(Boolean);
+    probes[p.id] = p.id === 'down'
+      ? {...probeSummary(rs), ...rateSummary(rs)}
+      : probeSummary(rs);
+  }
 
   const fixed = ran.filter(s => s.accuracy_class === 'gps');
   return {
     thresholds: THRESHOLDS,
-    grades,
+    grades: gradeTally(ran),
     generated_by: `wts ${APP_VERSION}`,
     rounds: samples.length,
     ran: ran.length,

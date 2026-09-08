@@ -202,64 +202,60 @@ const dateLabel = ms => {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 };
 
+const div = (className, text) => {
+  const el = document.createElement('div');
+  el.className = className;
+  if (text != null) el.textContent = text;
+  return el;
+};
+
+// A plain string is a fact about the session; a pair is a fact and the class that flags it.
+function sessionMeta(session, count) {
+  const meta = div('meta');
+  const secs = Math.round(((session.stopped || session.started) - session.started) / 1000);
+  const bits = [dateLabel(session.started), duration(secs), `${count} rounds`, `${session.intervalMs / 1000}s`];
+  if (!session.stopped) bits.push(['never closed', 'flag']);
+  if (!session.exportedAt) bits.push(['not exported', 'flag']);
+  for (const b of bits) {
+    const s = document.createElement('span');
+    s.textContent = Array.isArray(b) ? b[0] : b;
+    if (Array.isArray(b)) s.className = b[1];
+    meta.appendChild(s);
+  }
+  return meta;
+}
+
+function sessionActions(session, handlers) {
+  const actions = div('actions');
+  for (const [label, fn, className] of [['Export', 'export', 'small export'],
+                                        ['Rename', 'rename', 'small'],
+                                        ['Note', 'note', 'small'],
+                                        ['Delete', 'remove', 'small']]) {
+    const b = document.createElement('button');
+    b.className = className;
+    b.textContent = label;
+    b.onclick = () => handlers[fn](session);
+    actions.appendChild(b);
+  }
+  return actions;
+}
+
+function sessionCard(session, count, handlers) {
+  const card = div('session');
+  const top = div('top');
+  top.append(div('title', session.name));
+  card.append(top, sessionMeta(session, count));
+  if (session.note) card.appendChild(div('note', session.note));
+  card.appendChild(sessionActions(session, handlers));
+  return card;
+}
+
 export function renderSessions(rows, handlers) {
   const list = $('session-list');
   list.replaceChildren();
   if (!rows.length) {
-    const empty = document.createElement('div');
-    empty.className = 'empty';
-    empty.textContent = 'No sessions recorded yet.';
-    list.appendChild(empty);
+    list.appendChild(div('empty', 'No sessions recorded yet.'));
     return;
   }
-
-  for (const {session, count} of rows) {
-    const card = document.createElement('div');
-    card.className = 'session';
-
-    const top = document.createElement('div');
-    top.className = 'top';
-    const title = document.createElement('div');
-    title.className = 'title';
-    title.textContent = session.name;
-    top.append(title);
-
-    const meta = document.createElement('div');
-    meta.className = 'meta';
-    const secs = Math.round(((session.stopped || session.started) - session.started) / 1000);
-    const bits = [dateLabel(session.started), duration(secs), `${count} rounds`, `${session.intervalMs / 1000}s`];
-    if (!session.stopped) bits.push(['never closed', 'flag']);
-    if (!session.exportedAt) bits.push(['not exported', 'flag']);
-    for (const b of bits) {
-      const s = document.createElement('span');
-      s.textContent = Array.isArray(b) ? b[0] : b;
-      if (Array.isArray(b)) s.className = b[1];
-      meta.appendChild(s);
-    }
-    card.append(top, meta);
-
-    if (session.note) {
-      const note = document.createElement('div');
-      note.className = 'note';
-      note.textContent = session.note;
-      card.appendChild(note);
-    }
-
-    const actions = document.createElement('div');
-    actions.className = 'actions';
-    const exp = document.createElement('button');
-    exp.className = 'small export';
-    exp.textContent = 'Export';
-    exp.onclick = () => handlers.export(session);
-    actions.appendChild(exp);
-    for (const [label, fn] of [['Rename', 'rename'], ['Note', 'note'], ['Delete', 'remove']]) {
-      const b = document.createElement('button');
-      b.className = 'small';
-      b.textContent = label;
-      b.onclick = () => handlers[fn](session);
-      actions.appendChild(b);
-    }
-    card.appendChild(actions);
-    list.appendChild(card);
-  }
+  for (const {session, count} of rows) list.appendChild(sessionCard(session, count, handlers));
 }
