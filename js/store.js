@@ -1,6 +1,5 @@
-// IndexedDB persistence. Raw samples are the only thing stored; nothing derived is kept
-// alongside them, because where the line falls between noise and outage is an analysis
-// decision that belongs downstream and has to stay revisable.
+// IndexedDB persistence. Only raw samples are stored: where the line falls between noise
+// and outage is an analysis decision made downstream.
 
 const DB_NAME = 'wts';
 const DB_VERSION = 1;
@@ -28,10 +27,9 @@ function open() {
     };
     req.onsuccess = () => {
       const db = req.result;
-      // iOS closes the connection when the tab is backgrounded and under storage pressure.
-      // A cached promise for a closed connection makes every later write throw
-      // InvalidStateError for the rest of the session, which is the one failure this tool
-      // cannot have: drop it so the next call opens again.
+      // iOS closes the connection when the tab is backgrounded under storage pressure. A
+      // cached promise for a closed connection makes every later write throw
+      // InvalidStateError, so it is dropped and the next call opens again.
       db.onclose = () => { if (dbPromise === mine) dbPromise = null; };
       db.onversionchange = () => { db.close(); if (dbPromise === mine) dbPromise = null; };
       resolve(db);
@@ -43,8 +41,8 @@ function open() {
   return mine;
 }
 
-// A connection can also be found closed only when it is used, and the throw is synchronous.
-// Every access goes through here so it is retried once against a fresh connection.
+// A connection can also be found closed only on use, and that throw is synchronous. Every
+// access goes through here so it is retried once against a fresh connection.
 async function withDb(fn) {
   try {
     return await fn(await open());
@@ -76,7 +74,7 @@ function ask(req) {
 
 export async function ready() {
   await open();
-  // Reduces the chance Safari's ITP evicts a session that has not been exported yet.
+  // Reduces the chance Safari's ITP evicts a session before it is exported.
   try { await navigator.storage?.persist?.(); } catch { /* unsupported */ }
 }
 
@@ -104,8 +102,8 @@ export async function allSessions() {
   return list.sort((a, b) => b.started - a.started);
 }
 
-// One transaction for the whole batch: it either commits or it does not, so a caller
-// retrying a failed write can never produce half-written rounds.
+// One transaction for the whole batch, so a retried write cannot produce half-written
+// rounds.
 export async function putSamples(samples) {
   if (!samples.length) return;
   return withDb(async db => {
@@ -127,7 +125,7 @@ export async function putEvents(events) {
 }
 
 // The index is keyed on sessionId and iterated in primary-key order, so samples come back
-// ordered by seq without an explicit sort.
+// ordered by seq.
 export async function getSamples(sessionId) {
   return withDb(db => {
     const {t} = tx(db, ['samples'], 'readonly');
@@ -174,7 +172,7 @@ export async function estimate() {
   } catch { return null; }
 }
 
-// Survives a crash: the page reloads, finds this, and asks whether to resume.
+// Survives a crash: on reload the page finds this and offers to resume.
 export function setActive(id) {
   try { id ? localStorage.setItem(ACTIVE_KEY, id) : localStorage.removeItem(ACTIVE_KEY); }
   catch { /* private mode */ }

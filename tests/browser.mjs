@@ -1,5 +1,5 @@
-// End-to-end tests in a real browser: the parts that only exist there — IndexedDB
-// persistence, crash recovery, the service worker, downloads, and the layout on a phone.
+// End-to-end tests in a real browser, covering what exists only there: IndexedDB
+// persistence, crash recovery, the service worker, downloads and the phone layout.
 import assert from 'node:assert';
 import {readFileSync} from 'node:fs';
 import {spawn} from 'node:child_process';
@@ -7,21 +7,21 @@ import {chromium} from 'playwright';
 import {suite} from './helpers.mjs';
 
 const PORT = 8799;
-// ?interval shortens the round; the app only honours it on localhost.
+// ?interval shortens the round; the app honours it on localhost only.
 const BASE = `http://127.0.0.1:${PORT}/?interval=2000`;
 const PLAIN = `http://127.0.0.1:${PORT}/`;   // real profile intervals, for the cost projection
 const root = new URL('..', import.meta.url).pathname;
 
-// Bound explicitly to the loopback address: binding every interface is refused in some
-// sandboxes, and the app only honours the interval override on a loopback host anyway.
+// Bound to the loopback address: binding every interface is refused in some sandboxes, and
+// the interval override is honoured on a loopback host only.
 const server = spawn('python3', ['-m', 'http.server', String(PORT), '--bind', '127.0.0.1'],
                      {cwd: root, stdio: 'ignore'});
 const stop = () => { try { server.kill(); } catch { /* already gone */ } };
 process.on('exit', stop);
 await new Promise(r => setTimeout(r, 800));
 
-// CI installs Playwright's pinned Chromium. On a developer machine that download may be
-// missing, so fall back to an installed Chrome rather than failing with a download hint.
+// CI installs Playwright's pinned Chromium. Where that download is absent, fall back to an
+// installed Chrome.
 const browser = await (async () => {
   if (process.env.PW_CHANNEL) return chromium.launch({channel: process.env.PW_CHANNEL});
   try {
@@ -32,7 +32,7 @@ const browser = await (async () => {
   }
 })();
 
-// A network that behaves like the one under investigation: IPv6 only.
+// An IPv6-only network, as the carriers under test provide.
 async function context(extra = {}) {
   const ctx = await browser.newContext({
     viewport: {width: 393, height: 852}, deviceScaleFactor: 2,
@@ -58,8 +58,8 @@ async function context(extra = {}) {
       headers: {'access-control-allow-origin': '*'},
       body: 'fl=1\nip=2a09:bac5::9\nts=1\ncolo=AMS\n'});
   });
-  // Playwright routes cannot intercept STUN, since it is not a fetch. Stubbing the peer
-  // connection keeps the suite hermetic and lets the UDP path be failed on demand.
+  // Playwright routes cannot intercept STUN, which is not a fetch. Stubbing the peer
+  // connection keeps the suite hermetic and allows the UDP path to be failed on demand.
   await ctx.addInitScript(() => {
     window.RTCPeerConnection = class {
       addTransceiver(kind, opts) { window.__wtsTransceiver = {kind, ...opts}; }
@@ -93,8 +93,7 @@ b.test('the tiles are named for where they go', async () => {
   const {ctx} = await context();
   const page = await ctx.newPage();
   await page.goto(BASE, {waitUntil: 'networkidle'});
-  // The screen answers what you can do, not which endpoint answered: a probe's number means
-  // nothing until it is held against a threshold that belongs to it.
+  // The tiles name capabilities; the probe ids appear only in the log and the file.
   const names = await page.$$eval('.signal .name', els => els.map(e => e.textContent.trim()));
   assert.deepEqual(names, ['calls & real-time', 'tapping a link', 'opening a new site',
                            'video & downloads'],
@@ -108,7 +107,7 @@ b.test('the page loads clean, and the setup asks only what it cannot know', asyn
   const page = await ctx.newPage();
   const errors = [];
   page.on('pageerror', e => errors.push(String(e)));
-  // The DNS probe deliberately draws 404s; only script errors matter.
+  // The DNS probe draws 404s by design; only script errors matter here.
   page.on('console', m => { if (m.type() === 'error' && !/Failed to load resource/.test(m.text())) errors.push(m.text()); });
   await page.goto(BASE, {waitUntil: 'networkidle'});
   assert.deepEqual(errors, []);
@@ -132,8 +131,8 @@ b.test('the projection says what the run will cost before Start', async () => {
   await page.selectOption('#f-profile', 'fine');
   const fine = await read();
 
-  // Nothing stops the download partway, so the interval is the whole of the cost: the
-  // figure has to move with it, and visibly.
+  // The download runs to its ceiling every round, so the interval determines the projected
+  // cost.
   const mb = t => Number(t.match(/≈ (\d+) MB/)[1]);
   assert.ok(Math.abs(mb(fine) - mb(coarse) * 2) < mb(coarse) * 0.1,
             `halving the interval doubles the bill: ${mb(coarse)} then ${mb(fine)} MB`);
@@ -156,8 +155,7 @@ b.test('a session records, survives a reload, and exports losslessly', async () 
                'while the path that works is lit');
   await page.click('#btn-mark');
 
-  // A tile carries the round it names: the colour changes with the round, not three rounds
-  // later, because that is what made a 35 Mb/s reading sit under a red border.
+  // A tile's colour changes with the round it shows, within one round.
   const red = () => page.$eval('#cap-realtime', e => e.classList.contains('red'));
   state.mode = 'fail';
   await page.waitForTimeout(3000);
@@ -173,7 +171,7 @@ b.test('a session records, survives a reload, and exports losslessly', async () 
   assert.ok(session.ipv4_check.fail, 'with the evidence kept');
   assert.ok(db.samples.every(x => x.probes.ip4.expected === true), 'every ip4 failure is flagged');
   assert.ok(db.samples.every(x => x.probes.down), 'every round carries a download');
-  // Rounds where the probe rested to clear a wedged connection have no hostname to compare.
+  // A rested probe issues no lookup, so those rounds carry no hostname.
   const hosts = db.samples.map(x => x.probes.dns?.host).filter(Boolean);
   assert.ok(hosts.length >= 3, `enough lookups to check: ${hosts.length}`);
   assert.equal(new Set(hosts).size, hosts.length, 'the DNS probe never repeats a hostname');
@@ -283,15 +281,14 @@ b.test('the newest log line is on top and nothing hides behind the controls', as
   await page.click('#btn-start');
   await page.waitForTimeout(7000);
 
-  // Newest first: appending put the line that matters at the bottom, under the controls.
+  // Newest first: the controls sit over the bottom of the log.
   const times = await page.$$eval('#log div', els => els.map(e => e.textContent.slice(0, 8)));
   const stamps = times.filter(t => /^\d\d:\d\d:\d\d$/.test(t));
   assert.ok(stamps.length >= 2, 'several lines are logged');
   assert.ok(stamps[0] >= stamps[stamps.length - 1], `newest is first: ${stamps[0]} then ${stamps.at(-1)}`);
 
-  // The bar sits outside the scrolling area, which is what makes an overlap impossible
-  // rather than something to keep re-checking after every layout change. Measuring the log
-  // lines instead would report the ones main has already clipped.
+  // The bar sits outside the scrolling area, so it cannot overlap the content. Measured on
+  // main rather than the log lines, which main has already clipped.
   const box = await page.evaluate(() => {
     const r = s => document.querySelector(s).getBoundingClientRect();
     const m = r('main'), bar = r('.controls');
@@ -324,7 +321,7 @@ b.test('the lamps report each path without a sentence to read', async () => {
   l = await lamps();
   assert.equal(l.IPv6, 'off', 'and a failing path is unmistakable');
 
-  // The verdict belongs in the log and the file, not in a standing banner.
+  // The IPv4 result goes to the log and the file; the notice area stays clear.
   assert.match(await page.textContent('#log'), /IPv4 absent/, 'the IPv4 verdict is logged once');
   assert.ok(!/IPv4 probe failures are expected/.test(await page.textContent('#notice')),
             'and no longer occupies the screen');
@@ -387,7 +384,7 @@ b.test('a tile explains itself on tap and gives the number back', async () => {
   assert.equal(await explain(), '', 'tapping again returns the number');
   assert.equal(await value(), true);
 
-  // Tapping is not discoverable on its own, so one control turns them all on.
+  // One control turns every tile's explanation on.
   await page.click('#btn-help');
   await page.waitForTimeout(200);
   const shown = await page.$$eval('.signal .explain', els => els.filter(e => e.textContent.length > 40).length);

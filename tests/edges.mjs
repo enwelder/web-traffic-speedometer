@@ -1,8 +1,8 @@
-// Boundary values and the things a mobile network actually does. Every case here is either
-// an exact threshold — where an off-by-one changes a colour — or an event seen on a train:
-// a handover, a captive portal, a tunnel, a saturated cell, a carrier that blocks UDP.
+// Boundary values and mobile-network behaviour. Each case is either an exact threshold,
+// where an off-by-one changes a colour, or an event recorded on a train: a handover, a
+// captive portal, a tunnel, a saturated cell, a carrier blocking UDP.
 import assert from 'node:assert';
-import {stubBrowser, fakeStore, TRACE, bodyOf, netError, sleep, suite} from './helpers.mjs';
+import {stubBrowser, fakeStore, bodyOf, netError, sleep, suite} from './helpers.mjs';
 
 stubBrowser();
 const probe = await import('../js/probe.js');
@@ -42,7 +42,7 @@ const okResponse = (body = trace()) => ({ok: true, status: 200, type: 'opaque',
 const t = suite('thresholds');
 
 t.test('a value on an edge belongs to the worse side, and only just', () => {
-  // The edges are the whole of the grading, so each one is checked from both directions.
+  // Every edge is checked from both sides.
   for (const [cap, edges] of Object.entries(g.THRESHOLDS).map(([k, v]) => [k, v.edges])) {
     const low = g.THRESHOLDS[cap].dir === 'low';
     edges.forEach((edge, i) => {
@@ -63,7 +63,7 @@ t.test('nothing and nonsense are not grades', () => {
                    `${cap} must grade ${String(v)} as nothing rather than a colour`);
     }
   }
-  // Zero is a real reading for both directions: instant, and stopped.
+  // Zero is a valid reading in both directions: instant, and stopped.
   assert.equal(g.gradeValue('realtime', 0), 'green');
   assert.equal(g.gradeValue('video', 0), 'red');
 });
@@ -91,12 +91,12 @@ t.test('the accuracy class turns over at exactly 100 m', async () => {
 
 await t.run();
 
-/* ---------------- the download, at both extremes ---------------- */
+/* ---------------- the download ---------------- */
 
 const d = suite('download edges');
 
-// A stream given as a list of chunks. `stall` never resolves, which is what a saturated
-// cell looks like from inside a read.
+// A stream given as a list of chunks. `stall` never resolves, as a read from a saturated
+// cell does not.
 const stream = chunks => ({getReader() {
   let i = 0;
   return {
@@ -169,7 +169,7 @@ d.test('whichever limit comes first stops the read, and says which', async () =>
 
 d.test('the rate is measured across four orders of magnitude of link', async () => {
   // 20 ms chunks at the given rate. The ramp rule has to hold at both ends: on a fast link
-  // the ceiling arrives before any fixed warmup, on a slow one 128 kB never arrives at all.
+  // the byte ceiling arrives before a fixed warmup, on a slow one 128 kB never arrives.
   for (const mbps of [200, 133, 50, 10, 1, 0.4]) {
     const per = Math.max(1, Math.round((mbps * 1e6 / 8) * 0.02));
     const r = await download(Array.from({length: 400}, () => ({after: 20, bytes: per})),
@@ -186,7 +186,7 @@ d.test('the rate is measured across four orders of magnitude of link', async () 
 
 await d.run();
 
-/* ---------------- what happens to a network on a train ---------------- */
+/* ---------------- mobile network events ---------------- */
 
 const n = suite('network events');
 
@@ -246,7 +246,7 @@ n.test('a resolver answering on its retry timer is loss, not slowness', () => {
 
 n.test('a tunnel is a total outage and comes back whole', async () => {
   let down = false;
-  // A tunnel takes the radio, so UDP goes with it. Nothing answers at all.
+  // A tunnel takes the radio, so UDP goes with it: nothing answers.
   globalThis.RTCPeerConnection = class {
     addTransceiver() {} async createOffer() { return {}; }
     async setLocalDescription() {
@@ -267,7 +267,7 @@ n.test('a tunnel is a total outage and comes back whole', async () => {
   assert.ok(dead.every(x => PROBE_IDS.every(id => x.probes[id]?.fail !== 'resting')),
             'and nothing is rested during it, so the failure stays visible');
   // Rows reach the store as their rounds finish, so a slow round can be written after a
-  // later quick one. Order is the sequence number, which is what the file is read by.
+  // later quick one. The sequence number carries the order.
   const inOrder = [...rows].sort((a, b) => a.seq - b.seq);
   assert.ok(inOrder.at(-1).probes.ip6?.ok, 'recovery needs no intervention');
   assert.equal(new Set(inOrder.map(x => x.seq)).size, inOrder.length, 'and no round is recorded twice');
@@ -320,9 +320,9 @@ n.test('every failure reason a probe can produce is classified once, everywhere'
                'a browser without the API is a missing capability, not an outage');
 });
 
-// The UDP probe is the only one that is not a fetch, so every one of its outcomes has to be
-// produced deliberately. A carrier blocking STUN, a symmetric NAT and a browser without
-// WebRTC look identical from the outside and mean entirely different things.
+// The UDP probe is the only one that is not a fetch, so each outcome is produced explicitly
+// here. A carrier blocking STUN, a symmetric NAT and a browser without WebRTC are
+// indistinguishable from the outside and are recorded differently.
 n.test('every way the UDP path can fail is told apart', async () => {
   const stun = impl => { globalThis.RTCPeerConnection = impl; return probe.runProbe(P.udp, {timeoutMs: 300}); };
   const gathering = candidates => class {
@@ -369,7 +369,7 @@ n.test('every way the UDP path can fail is told apart', async () => {
 
 await n.run();
 
-/* ---------------- one recorder, several journeys ---------------- */
+/* ---------------- one recorder across several sessions ---------------- */
 
 const l = suite('session lifecycle');
 
@@ -383,15 +383,16 @@ l.test('a second journey on the same recorder starts from nothing', async () => 
   const store = fakeStore();
   const rec = createRecorder({store});
 
-  // First journey: long enough for the web probe to be marked stuck and stood down.
+  // First journey: long enough for the web probe to be marked stuck and rested.
   await rec.start(session());
   await sleep(700);
   await rec.stop();
   const first = store.written.samples.filter(x => !x.skipped);
   assert.ok(first.some(x => x.probes.web?.fail === 'resting'), 'the first journey rested it');
 
-  // Second journey, healthy network. A rest scheduled by round number in the first one
-  // silenced the probe for the whole of the next: one recorder lives for the page.
+  // Second journey on a healthy network. One recorder lives for the page, so a rest
+  // scheduled by round number in the first journey would silence the probe through the
+  // second.
   wedged = false;
   store.written.samples.length = 0;
   await rec.start({...session(), id: 's2'});
@@ -472,8 +473,8 @@ l.test('a wall clock that jumps does not take the round order with it', async ()
   const realNow = Date.now;
   await rec.start(session());
   await sleep(200);
-  // The radio reattaches and the OS corrects the clock backwards by a minute. Both clocks
-  // are on every row precisely so this is visible afterwards instead of quietly wrong.
+  // The radio reattaches and the OS corrects the wall clock back by a minute. Both clocks
+  // are on every row, so the correction is visible in the data.
   Date.now = () => realNow() - 60000;
   await sleep(300);
   Date.now = realNow;
@@ -493,7 +494,7 @@ l.test('a wall clock that jumps does not take the round order with it', async ()
 
 await l.run();
 
-/* ---------------- the rollup, on degenerate sessions ---------------- */
+/* ---------------- the rollup on degenerate sessions ---------------- */
 
 const e = suite('rollup edges');
 
@@ -527,13 +528,13 @@ e.test('a session of nothing but skipped rounds is not counted as measurement', 
 
 await e.run();
 
-/* ---------------- storage that goes away underneath ---------------- */
+/* ---------------- storage closing mid-session ---------------- */
 
 const st = suite('storage edges');
 
-// A minimal IndexedDB: enough for store.js to open a database, run a transaction and be
-// told the connection has closed. iOS closes connections when a tab is backgrounded under
-// storage pressure, which is the middle of every journey this tool is for.
+// A minimal IndexedDB: enough for store.js to open a database, run a transaction and be told
+// the connection has closed, which is what iOS does when a tab is backgrounded under storage
+// pressure.
 function fakeIndexedDB() {
   const state = {opens: 0, closed: false, puts: [], connections: []};
   const later = fn => setTimeout(fn, 0);
@@ -579,13 +580,13 @@ st.test('a connection the system closed is reopened rather than lost for the ses
   assert.equal(idb.state.opens, 1, 'one connection serves the session');
   assert.equal(idb.state.puts.length, 1);
 
-  // iOS closes it while the tab is in the background. The next write finds out by throwing.
+  // Closed while the tab is in the background; the next write finds out by throwing.
   idb.state.connections.at(-1).closed = true;
   await store.putSamples([{sessionId: 'a', seq: 1}]);
   assert.equal(idb.state.opens, 2, 'the closed connection is replaced');
   assert.equal(idb.state.puts.length, 2, 'and the round that found it closed is still written');
 
-  // The close event is the other way it is announced, before a write ever fails.
+  // The close event announces it before any write fails.
   idb.state.connections.at(-1).onclose?.();
   await store.putSamples([{sessionId: 'a', seq: 2}]);
   assert.equal(idb.state.opens, 3);
@@ -614,7 +615,7 @@ st.test('a database that will not open reports it rather than hanging every late
 
   await assert.rejects(() => store.putSamples([{sessionId: 'a', seq: 0}]), /quota/,
                        'the caller is told, so the rows stay in memory and are retried');
-  // A rejected open must not be cached: the next attempt has to be allowed to succeed.
+  // A rejected open is not cached, so the next attempt can succeed.
   failing = false;
   await assert.doesNotReject(() => store.putSamples([{sessionId: 'a', seq: 0}]),
                              'a later attempt opens a fresh connection');
@@ -622,7 +623,7 @@ st.test('a database that will not open reports it rather than hanging every late
 
 await st.run();
 
-/* ---------------- the file, with hostile input ---------------- */
+/* ---------------- the exported file, with hostile input ---------------- */
 
 const x = suite('export edges');
 
@@ -678,14 +679,14 @@ x.test('a session with no rounds exports a file rather than failing', () => {
 
 await x.run();
 
-/* ---------------- what a tile says ---------------- */
+/* ---------------- the readout ---------------- */
 
 const h = suite('tile edges');
 
 h.test('a tile shows the grade of the round whose number it shows', () => {
-  // The colour was smoothed over three rounds while the number was the current one, so a
-  // round measured at 35.5 Mb/s — green by any threshold — was painted red because a round
-  // three back had been slow. There is nothing left to disagree: one round, one colour.
+  // Colour and number both come from the same round. Smoothing the colour over three rounds
+  // while printing the current number paints a round measured at 35.5 Mb/s red because a
+  // round three back was slow.
   const rows = [3.4e6, 3.2e6, 33.6e6, 1.1e6, 35.5e6, 12.0e6, 9.2e6, 48.5e6].map((bps, seq) => ({
     seq, skipped: null, probes: {down: {ok: true, bps_steady: bps}}
   }));
@@ -701,8 +702,8 @@ h.test('a tile shows the grade of the round whose number it shows', () => {
 
 h.test('the strip and the tiles cannot disagree', async () => {
   const ui = await import('../js/ui.js');
-  // The strip takes the worst grade in the round; every tile takes its own. The worst tile
-  // and the strip bar are therefore the same colour, by construction rather than by luck.
+  // The strip takes the worst grade in the round and every tile takes its own, so the worst
+  // tile and the strip bar carry the same colour.
   const rows = [
     {probes: {ip6: {ok: true, ms: 30}, web: {ok: true, ms: 30}, dns: {ok: true, ms: 30},
               down: {ok: true, bps_steady: 50e6}}},

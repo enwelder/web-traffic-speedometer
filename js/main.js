@@ -8,13 +8,11 @@ import {exportSession, exportAll} from './export.js';
 const PREFS_KEY = 'wts.prefs';
 const $ = ui.$;
 
-const fails = {};
 let degradedRounds = 0;
 let scoredRounds = 0;
 let listDirty = true;
 
-// Test seam. On localhost only, ?interval=<ms> shortens the round so the browser suite does
-// not have to sit through 15 s per round. Inert on any deployed origin.
+// Test seam: on localhost only, ?interval=<ms> shortens the round for the browser suite.
 function testInterval() {
   if (location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') return null;
   const q = Number(new URLSearchParams(location.search).get('interval'));
@@ -28,9 +26,8 @@ function profile() {
 }
 
 let lastFirstPacket = null;
-// Start and Stop both await storage before the recorder's own flag moves, and a second tap
-// inside that window used to begin a whole second round chain: two sessions written, two
-// tick loops running, one of them never closed.
+// Start and Stop await storage before the recorder's own flag moves. Without this guard a
+// second tap inside that window starts a second session and a second tick loop.
 let busy = false;
 
 const uuid = () => (crypto.randomUUID ? crypto.randomUUID()
@@ -41,12 +38,8 @@ const uuid = () => (crypto.randomUUID ? crypto.randomUUID()
 
 const recorder = createRecorder({
   onSample(sample) {
-    if (!sample.skipped && !sample.round_error) {
-      // An expected failure (no IPv4 path) is a known condition, not an outage to tally.
-      for (const p of PROBES) if (ui.counts(sample.probes[p.id])) fails[p.id] = (fails[p.id] || 0) + 1;
-    }
-    // Full outages were rare on the route; what tracked the experience was rounds where
-    // some probe failed while the rest looked healthy.
+    // Rounds carrying at least one failure that was not a known-absent path, which is the
+    // common case; full outages are rare.
     if (!sample.skipped && !sample.round_error) {
       scoredRounds++;
       if (PROBES.some(p => ui.counts(sample.probes[p.id]))) degradedRounds++;
@@ -106,7 +99,7 @@ function applyPrefs() {
   syncSetup();
 }
 
-// On Wi-Fi there is no operator to name, so the field is not asked for.
+// On Wi-Fi there is no operator to name, so that field is hidden.
 function syncSetup() {
   const wifi = $('f-connection').value === 'wifi';
   $('row-operator').hidden = wifi;
@@ -114,14 +107,12 @@ function syncSetup() {
   const {intervalMs} = profile();
   const mb = projectedBytes(intervalMs, DOWNLOAD_DEFAULTS) / 1048576;
   const el = $('budget');
-  // The speed probe pulls for a fixed span, so on a fast link it reaches its byte ceiling
-  // every round. This is the worst case, and nothing stops it — keeping an eye on the total
-  // is the operator's job, and the running figure is on the readout.
+  // The download pulls for a fixed span, so on a fast link it reaches its byte ceiling every
+  // round. Nothing caps the total; the running figure is on the readout.
   el.textContent = `up to ≈ ${Math.round(mb)} MB for a 40-minute run on a fast link, ` +
     `almost all of it the speed probe. Nothing caps it; the running total is shown while ` +
     `recording.`;
-  // Past this the run costs more than a chunk of a monthly bundle, which is worth seeing
-  // before pressing Start rather than afterwards.
+  // Past this the projected run is a noticeable share of a monthly data bundle.
   el.classList.toggle('warn', mb > 50);
 }
 
@@ -131,8 +122,7 @@ function operatorName() {
   return sel === '__other' ? ($('f-operator-other').value.trim() || 'unknown') : sel;
 }
 
-// Generated, not typed: everything in the name is already known, and a keyboard on a
-// moving train is the last thing wanted before pressing Start.
+// Generated from what is already known, so no typing is needed before Start.
 function generatedName(operator, connection, started) {
   const d = new Date(started);
   const month = d.toLocaleString('en', {month: 'short'});
@@ -156,7 +146,7 @@ function newSession() {
     intervalMs,
     download: {...DOWNLOAD_DEFAULTS},
     profile: $('f-profile').value,
-    // Determined by a preflight at start rather than assumed; null until then.
+    // Determined by a preflight at start; null until then.
     ipv4_available: null,
     ipv4_check: null,
     environment: environment(intervalMs, DOWNLOAD_DEFAULTS),
@@ -166,21 +156,26 @@ function newSession() {
 
 /* ---- run control ---- */
 
-async function begin() {
-  // A recovered session offered on screen must not keep running alongside a new one.
-  dismissRecovery();
-  for (const p of PROBES) fails[p.id] = 0;
+// Everything on screen that belongs to one session. Both ways into a session reset the
+// same set, so state added here cannot carry from one session into the next.
+function resetReadout(intervalMs) {
   degradedRounds = scoredRounds = 0;
   lastFirstPacket = null;
   ui.clearLog();
   ui.clearStrip();
-  ui.setStripWindow(profile().intervalMs);
-  ui.notice('');
+  ui.setStripWindow(intervalMs);
   $('readout').hidden = false;
+}
+
+async function begin() {
+  // A recovery offer on screen must not survive into a new session.
+  dismissRecovery();
+  resetReadout(profile().intervalMs);
+  ui.notice('');
   writePrefs();
 
-  // Blank the readout before the first round lands, or the previous session's colours sit
-  // there for a whole interval — half a minute on the coarse profile.
+  // Blanked before the first round lands, or the previous session's colours stay for a whole
+  // interval: 30 s on the coarse profile.
   ui.setSignals(null);
   ui.setLamps(null);
 
@@ -199,7 +194,7 @@ async function end() {
   listDirty = true;
 }
 
-/* ---- crash recovery: never resume silently ---- */
+/* ---- crash recovery ---- */
 
 async function checkRecovery() {
   const id = store.getActive();
@@ -216,19 +211,13 @@ async function checkRecovery() {
   $('recover').hidden = false;
 
   $('recover-resume').onclick = async () => {
-    // Start may have been pressed while the banner was still up.
+    // Start may have been pressed while the banner was up.
     if (busy || recorder.status().running) return;
     $('recover').hidden = true;
-    for (const p of PROBES) fails[p.id] = 0;
-    degradedRounds = scoredRounds = 0;
-    lastFirstPacket = null;
-    ui.clearLog();
-    ui.clearStrip();
-    ui.setStripWindow(session.intervalMs);
-    $('readout').hidden = false;
+    resetReadout(session.intervalMs);
     ui.pushLog(`${ui.clock(Date.now())}  resumed "${session.name}" at round ${last ? last.seq + 1 : 0}`, 'mark');
-    // performance.now() restarts on reload, so the monotonic clock is carried across the
-    // gap using the wall clock. Both columns are in the data, so the bridge is checkable.
+    // performance.now() restarts on reload, so the monotonic clock is carried across the gap
+    // with the wall clock. Both clocks are in the data, so the bridge is checkable.
     const gap = last ? Date.now() - last.t : 0;
     await recorder.start(session, {
       resumeSeq: last ? last.seq + 1 : 0,
@@ -265,8 +254,8 @@ async function renderSessions() {
   listDirty = false;
 }
 
-// The list shows the running session too. Editing the copy the list rendered and writing it
-// back was silently undone by stop(), which writes the recorder's own object afterwards.
+// The list includes the running session. Edits must go to the recorder's own object:
+// stop() writes that object afterwards and would overwrite a copy edited here.
 function liveOrGiven(session) {
   const active = recorder.status().session;
   return active && active.id === session.id ? active : session;
@@ -354,7 +343,7 @@ for (const tab of document.querySelectorAll('nav button')) {
   };
 }
 
-// One ticker for the lifetime of the page, so a restart cannot stack a second one.
+// One ticker for the lifetime of the page, so a restart cannot stack a second.
 setInterval(() => {
   const s = recorder.status();
   if (s.running) $('m-time').textContent = ui.duration(s.elapsed);
@@ -362,8 +351,8 @@ setInterval(() => {
 
 applyPrefs();
 
-// A rejected top-level await kills the rest of the module: storage refused in private mode
-// would leave the page bound but with no service worker and no explanation on screen.
+// A rejected top-level await stops the rest of the module, which in private mode would
+// leave the page bound with no service worker and no explanation on screen.
 try {
   await store.ready();
   await checkRecovery();
@@ -373,7 +362,7 @@ try {
 }
 
 if ('serviceWorker' in navigator) {
-  // Recovery after a crash needs the page to load on a degraded network, which is exactly
-  // when the tool is wanted. Registration failure is not fatal.
+  // Recovery after a crash needs the page to load on a degraded network. Registration
+  // failure is not fatal.
   navigator.serviceWorker.register('sw.js').catch(() => {});
 }
