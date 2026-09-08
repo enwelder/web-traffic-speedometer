@@ -204,76 +204,70 @@ function pacedBody(chunks) {
   })};
 }
 
-s.test('the download discards the ramp and rates only what follows', async () => {
-  // 100 kB in the first 500 ms (the ramp), then 1 MB over the next 1000 ms.
+s.test('the bound never claims more than the link delivered', async () => {
+  // A ramp then a faster stretch: 100 kB over 500 ms, then 1 MB over 1000 ms.
   const chunks = [];
   for (let i = 0; i < 5; i++) chunks.push({after: 100, bytes: 20000});
   for (let i = 0; i < 10; i++) chunks.push({after: 100, bytes: 100000});
   globalThis.fetch = async () => ({ok: true, status: 200, body: pacedBody(chunks),
     headers: {get: () => null}});
 
-  const r = await probe.runProbe(P.down, {timeoutMs: 8000, download: {budgetMs: 5000, maxBytes: 50e6}});
+  const r = await probe.runProbe(P.down, {timeoutMs: 8000, download: {budgetMs: 5000}});
   assert.equal(r.ok, true);
-  assert.equal(r.aborted_reason, 'eof');
-  assert.ok(r.warmup_ms >= 500, `the ramp is identified: ${r.warmup_ms} ms`);
-  assert.ok(r.warmup_bytes >= 131072, `and by bytes too: ${r.warmup_bytes}`);
-  assert.ok(r.bps_steady > 0 && r.insufficient_sample === false);
+  assert.equal(r.aborted_reason, 'eof', 'the body ends on its own, so nothing is aborted');
+  assert.equal(r.complete, true);
 
-  // The whole-transfer rate includes the ramp and the steady rate does not; the gap between
-  // them is what makes a 250 kB probe report 4 Mb/s on 5G.
-  const overall = (r.bytes * 8) / (r.duration_ms / 1000);
-  assert.ok(r.bps_steady > overall * 1.3,
-            `steady ${(r.bps_steady / 1e6).toFixed(1)} must exceed overall ${(overall / 1e6).toFixed(1)} Mb/s`);
-  assert.ok(r.bps_peak >= r.bps_steady * 0.8, 'and a peak window is reported alongside');
+  // The whole point of a bound: it is what the bytes prove over the time they took, so it can
+  // sit below the link's best stretch but never above the link.
+  const delivered = (r.bytes * 8) / (r.duration_ms / 1000);
+  assert.ok(r.bps_min > 0, `a bound is reported: ${r.bps_min}`);
+  assert.ok(r.bps_min <= delivered * 1.01,
+            `bound ${(r.bps_min / 1e6).toFixed(1)} must not exceed delivered ` +
+            `${(delivered / 1e6).toFixed(1)} Mb/s`);
 });
 
-s.test('the download stops at whichever limit comes first', async () => {
+s.test('a body that outlasts the budget is stopped, and still bounds the link', async () => {
   const forever = () => ({getReader: () => ({
     read: async () => { await new Promise(r => setTimeout(r, 50)); return {done: false, value: new Uint8Array(200000)}; },
     cancel: async () => {}
   })});
   globalThis.fetch = async () => ({ok: true, status: 200, body: forever(), headers: {get: () => null}});
 
-  const byBytes = await probe.runProbe(P.down, {timeoutMs: 8000, download: {budgetMs: 60000, maxBytes: 1e6}});
-  assert.equal(byBytes.aborted_reason, 'bytes');
-  assert.ok(byBytes.bytes >= 1e6 && byBytes.bytes < 1.4e6, `stopped near the ceiling: ${byBytes.bytes}`);
-
-  const byTime = await probe.runProbe(P.down, {timeoutMs: 8000, download: {budgetMs: 600, maxBytes: 50e6}});
-  assert.equal(byTime.aborted_reason, 'time');
-  assert.ok(byTime.duration_ms < 900, `stopped near the budget: ${byTime.duration_ms} ms`);
+  const r = await probe.runProbe(P.down, {timeoutMs: 8000, download: {budgetMs: 600}});
+  assert.equal(r.aborted_reason, 'time', 'the budget is the only thing that stops a read early');
+  assert.equal(r.complete, false, 'and the row says the body did not arrive whole');
+  assert.ok(r.duration_ms < 900, `stopped near the budget: ${r.duration_ms} ms`);
+  assert.ok(r.bps_min > 0, 'a partial body still proves a floor');
 });
 
 // The warmup rule has to hold at both extremes: the byte ceiling binds on a fast link and
 // the byte threshold is unreachable on a slow one.
-s.test('the ramp is identified across the whole range of real links', async () => {
+s.test('every link in range produces a bound, and none of them an inflated one', async () => {
+  // A body of exactly what the probe asks for, delivered in 20 ms chunks at the given rate.
   const paced = mbps => {
-    // 20 ms chunks at the given rate, until one of the limits stops it.
     const per = Math.max(1, Math.round((mbps * 1e6 / 8) * 0.02));
-    return pacedBody(Array.from({length: 400}, () => ({after: 20, bytes: per})));
+    const chunks = Math.ceil(probe.DOWNLOAD_REQUEST_BYTES / per);
+    return pacedBody(Array.from({length: chunks}, () => ({after: 20, bytes: per})));
   };
-  for (const [mbps, expect] of [[133, 'bytes'], [50, 'bytes'], [10, 'time'], [1, 'time']]) {
+  for (const mbps of [0.4, 1.5, 5, 10, 50, 500]) {
     globalThis.fetch = async () => ({ok: true, status: 200, body: paced(mbps), headers: {get: () => null}});
-    const r = await probe.runProbe(P.down, {timeoutMs: 8000, download: {budgetMs: 2000, maxBytes: 5e6}});
-    assert.equal(r.aborted_reason, expect, `${mbps} Mb/s stops on ${expect}`);
-    assert.equal(r.insufficient_sample, false,
-                 `${mbps} Mb/s must produce a rate: warmup ${r.warmup_ms} ms of ${r.duration_ms} ms`);
-    assert.ok(r.bps_steady > 0, `${mbps} Mb/s rated at ${(r.bps_steady / 1e6).toFixed(1)} Mb/s`);
-    assert.ok(r.warmup_ms < r.duration_ms, 'the ramp never swallows the whole transfer');
-    // A peak below the sustained rate means the window was too wide for the steady portion
-    // and included the ramp.
-    assert.ok(r.bps_peak >= r.bps_steady * 0.95,
-              `${mbps} Mb/s: peak ${(r.bps_peak / 1e6).toFixed(0)} must not sit below steady ` +
-              `${(r.bps_steady / 1e6).toFixed(0)}`);
+    const r = await probe.runProbe(P.down, {timeoutMs: 8000, download: {budgetMs: 2000}});
+    assert.ok(r.bps_min > 0, `${mbps} Mb/s must produce a bound, got ${r.bps_min}`);
+    // The property the whole design rests on. A bound above the true rate would grade a link
+    // better than it is, and no amount of jitter or slow start may cause that.
+    assert.ok(r.bps_min <= mbps * 1e6 * 1.15,
+              `${mbps} Mb/s: bound ${(r.bps_min / 1e6).toFixed(2)} Mb/s claims more than the link`);
   }
 });
 
-s.test('a sample too short to rate says so rather than rating the ramp', async () => {
+s.test('a short body still bounds the link rather than reporting nothing', async () => {
   globalThis.fetch = async () => ({ok: true, status: 200,
     body: pacedBody([{after: 20, bytes: 30000}]), headers: {get: () => null}});
-  const r = await probe.runProbe(P.down, {timeoutMs: 4000, download: {budgetMs: 2000, maxBytes: 5e6}});
-  assert.equal(r.insufficient_sample, true);
-  assert.equal(r.bps_steady, null, 'never a number derived from the ramp alone');
-  assert.ok(r.bytes > 0, 'the bytes are still recorded');
+  const r = await probe.runProbe(P.down, {timeoutMs: 4000, download: {budgetMs: 2000}});
+  // The old ramp rule produced no grade at all here, and did the same to a real 0.5 Mb/s
+  // cell where the warmup gate ate 84% of the transfer.
+  assert.ok(r.bps_min > 0, 'a bound, not a blank');
+  assert.ok(r.bytes > 0, 'the bytes are recorded');
 });
 
 s.test('a resolver retry timer is flagged as loss rather than latency', () => {
@@ -337,7 +331,7 @@ function recorder(store, opts = {}) {
 
 const session = () => ({id: 's1', name: 't', operator: 'KPN', connection: 'cellular',
                         intervalMs: 100, started: Date.now(),
-                        download: {budgetMs: 60, maxBytes: 25000},
+                        download: {budgetMs: 60},
                         ipv4_available: null, ipv4_check: null});
 
 l.test('every scheduled round produces a row, healthy or not', async () => {
@@ -442,7 +436,7 @@ l.test('the interval decides what a session costs', async () => {
   // The cost is rounds times the byte ceiling, so halving the interval doubles it.
   assert.ok(Math.abs(fine - coarse * 2) < coarse * 0.02,
             `twice the rounds costs twice as much: ${(fine / 1e6) | 0} vs ${(coarse / 1e6) | 0} MB`);
-  assert.ok(fine > 40 * DOWNLOAD_DEFAULTS.maxBytes,
+  assert.ok(fine > 40 * DOWNLOAD_DEFAULTS.bytes,
             'and a 40-minute run is priced in hundreds of megabytes, not tens');
 
   const ten = projectedBytes(PROFILES.fine.intervalMs, DOWNLOAD_DEFAULTS, 10);
@@ -491,7 +485,7 @@ l.test('a resumed session keeps counting from what it has already spent', async 
 
 l.test('the environment block makes a session self-describing', () => {
   const env = environment(10000);
-  assert.ok(env.download.budgetMs > 0 && env.download.maxBytes > 0,
+  assert.ok(env.download.budgetMs > 0 && env.download.bytes > 0,
             'the download settings travel with the session');
   assert.equal(env.probes.length, probe.PROBES.length);
   assert.ok(Object.values(env.timeouts_ms).every(t => t < 10000), 'every deadline fits inside a round');
@@ -508,7 +502,7 @@ const OK = (ms = 20, extra = {}) => ({ok: true, ms, fail: null, ...extra});
 const BAD = (extra = {}) => ({ok: false, ms: 20, fail: 'network', ...extra});
 const healthy = () => ({ip6: OK(30), ip4: BAD({expected: true}), dns: OK(190), dns_ctl: OK(60),
                         web: OK(65), udp: OK(50),
-                        down: {ok: true, bps_steady: 40e6, insufficient_sample: false}});
+                        down: {ok: true, bps_min: 40e6}});
 
 c.test('an expected failure colours nothing and counts as nothing', () => {
   assert.equal(ui.counts(BAD({expected: true})), false);
@@ -596,7 +590,7 @@ e.test('the rollup describes the session without judging it', () => {
     probes: {ip6: probe(true, 10 * (i + 1)), ip4: probe(false, 5, {expected: true}),
              dns: probe(true, 100), dns_ctl: probe(true, 20), web: probe(true, 30),
              udp: probe(true, 15),
-             down: probe(true, 400, {bps_steady: 1e6 * (i + 1), insufficient_sample: false, bytes: 250000})},
+             down: probe(true, 400, {bps_min: 1e6 * (i + 1), bytes: 250000})},
     ...over
   });
   const samples = [...Array(10)].map((_, i) => row(i));
@@ -625,9 +619,9 @@ e.test('the rollup describes the session without judging it', () => {
   // excluded.
   assert.equal(sum.probes.ip6.ms_p50, 60);
   assert.equal(sum.probes.ip6.ms_max, 120);
-  assert.ok(sum.probes.down.bps_steady_p10 < sum.probes.down.bps_steady_p50,
+  assert.ok(sum.probes.down.bps_min_p10 < sum.probes.down.bps_min_p50,
             'the rate has a low end reported separately');
-  assert.equal(sum.probes.down.bps_steady_p50 != null, true,
+  assert.equal(sum.probes.down.bps_min_p50 != null, true,
                'summarising the rate the grades were taken on, not one that no longer exists');
   assert.equal(sum.probes.down.bytes_total, 250000 * 11);
   assert.equal(sum.fixes_gps, 11);

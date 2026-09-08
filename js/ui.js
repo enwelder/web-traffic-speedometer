@@ -146,7 +146,7 @@ export function sampleLine(sample) {
   const dns = num(sample.probes.dns?.ms);
   const ctl = sample.probes.dns_ctl?.ms;
   const speed = !d ? ''
-    : d.ok && d.bps_steady ? `  ${rate(d.bps_steady)}`
+    : d.ok && d.bps_min ? `  ≥${rate(d.bps_min)}`
     : d.ok ? '  unrated'
     : `  ${d.fail}`;
   return `${time}  v6 ${num(sample.probes.ip6?.ms)}  dns ${dns}${ctl != null ? '/' + ctl : ''}${speed}`;

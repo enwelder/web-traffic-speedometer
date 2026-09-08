@@ -13,7 +13,7 @@ const bad = (extra = {}) => ({ok: false, ms: null, fail: 'timeout', ...extra});
 const round = (over = {}) => ({probes: {
   ip6: ok(30), ip4: bad({expected: true}), dns: ok(190), dns_ctl: ok(60),
   web: ok(65), udp: ok(50),
-  down: {ok: true, ms: 2100, bps_steady: 40e6, bps_peak: 55e6, insufficient_sample: false},
+  down: {ok: true, ms: 2100, bps_min: 40e6},
   ...over
 }});
 

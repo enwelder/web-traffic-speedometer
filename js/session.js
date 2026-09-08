@@ -2,7 +2,7 @@
 // rounds that could not run: a failed attempt is a measurement, so it is never left out.
 
 import {PROBES, runRound, checkIpv4, clearTimings, timeoutFor,
-        DEFAULT_DOWN_BUDGET_MS, DEFAULT_DOWN_MAX_BYTES} from './probe.js';
+        DEFAULT_DOWN_BUDGET_MS, DOWNLOAD_REQUEST_BYTES} from './probe.js';
 import {gradeRound} from './grade.js';
 import {createStuckTracker} from './stuck.js';
 import {createWakeLock} from './wakelock.js';
@@ -19,7 +19,7 @@ const REFUSED_BYTES = 100;      // an IPv4 literal with no path never gets a con
 // STUN is UDP: no handshake to charge and no connection to resume.
 const cost = p => (WARM_BYTES[p.kind] * (p.samples || 1)) + (p.kind === 'stun' ? 0 : RESUMED_BYTES);
 
-export const APP_VERSION = '3.3.2';
+export const APP_VERSION = '3.4.0';
 
 // The download runs every round, so the interval is what controls data use.
 export const PROFILES = {
@@ -29,16 +29,17 @@ export const PROFILES = {
 
 export const DOWNLOAD_DEFAULTS = {
   budgetMs: DEFAULT_DOWN_BUDGET_MS,
-  maxBytes: DEFAULT_DOWN_MAX_BYTES
+  bytes: DOWNLOAD_REQUEST_BYTES
 };
 
 
-// The download is time-boxed, so what it pulls depends on the link. This assumes it reaches
-// its byte ceiling every round, which is the worst case and what a fast link does.
+// The download costs its full size only on a link quick enough to deliver it inside the
+// budget; a slow one transfers less. This is therefore the worst case, and what a fast link
+// actually does.
 export function projectedBytes(intervalMs, settings = DOWNLOAD_DEFAULTS, minutes = 40) {
   const rounds = Math.round((minutes * 60000) / intervalMs);
   const small = PROBES.reduce((n, p) => n + cost(p), 0);
-  return rounds * (small + settings.maxBytes);
+  return rounds * (small + settings.bytes);
 }
 
 export function environment(intervalMs, downloadSettings = DOWNLOAD_DEFAULTS) {
@@ -277,7 +278,7 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
     stuck.note(row, seq);
     charge(row);
     clearTimings();
-    if (row.probes.down?.ok) throughput = row.probes.down.bps_steady;
+    if (row.probes.down?.ok) throughput = row.probes.down.bps_min;
     if (row.probes.udp) udpMs = row.probes.udp.ok ? row.probes.udp.ms : null;
 
     keep(row);

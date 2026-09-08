@@ -76,10 +76,10 @@ export function gradeRound(sample) {
   out.newsite = failed(p.dns) || p.dns?.retry_suspected ? 'red'
               : gradeValue('newsite', p.dns?.ok ? p.dns.ms : null);
 
+  // The download reports a bound, so grading it is a threshold test: the question is which
+  // band the bytes that arrived prove the link is in, never how fast it is.
   const d = p.down;
-  out.video = failed(d) ? 'red'
-            : d?.ok && !d.insufficient_sample ? gradeValue('video', d.bps_steady)
-            : null;   // a sample too short to rate has no grade
+  out.video = failed(d) ? 'red' : gradeValue('video', d?.ok ? d.bps_min : null);
 
   return out;
 }
@@ -99,7 +99,7 @@ export function capabilityValue(capability, sample) {
     case 'realtime': return p.ip6?.ok ? p.ip6.ms : null;
     case 'tap':      return p.web?.ok ? p.web.ms : null;
     case 'newsite':  return p.dns?.ok ? p.dns.ms : null;
-    case 'video':    return p.down?.ok && !p.down.insufficient_sample ? p.down.bps_steady : null;
+    case 'video':    return p.down?.ok ? p.down.bps_min : null;
     default:         return null;
   }
 }
