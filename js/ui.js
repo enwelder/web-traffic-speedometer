@@ -1,4 +1,4 @@
-// DOM rendering only. Nothing here is persisted; the screen is a live readout.
+// DOM rendering. Nothing here is persisted.
 
 import {PROBES} from './probe.js';
 import {CAPABILITIES, GRADES, gradeRound, worse, capabilityValue} from './grade.js';
@@ -32,10 +32,10 @@ export function rate(bps) {
 export function notice(text) { $('notice').textContent = text || ''; }
 
 // One definition of failure, shared with the export, so the percentage on screen and the
-// count in the file cannot drift apart.
+// count in the file agree.
 export {countsAsFailure as counts} from './export.js';
 
-// The round's colour on the strip is the worst capability in it.
+// A round's colour on the strip is its worst capability grade.
 export function classify(sample) {
   if (sample.skipped) return 'skip';
   const g = sample.grades || gradeRound(sample);
@@ -44,8 +44,7 @@ export function classify(sample) {
   return worstGrade || 'green';
 }
 
-// Tapped, a tile says what it measures. Keeping this off the screen by default is the
-// difference between a readout and a wall of text.
+// Shown in place of a tile's value while that tile is tapped.
 const EXPLAIN = {
   realtime: 'Round trip to Cloudflare by IP address and over UDP, whichever is worse. Calls and live audio break on this before anything else does.',
   tap:      'Round trip to Google, a host your phone already knows. What a tap on a link costs before the page starts arriving.',
@@ -58,10 +57,8 @@ function displayValue(cap, value) {
   return cap === 'video' ? rate(value) : String(Math.round(value));
 }
 
-// A tile carries one status, and the number it shows is the round that status was taken
-// from. Smoothing the colour over a window while printing the current round's number made
-// the two describe different moments: 35.5 Mb/s under a red border, because a round three
-// back had been slow. History is the strip's job.
+// Colour and number both come from the round passed in, so a tile describes one moment.
+// History is the strip's job.
 export function setSignals(sample) {
   const grades = sample && !sample.skipped ? (sample.grades || gradeRound(sample)) : null;
   for (const cap of CAPABILITIES) {
@@ -74,8 +71,6 @@ export function setSignals(sample) {
   renderExplanations();
 }
 
-// The explanation replaces the number while it is on, rather than sitting beside it: a tile
-// that is being asked what it measures is not being read for its value.
 export function renderExplanations() {
   for (const cap of CAPABILITIES) {
     const on = $(`cap-${cap}`).dataset.explain === 'on';
@@ -84,8 +79,7 @@ export function renderExplanations() {
   }
 }
 
-// The strip is always full width, with empty slots dimmed. Filling it up from the left
-// would read as progress towards something; it is a history, scrolling right to left.
+// The strip is always full width with empty slots dimmed; it scrolls right to left.
 export function clearStrip() {
   const strip = $('strip');
   strip.replaceChildren();
@@ -111,7 +105,7 @@ export function setStripWindow(intervalMs) {
     : `${Math.round(STRIP_BARS * intervalMs / 1000)}s ago`;
 }
 
-// Lit, dim or unlit: which paths are carrying traffic, with no sentence to read.
+// Lit, dim or unlit: which paths carried traffic in this round.
 export function setLamps(sample) {
   const set = (id, state) => {
     const el = $(`lamp-${id}`);
@@ -125,12 +119,7 @@ export function setLamps(sample) {
   set('ip4', p.ip4.expected ? 'na' : p.ip4.ok ? 'on' : 'off');
 }
 
-// One control turns every explanation on, since a tile that only reacts to being tapped is
-// not discoverable.
-
-
-// Newest first. Appending put the line that matters at the bottom, where the controls sit
-// over it and reading it meant scrolling on a moving train.
+// Newest first: the controls sit over the bottom of the log.
 export function pushLog(text, cls) {
   const log = $('log');
   const line = document.createElement('div');
@@ -178,13 +167,13 @@ export function setRunning(running) {
   const start = $('btn-start');
   start.textContent = running ? 'Stop' : 'Start';
   start.className = running ? 'stop' : 'start';
-  // Idle, Start is the only action; it takes the whole thumb zone.
+  // While idle Start is the only action and takes the whole width.
   $('btn-mark').hidden = !running;
   $('btn-mark').disabled = !running;
   $('setup').hidden = running;
 }
 
-// Tap a tile to see what it measures; tap again to get the number back.
+// Tap a tile to see what it measures; tap again for the number.
 export function bindExplanations() {
   for (const cap of CAPABILITIES) {
     const cell = $(`cap-${cap}`);
@@ -203,12 +192,11 @@ export function setExplainAll(on) {
 export function switchView(name) {
   for (const view of document.querySelectorAll('.view')) view.hidden = view.id !== `view-${name}`;
   for (const tab of document.querySelectorAll('nav button')) tab.classList.toggle('on', tab.dataset.view === name);
-  // Start and Mark belong to measuring; on the session list they would act on nothing.
+  // Start and Mark act on the measure view only.
   $('controls').hidden = name !== 'measure';
 }
 
-// Short, because the generated name already carries date and time; this is what keeps the
-// date on the card after a rename.
+// Keeps the date on the card after a rename, which removes it from the generated name.
 const dateLabel = ms => {
   const d = new Date(ms);
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;

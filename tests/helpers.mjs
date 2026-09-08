@@ -1,5 +1,5 @@
-// Shared fixtures. The browser globals the modules touch are stubbed here rather than in
-// each test, so a module gaining a new dependency fails loudly in one place.
+// Shared fixtures. The browser globals the modules touch are stubbed in one place, so a
+// module gaining a new dependency fails here rather than in each suite.
 
 export function stubBrowser() {
   globalThis.document ??= {addEventListener() {}, visibilityState: 'visible'};
@@ -15,14 +15,13 @@ export function stubBrowser() {
   performance.getEntriesByName ??= () => [];
 }
 
-// An in-memory stand-in for the IndexedDB module, injectable into createRecorder.
 export const sleep = ms => new Promise(r => setTimeout(r, ms));
 
+// An in-memory stand-in for the IndexedDB module, injectable into createRecorder.
 export function fakeStore() {
   const written = {samples: [], events: [], sessions: []};
   let failures = 0;
-  // A write that takes a while, so a caller that arrives during one can be tested. A real
-  // IndexedDB transaction is never instantaneous either.
+  // holdWrites delays a write, so a caller arriving during one can be tested.
   let holdMs = 0;
   return {
     written,
@@ -58,13 +57,12 @@ export function netError() {
 }
 
 
-// A minimal test runner: named cases, a count, and a non-zero exit on the first failure.
+// A minimal test runner: named cases, a count, and a non-zero exit code on any failure.
 export function suite(name) {
   const cases = [];
   return {
     test: (label, fn) => cases.push([label, fn]),
-    // Every case runs even after one fails: stopping at the first hid every later failure
-    // in the suite, so a run reported one problem when there were five.
+    // Every case runs even after one fails, so a run reports every failure it has.
     async run() {
       let passed = 0, failed = 0;
       for (const [label, fn] of cases) {

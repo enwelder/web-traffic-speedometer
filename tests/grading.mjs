@@ -1,5 +1,5 @@
-// Grading tests. A journey on good 5G came back mostly yellow and orange; these pin the two
-// reasons that happened and the rules that replaced them.
+// Grading tests: per-capability scales, absolute thresholds, and the cases where a round
+// gets no grade at all.
 import assert from 'node:assert';
 import {stubBrowser, suite} from './helpers.mjs';
 
@@ -18,23 +18,21 @@ const round = (over = {}) => ({probes: {
 }});
 
 s.test('a probe is graded on its own scale, not a shared one', () => {
-  // The fresh-lookup probe costs ~200 ms on a perfect link: a real lookup plus a hostname
-  // the edge has never seen. Judging it against the same 300 ms as a warm round trip is
-  // what painted a healthy afternoon yellow.
+  // The fresh-lookup probe costs ~200 ms on a perfect link: a real lookup of a hostname the
+  // edge has never seen. Its scale is therefore not the warm round trip's.
   const grades = g.gradeRound(round());
   assert.equal(grades.realtime, 'green', '30 ms round trip');
   assert.equal(grades.tap, 'green', '65 ms to a known host');
   assert.equal(grades.newsite, 'green', '190 ms including a real lookup is a good result');
   assert.equal(grades.video, 'green', '40 Mb/s');
 
-  // The same 190 ms judged as a plain latency would not have been green.
+  // The same 190 ms on the round-trip scale.
   assert.equal(g.gradeValue('tap', 190), 'green');
   assert.equal(g.gradeValue('realtime', 190), 'yellow', 'the same number means different things');
 });
 
 s.test('nothing consults the session for its thresholds', () => {
-  // Every edge is a constant. A connection is not good because it is no worse than the rest
-  // of the journey, and a slow journey must not normalise itself into green.
+  // Every edge is a constant, so a slow journey cannot normalise itself into green.
   const slow = {probes: {...round().probes, ip6: ok(900), udp: ok(900), web: ok(2500), dns: ok(2500)}};
   const first = g.gradeRound(slow);
   for (let i = 0; i < 50; i++) g.gradeRound(slow);      // history cannot move the answer
@@ -46,12 +44,12 @@ s.test('nothing consults the session for its thresholds', () => {
 s.test('real-time takes latency from one probe and loss from both', () => {
   assert.equal(g.gradeRound(round({udp: bad()})).realtime, 'red', 'UDP gone');
   assert.equal(g.gradeRound(round({ip6: bad()})).realtime, 'red', 'the direct path gone');
-  // Loss beats a fast answer: calls die on loss before they die on latency.
+  // Loss outranks a fast answer: calls break on loss before latency.
   assert.equal(g.gradeRound(round({udp: bad(), ip6: ok(10)})).realtime, 'red');
   assert.equal(g.gradeRound(round()).realtime, 'green', 'an absent IPv4 path is not loss');
 
-  // A STUN exchange carries ICE gathering on top of a round trip, so its milliseconds are
-  // not the link's. Judging them on one scale put a 33 ms connection in orange.
+  // A STUN exchange carries ICE gathering on top of a round trip, so its milliseconds are on
+  // a different scale from the direct probe's and only its success is graded.
   assert.equal(g.gradeRound(round({ip6: ok(33), udp: ok(340)})).realtime, 'green',
                'a slow STUN exchange over a fast link is still a fast link');
   assert.equal(g.gradeRound(round({ip6: ok(340), udp: ok(33)})).realtime, 'orange',
@@ -62,7 +60,7 @@ s.test('a lookup that came back on a retry timer grades as loss', () => {
   const retried = round({dns: ok(2207, {retry_suspected: true})});
   assert.equal(g.gradeRound(retried).newsite, 'red',
                'a fixed multi-second timer is packet loss, not a slow resolver');
-  // Without the flag the same duration is merely bad.
+  // Without the flag the same duration grades on latency alone.
   assert.equal(g.gradeRound(round({dns: ok(2207)})).newsite, 'orange');
 });
 

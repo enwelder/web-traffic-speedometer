@@ -89,7 +89,7 @@ s.test('an absent IPv4 path is settled once and flagged, not rediscovered', asyn
 });
 
 s.test('a repeated probe reports the median and keeps every sample', async () => {
-  const times = [10, 50, 90];   // median 50, last 90: a wrapper returning either is told apart
+  const times = [10, 50, 90];   // median 50, last 90, so the two are distinguishable
   let i = 0;
   globalThis.fetch = async () => {
     const wait = times[i++ % times.length];
@@ -152,7 +152,7 @@ s.test('the UDP probe gathers candidates and can send nothing', async () => {
     addTransceiver(kind, opts) { this.transceiver = {kind, ...opts}; }
     async createOffer() { return {type: 'offer', sdp: 'v=0'}; }
     async setLocalDescription() {
-      // Two families, as a dual-stack network reports, then completion.
+      // One candidate per address family, as a dual-stack network reports, then completion.
       setTimeout(() => this.onicecandidate({candidate: {type: 'host', address: '10.0.0.1'}}), 1);
       setTimeout(() => this.onicecandidate({candidate: {type: 'srflx', address: '80.60.65.96'}}), 5);
       setTimeout(() => this.onicecandidate({candidate: {type: 'srflx', address: '2a09:bac5::9'}}), 8);
@@ -190,7 +190,7 @@ s.test('a browser without WebRTC reports unsupported, not a network failure', as
   assert.deepEqual([r.ok, r.fail], [false, 'unsupported']);
 });
 
-// A body delivered in timed chunks, so the ramp and the steady portion are distinguishable.
+// A body delivered in timed chunks, which separates the ramp from the steady portion.
 function pacedBody(chunks) {
   let i = 0;
   return {getReader: () => ({
@@ -219,8 +219,8 @@ s.test('the download discards the ramp and rates only what follows', async () =>
   assert.ok(r.warmup_bytes >= 131072, `and by bytes too: ${r.warmup_bytes}`);
   assert.ok(r.bps_steady > 0 && r.insufficient_sample === false);
 
-  // The whole-transfer rate is dragged down by the ramp; the steady one is not. That gap is
-  // the entire reason a 250 kB probe reported 4 Mb/s on 5G.
+  // The whole-transfer rate includes the ramp and the steady rate does not; the gap between
+  // them is what makes a 250 kB probe report 4 Mb/s on 5G.
   const overall = (r.bytes * 8) / (r.duration_ms / 1000);
   assert.ok(r.bps_steady > overall * 1.3,
             `steady ${(r.bps_steady / 1e6).toFixed(1)} must exceed overall ${(overall / 1e6).toFixed(1)} Mb/s`);
@@ -243,8 +243,8 @@ s.test('the download stops at whichever limit comes first', async () => {
   assert.ok(byTime.duration_ms < 900, `stopped near the budget: ${byTime.duration_ms} ms`);
 });
 
-// The warmup rule has to hold at both extremes, because the byte ceiling binds on a fast
-// link and the byte threshold is unreachable on a slow one.
+// The warmup rule has to hold at both extremes: the byte ceiling binds on a fast link and
+// the byte threshold is unreachable on a slow one.
 s.test('the ramp is identified across the whole range of real links', async () => {
   const paced = (mbps, budgetMs, maxBytes) => {
     // 20 ms chunks at the given rate, until one of the limits stops it.
@@ -259,8 +259,8 @@ s.test('the ramp is identified across the whole range of real links', async () =
                  `${mbps} Mb/s must produce a rate: warmup ${r.warmup_ms} ms of ${r.duration_ms} ms`);
     assert.ok(r.bps_steady > 0, `${mbps} Mb/s rated at ${(r.bps_steady / 1e6).toFixed(1)} Mb/s`);
     assert.ok(r.warmup_ms < r.duration_ms, 'the ramp never swallows the whole transfer');
-    // A peak below the sustained rate is a contradiction: it means the window was too wide
-    // to fit inside the steady portion and pulled the ramp back in.
+    // A peak below the sustained rate means the window was too wide for the steady portion
+    // and included the ramp.
     assert.ok(r.bps_peak >= r.bps_steady * 0.95,
               `${mbps} Mb/s: peak ${(r.bps_peak / 1e6).toFixed(0)} must not sit below steady ` +
               `${(r.bps_steady / 1e6).toFixed(0)}`);
@@ -400,7 +400,7 @@ l.test('a frozen tab is recorded as a pause, not read as an outage', async () =>
   await rec.start(session());
   await sleep(200);
   const until = Date.now() + 600;
-  while (Date.now() < until) { /* block the event loop, exactly as a suspended tab does */ }
+  while (Date.now() < until) { /* block the event loop, as a suspended tab does */ }
   await sleep(200);
   await rec.stop();
   const pauses = store.written.events.filter(e => e.type === 'pause');
@@ -423,8 +423,8 @@ l.test('a failing store holds rows in memory and retries rather than dropping th
   assert.ok(notices.some(n => n.includes('Storage write failed')), 'the failure reaches the screen');
   assert.ok(store.written.samples.length > held, 'and the held rows land on retry');
 
-  // Counting rows is not enough: dropping the rejected batch and carrying on also makes the
-  // total grow. Every round the recorder produced has to be on disk, in an unbroken run.
+  // Checked by sequence number rather than by count: dropping the rejected batch and
+  // carrying on also grows the total.
   const seqs = store.written.samples.map(x => x.seq).sort((a, b) => a - b);
   assert.equal(new Set(seqs).size, seqs.length, 'no round is written twice');
   assert.deepEqual(seqs, produced.map(x => x.seq).sort((a, b) => a - b),
@@ -439,8 +439,7 @@ l.test('the interval decides what a session costs', async () => {
   const fine = projectedBytes(PROFILES.fine.intervalMs, DOWNLOAD_DEFAULTS);
   const coarse = projectedBytes(PROFILES.coarse.intervalMs, DOWNLOAD_DEFAULTS);
 
-  // Nothing stops the session partway, so cost is rounds times the ceiling: halving the
-  // interval doubles the bill. That is the number the estimate has to show before Start.
+  // The cost is rounds times the byte ceiling, so halving the interval doubles it.
   assert.ok(Math.abs(fine - coarse * 2) < coarse * 0.02,
             `twice the rounds costs twice as much: ${(fine / 1e6) | 0} vs ${(coarse / 1e6) | 0} MB`);
   assert.ok(fine > 40 * DOWNLOAD_DEFAULTS.maxBytes,
@@ -455,7 +454,7 @@ l.test('stopping waits for the write already running, so the last rounds are on 
   globalThis.fetch = async () => ({ok: true, status: 200, type: 'opaque', headers: {get: () => null},
                                    body: bodyOf(25000), text: async () => TRACE});
   const store = fakeStore();
-  // Every write takes longer than a round, so stop always arrives while one is in flight.
+  // Every write takes longer than a round, so stop always arrives during one.
   store.holdWrites(150);
   const produced = [];
   const {rec} = recorder(store, {onSample: s => produced.push(s)});
@@ -477,8 +476,8 @@ l.test('a resumed session keeps counting from what it has already spent', async 
   assert.equal(one.downloadBytes, 5000000, 'the download is counted exactly, not estimated');
   assert.equal(three.downloadBytes, 15000000);
   assert.ok(three.bytes > one.bytes, 'and the small probes accumulate too');
-  // The first request to a host pays for a handshake and later ones do not, so three rounds
-  // cost less than three times one.
+  // Only the first request to a host is charged a handshake, so three rounds cost less than
+  // three times one round.
   assert.ok(three.bytes < one.bytes * 3, `handshakes are charged once: ${one.bytes} then ${three.bytes}`);
 
   const store = fakeStore();
@@ -529,14 +528,13 @@ c.test('the strip takes the worst capability in the round', () => {
 });
 
 c.test('the readout shows the grade the file recorded, not a second opinion', () => {
-  // Rounds carry their grades, so what was on screen and what is in the export cannot drift.
+  // A row's stored grades are used in preference to regrading it.
   const sample = {probes: healthy(), grades: {realtime: 'red', tap: 'green', newsite: 'green', video: 'green'}};
   assert.equal(ui.classify(sample), 'red', 'the stored grade wins');
 });
 
-// Twice now a block replacement in ui.js has quietly removed a function main.js calls, and
-// both times the failure only showed up when a session refused to start. The wiring between
-// the two modules is worth asserting directly.
+// Nothing else checks the wiring between the two modules: a function removed from ui.js
+// surfaces only when a session refuses to start.
 c.test('every ui function main.js calls exists', async () => {
   const {readFileSync} = await import('node:fs');
   const main = readFileSync(new URL('../js/main.js', import.meta.url), 'utf8');
@@ -616,15 +614,15 @@ e.test('the rollup describes the session without judging it', () => {
   assert.deepEqual(sum.probes.ip4.fails, {}, 'and never as a failure');
   assert.equal(sum.probes.web.fails.timeout, 1);
 
-  // A probe the recorder stopped on purpose is not a failure, and must not be counted as one
-  // — a wedged probe rests for six rounds at a time.
+  // A rested probe is excluded from the failure counts; a rest lasts six rounds.
   const rested = samples.map((x, i) => i < 3 && x.probes.down
     ? {...x, probes: {...x.probes, down: {ok: false, fail: 'resting'}}} : x);
   const s2 = summarise(rested);
   assert.deepEqual(s2.probes.down.fails, {}, 'resting is not failing');
   assert.equal(s2.probes.down.stopped.resting, 3, 'it is counted, apart');
   assert.equal(s2.degraded, sum.degraded, 'and it does not move the degraded count');
-  // Eleven rounds ran: ten at 10..100 ms and the twelfth row at 120, the skipped one apart.
+  // Eleven rounds ran: ten at 10..100 ms plus the twelfth row at 120, with the skipped one
+  // excluded.
   assert.equal(sum.probes.ip6.ms_p50, 60);
   assert.equal(sum.probes.ip6.ms_max, 120);
   assert.ok(sum.probes.down.bps_steady_p10 < sum.probes.down.bps_steady_p50,
@@ -634,7 +632,7 @@ e.test('the rollup describes the session without judging it', () => {
   assert.equal(sum.probes.down.bytes_total, 250000 * 11);
   assert.equal(sum.fixes_gps, 11);
 
-  // Everything in it is recomputable, so the samples stay the only source of truth.
+  // Every figure in the rollup is recomputable from the samples.
   const events = [
     {t: 5, mono: 5, type: 'label', text: 'slow', lat: 1, lon: 2},
     {t: 9, mono: 9, type: 'mark', text: 'mark 1', lat: 1, lon: 2}
@@ -643,7 +641,7 @@ e.test('the rollup describes the session without judging it', () => {
   assert.deepEqual(out.summary, sum, 'the file carries the same rollup');
   assert.equal(out.samples.length, samples.length, 'alongside every raw row');
 
-  // What it felt like, lifted out so checking a threshold against it is a join, not a filter.
+  // Marks are lifted out so a threshold can be checked against them by a join.
   assert.equal(out.events.length, 2, 'and still present among the events');
 });
 

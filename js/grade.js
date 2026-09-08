@@ -1,15 +1,13 @@
-// Grading is about capabilities, not probes. A probe's number means nothing on its own: the
-// fresh-lookup probe costs about 200 ms on a perfect link because a real lookup and a cold
-// hostname are part of what it measures, so holding it to the same scale as a warm round
-// trip to an address marked healthy connections yellow all afternoon.
+// Grades capabilities rather than probes: each capability has its own scale, because the
+// probes feeding them measure different work. The fresh-lookup probe costs about 200 ms on a
+// perfect link, since a real lookup of a cold hostname is part of what it measures.
 //
-// Every threshold below is absolute. Nothing here consults the session's own statistics —
-// a connection is not good merely because it is no worse than the rest of the journey.
+// Every threshold below is absolute; none consults the session's own statistics.
 
 export const GRADES = ['green', 'yellow', 'orange', 'red'];
 const RANK = Object.fromEntries(GRADES.map((g, i) => [g, i]));
 
-// Tunable in one place, so calibrating against a real journey is a data change.
+// Edges run from best to worst; `dir` says which side of an edge is better.
 export const THRESHOLDS = {
   realtime: {label: 'calls & real-time', unit: 'ms', dir: 'low',  edges: [100, 200, 400]},
   tap:      {label: 'tapping a link',    unit: 'ms', dir: 'low',  edges: [300, 1000, 3000]},
@@ -21,9 +19,9 @@ export const CAPABILITIES = Object.keys(THRESHOLDS);
 
 export function gradeValue(capability, value) {
   const t = THRESHOLDS[capability];
-  // Nothing is not a grade, and neither is nonsense. A negative latency graded green and a
-  // NaN graded red: both are arithmetic that went wrong upstream, and inventing a colour for
-  // them puts a number on screen that no measurement produced.
+  // Missing, non-finite and negative values yield no grade: they come from arithmetic that
+  // went wrong upstream, and comparing them against the edges produces green for a negative
+  // latency and red for a NaN.
   if (value == null || !Number.isFinite(value) || value < 0) return null;
   if (t.dir === 'low') {
     for (let i = 0; i < t.edges.length; i++) if (value < t.edges[i]) return GRADES[i];
@@ -35,9 +33,8 @@ export function gradeValue(capability, value) {
 
 export const worse = (a, b) => (a == null ? b : b == null ? a : (RANK[a] >= RANK[b] ? a : b));
 
-// A probe resting to clear its own wedged connection has not told us anything about the
-// network. Grading the capability it feeds as red for the whole cool-down said the opposite
-// of what the rest exists to establish.
+// A resting probe has reported nothing about the network, so it must not grade the
+// capability it feeds as red for the whole cool-down.
 const failed = r => !!r && r.ok === false && !r.expected && r.fail !== 'resting';
 
 // What each capability reads, and what makes it red regardless of the number.
@@ -46,37 +43,36 @@ export function gradeRound(sample) {
   const p = sample.probes || {};
   const out = {};
 
-  // Latency comes from the direct probe; UDP contributes whether the path exists at all.
-  // The two are not on one scale — a STUN exchange carries ICE gathering on top of a round
-  // trip, and holding it to the same milliseconds put a 33 ms link in orange. Real-time
-  // traffic dies on loss before it dies on latency, so either path failing is red however
-  // fast the other answers.
+  // Latency comes from the direct probe; UDP contributes only whether the path exists. A
+  // STUN exchange carries ICE gathering on top of a round trip, so its milliseconds are on a
+  // different scale and are not graded. Real-time traffic breaks on loss before latency, so
+  // either path failing is red however fast the other answers.
   out.realtime = failed(p.ip6) || failed(p.udp)
     ? 'red'
     : gradeValue('realtime', p.ip6?.ok ? p.ip6.ms : null);
 
   out.tap = failed(p.web) ? 'red' : gradeValue('tap', p.web?.ok ? p.web.ms : null);
-  // A lookup that came back on a resolver's retry timer is loss, not slowness.
+  // A lookup returning on a resolver's retry timer indicates loss.
   out.newsite = failed(p.dns) || p.dns?.retry_suspected ? 'red'
               : gradeValue('newsite', p.dns?.ok ? p.dns.ms : null);
 
   const d = p.down;
   out.video = failed(d) ? 'red'
             : d?.ok && !d.insufficient_sample ? gradeValue('video', d.bps_steady)
-            : null;   // never grade a sample that could not be measured
+            : null;   // a sample too short to rate has no grade
 
   return out;
 }
 
-// Nearest rank: the smallest value at or above the quantile. Rounding the index down put a
-// ten-sample window on its own last element, so anything labelled p90 was the maximum.
+// Nearest rank: the smallest value at or above the quantile. Rounding the index down puts a
+// ten-sample window on its own last element, making p90 the maximum.
 export function quantile(sorted, q) {
   if (!sorted.length) return null;
   return sorted[Math.min(sorted.length - 1, Math.max(0, Math.ceil(sorted.length * q) - 1))];
 }
 
-// Which probe reading each capability is graded on, so the UI shows the number behind the
-// colour rather than a second opinion.
+// The probe reading each capability is graded on, so the UI shows the number behind the
+// colour.
 export function capabilityValue(capability, sample) {
   const p = sample?.probes || {};
   switch (capability) {

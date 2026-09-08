@@ -1,11 +1,11 @@
-// Runs every suite. Unit and security tests need nothing but node; the browser suite needs
+// Runs every suite. All but the browser suite need only node; the browser suite needs
 // Playwright and starts its own server.
 import {spawnSync} from 'node:child_process';
 
 const suites = ['unit', 'grading', 'edges', 'replay', 'regressions', 'security', 'browser'];
 const only = process.argv.slice(2);
-// A mistyped name selected nothing and the run went green, so a typo in the CI workflow
-// would have kept passing forever without running a single case.
+// A mistyped name would otherwise select nothing and exit green, so a typo in the CI
+// workflow would pass without running a case.
 const unknown = only.filter(n => !suites.includes(n));
 if (unknown.length) {
   console.error(`unknown suite(s): ${unknown.join(', ')}\nknown: ${suites.join(', ')}`);

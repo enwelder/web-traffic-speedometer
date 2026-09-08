@@ -1,5 +1,5 @@
-// Regressions for bugs found in journey data rather than in review. Each names the
-// observation that exposed it, so a future change that reintroduces one fails loudly.
+// Regressions for defects that only recorded journeys exposed. Each case states the
+// measurement that has to hold and the condition that breaks it.
 import assert from 'node:assert';
 import {stubBrowser, fakeStore, TRACE, bodyOf, netError, sleep, suite} from './helpers.mjs';
 
@@ -29,9 +29,9 @@ const session = (over = {}) => ({id: 's', name: 't', operator: 'KPN', connection
                                  intervalMs: 100, downloadBytes: 1000, started: Date.now(),
                                  ipv4_available: true, ipv4_check: null, ...over});
 
-// Journey 3, seq 240-241: a round ran 13.7 s late at a 10 s interval, and the next tick
-// fired 11 ms later and collided with it. Adding one interval to a due time already further
-// behind than that leaves it in the past, so the timer fires immediately.
+// Adding one interval to a due time already further behind than that leaves it in the past,
+// so the next timer fires immediately and collides with the round still running. Observed as
+// a round 13.7 s late on a 10 s interval followed by a tick 11 ms later.
 r.test('a freeze shorter than two intervals does not fire the next round instantly', async () => {
   stubStun();
   globalThis.fetch = async () => okResponse();
@@ -40,10 +40,9 @@ r.test('a freeze shorter than two intervals does not fire the next round instant
   await rec.start(session());
   await sleep(250);
 
-  // Block the loop for 1.4 intervals: long enough to miss a slot, short enough that the old
-  // two-interval resync threshold ignored it.
+  // Block the loop for 1.4 intervals: past one missed slot, under two.
   const until = Date.now() + 140;
-  while (Date.now() < until) { /* frozen, exactly as a suspended tab */ }
+  while (Date.now() < until) { /* a suspended tab */ }
   await sleep(400);
   await rec.stop();
 
@@ -51,15 +50,15 @@ r.test('a freeze shorter than two intervals does not fire the next round instant
   const overlaps = rows.filter(x => x.skipped === 'overlap');
   assert.equal(overlaps.length, 0, `a missed slot must not manufacture an overlap: ${overlaps.length}`);
 
-  // Rounds stay on the original grid rather than bunching up to catch up.
+  // Rounds stay evenly spaced rather than bunching up.
   const gaps = rows.filter(x => !x.skipped).map(x => x.mono).sort((a, b) => a - b)
                    .map((v, i, all) => (i ? v - all[i - 1] : null)).filter(Boolean);
   assert.ok(gaps.every(g => g >= 80), `no round follows another instantly: ${gaps.join(',')}`);
 });
 
-// Journey 3, seq 222: every probe hit its 4 s deadline yet the round took 16.7 s, because a
-// frozen tab suspends the abort timer too. Without the previous round's real duration an
-// overlap cannot be told apart from the app stalling.
+// A frozen tab suspends the abort timer, so a round can outlast every deadline in it: every
+// probe hit its 4 s deadline in a round that took 16.7 s. prev_round_ms is what separates an
+// overlap from a stalled app.
 r.test('a skipped round records how long the round before it actually took', async () => {
   stubStun();
   globalThis.fetch = (url, o) => new Promise((res, rej) => {
@@ -78,8 +77,9 @@ r.test('a skipped round records how long the round before it actually took', asy
             'and the duration of the round before it is on the row');
 });
 
-// Journey 1, seq 138-157: after a genuine outage every probe recovered except the control,
-// which then timed out for twenty consecutive rounds on its own. Twenty false failures.
+// After an outage a single probe can keep timing out while every other one recovers:
+// observed over twenty consecutive rounds. Those rounds report the connection, not the
+// network.
 r.test('a probe failing alone is rested rather than believed', async () => {
   stubStun();
   let webWedged = true;
@@ -101,8 +101,8 @@ r.test('a probe failing alone is rested rather than believed', async () => {
   assert.ok(rows.every(x => x.probes.ip6.ok), 'the probes that work are untouched');
   assert.ok(notices.some(n => /resting/.test(n)), 'and the screen says why');
 
-  // The rule is "failing alone". When everything fails the network is down, and resting
-  // every probe at once blanked the readout at the worst possible moment.
+  // Resting applies only to a probe failing alone: when everything fails the network is
+  // down, and resting every probe at once blanks the readout.
   const outage = fakeStore();
   const rec2 = createRecorder({store: outage});
   globalThis.fetch = async () => { throw netError(); };
@@ -120,7 +120,7 @@ r.test('a probe failing alone is rested rather than believed', async () => {
     return okResponse();
   };
 
-  // Once it works again it is trusted again, without restarting the session.
+  // Recovery is picked up within the same session.
   webWedged = false;
   await sleep(900);
   await rec.stop();
@@ -128,8 +128,8 @@ r.test('a probe failing alone is rested rather than believed', async () => {
   assert.ok(later.some(x => x.probes.web.ok), 'recovery is picked up automatically');
 });
 
-// Journeys 1-3: successful small probes at 3885, 3883, 3878 ms against a 4000 ms ceiling.
-// Anything slower was recorded as a failure, collapsing "slow" into "gone".
+// Small probes have succeeded at 3885, 3883 and 3878 ms, so a deadline near 4 s records
+// slow-but-working rounds as failures.
 r.test('a slow but working probe is not recorded as a failure', async () => {
   for (const interval of [15000, 30000]) {
     for (const p of probe.PROBES) {
@@ -143,8 +143,8 @@ r.test('a slow but working probe is not recorded as a failure', async () => {
   assert.equal(res.ok, true, 'a response well past the old ceiling still counts as a success');
 });
 
-// Speed came back on 0, 2 and 51 of 158, 75 and 243 rounds. The web API cannot be pushed
-// harder, so it is computed from consecutive fixes and the source is recorded.
+// coords.speed is supplied sporadically (0, 2 and 51 of 158, 75 and 243 rounds), so speed is
+// computed from consecutive fixes and the row records which source it came from.
 r.test('speed is derived from consecutive fixes when the platform will not supply it', async () => {
   stubStun();
   globalThis.fetch = async () => okResponse();
@@ -157,7 +157,7 @@ r.test('speed is derived from consecutive fixes when the platform will not suppl
   const rec = createRecorder({store});
   await rec.start(session());
   const base = Date.now();
-  // ~1000 m apart, 20 s apart: 50 m/s, and coords.speed absent as iOS often leaves it.
+  // ~1000 m apart, 20 s apart: 50 m/s, with coords.speed absent.
   watcher({coords: {latitude: 51.9244, longitude: 4.4777, accuracy: 10, speed: null, heading: null}, timestamp: base});
   await sleep(250);
   watcher({coords: {latitude: 51.9334, longitude: 4.4777, accuracy: 10, speed: null, heading: null}, timestamp: base + 20000});
@@ -171,8 +171,8 @@ r.test('speed is derived from consecutive fixes when the platform will not suppl
   assert.equal(s.speed_source, 'derived', 'and the row says where the number came from');
   assert.ok(Math.abs(s.speed_derived - 50) < 5, `~50 m/s over 1 km in 20 s, got ${s.speed_derived}`);
 
-  // A pair of tower-class fixes must produce nothing: two 1414 m estimates hundreds of
-  // metres apart in opposite directions read as 682 km/h on a train.
+  // A pair of tower-class fixes produces no speed: two 1414 m estimates hundreds of metres
+  // apart in opposite directions read as 682 km/h on a train.
   const store2 = fakeStore();
   const rec2 = createRecorder({store: store2});
   await rec2.start(session());
@@ -191,7 +191,8 @@ r.test('speed is derived from consecutive fixes when the platform will not suppl
   Object.defineProperty(globalThis, 'navigator', {value: {userAgent: 'node-test', language: 'en', geolocation: null}, configurable: true});
 });
 
-// The pause event existed but correlating it with samples meant matching timestamps by hand.
+// in_pause makes the rounds around a bridged gap filterable without matching timestamps
+// against the event list.
 r.test('rounds inside a bridged gap are flagged on the row', async () => {
   stubStun();
   globalThis.fetch = async () => okResponse();
@@ -205,9 +206,8 @@ r.test('rounds inside a bridged gap are flagged on the row', async () => {
   await rec.stop();
 
   assert.ok(store.written.events.some(e => e.type === 'pause'), 'the gap is still an event');
-  // The threshold is one missed slot, not two: a 13.7 s delay at a 10 s interval went
-  // unlogged under the old rule. Tying the count to late_ms pins the number rather than
-  // relying on the freeze happening to be long enough.
+  // The threshold is one missed slot: at two, a 13.7 s delay on a 10 s interval goes
+  // unlogged. Counting against late_ms pins the number rather than the freeze length.
   const missed = store.written.samples.filter(x => x.late_ms >= 100);
   const pauses = store.written.events.filter(e => e.type === 'pause');
   assert.ok(missed.length > 0, 'the freeze produced a late round to judge');
@@ -219,10 +219,9 @@ r.test('rounds inside a bridged gap are flagged on the row', async () => {
   assert.ok(store.written.samples.some(x => x.in_pause === false), 'ordinary rounds are not flagged');
 });
 
-// One ride held the screen awake the whole way; the ride back kept letting it sleep. The
-// system can take the lock back without the page ever becoming hidden — Low Power Mode
-// engaging is the likely trigger — and the released sentinel stayed in the variable, so the
-// only retry was guarded by a check that could no longer be true.
+// The system can reclaim the wake lock without the page becoming hidden (Low Power Mode is
+// one trigger). The released sentinel stays in the variable, so a guard on the variable alone
+// blocks every retry for the rest of the session.
 r.test('a wake lock taken back by the system is reacquired, not lost for the session', async () => {
   stubStun();
   globalThis.fetch = async () => okResponse();
@@ -236,7 +235,7 @@ r.test('a wake lock taken back by the system is reacquired, not lost for the ses
       const sentinel = {
         released: false,
         addEventListener: (_, fn) => listeners.push(fn),
-        // What the platform does when it reclaims the lock.
+        // How the platform announces reclaiming the lock.
         systemRelease() { this.released = true; listeners.forEach(fn => fn()); }
       };
       grants.push(sentinel);
@@ -262,7 +261,7 @@ r.test('a wake lock taken back by the system is reacquired, not lost for the ses
   assert.ok(store.written.events.some(e => /wake lock released/.test(e.text)),
             'the loss is in the record, so a journey explains its own gaps');
 
-  // A refusal must not leave it wedged either: it retries and recovers.
+  // A refused request must not stop later retries.
   refuse = true;
   grants.at(-1).systemRelease();
   await sleep(400);
@@ -277,8 +276,8 @@ r.test('a wake lock taken back by the system is reacquired, not lost for the ses
     value: {userAgent: 'node-test', language: 'en', geolocation: null}, configurable: true});
 });
 
-// A journey's p90 read high and did not look like the data. Rounding the rank down put a
-// ten-sample window on its own last element, so the figure labelled p90 was the maximum.
+// Rounding the rank down puts a ten-sample window on its own last element, which reports the
+// maximum as p90.
 r.test('a percentile is the nearest rank, not the largest value that fits', async () => {
   const ui = await import('../js/grade.js');
   const asc = n => Array.from({length: n}, (_, i) => i + 1);
@@ -295,13 +294,12 @@ r.test('a percentile is the nearest rank, not the largest value that fits', asyn
   assert.equal(ui.quantile([], 0.9), null);
   assert.equal(ui.quantile([7], 0.9), 7);
 
-  // Nine identical readings with one spike: the ninetieth percentile is the reading, not
-  // the spike. Rounding the index down put every short window on its own last element.
+  // Nine identical readings and one spike: p90 is the reading.
   assert.equal(ui.quantile([10, 10, 10, 10, 10, 10, 10, 10, 10, 900], 0.9), 10);
 });
 
-// The operator is typed in; the egress address is not. A hotspot picked up mid-journey
-// leaves the label saying one thing and the measurements describing another.
+// The operator label is typed in and the egress address is measured, so a hotspot picked up
+// mid-journey shows only as an address change.
 r.test('a change of egress address under an unchanged label is written down', async () => {
   stubStun();
   let ip = '2a02:a473::9';

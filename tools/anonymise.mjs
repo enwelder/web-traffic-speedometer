@@ -1,14 +1,14 @@
 // Turns a recorded journey into a committable fixture.
 //
-// A recording is a home address, a workplace and a daily timetable. Everything that could
-// place or identify the person is removed; every number the measurement code reads is kept,
-// because a fixture that has been smoothed is not a test of anything.
+// A recording carries a home address, a workplace and a daily timetable. Everything that
+// could place or identify the person is removed; every number the measurement code reads is
+// kept unchanged, so the fixture still tests that code.
 //
 //   node tools/anonymise.mjs .dev/logs/<file>.json tests/fixtures/<name>.json
 import {readFileSync, writeFileSync} from 'node:fs';
 
 // A fixed epoch, so a fixture cannot say when anyone travelled. Intervals are preserved
-// exactly: they are what the scheduler tests are about.
+// exactly, since the scheduler tests read them.
 const EPOCH = Date.parse('2026-01-01T09:00:00Z');
 
 const REDACT = '<redacted>';
@@ -19,7 +19,7 @@ function scrubProbe(r) {
   // The egress address identifies the subscriber's operator session.
   if ('egress_ip' in out) out.egress_ip = out.egress_ip ? REDACT : out.egress_ip;
   if ('public_ips' in out) out.public_ips = (out.public_ips || []).map(() => REDACT);
-  // Hostnames are random per round; the shape is what matters, not the value.
+  // Hostnames are random per round; only the shape is asserted on.
   if ('host' in out && out.host) {
     out.host = out.host.replace(/^[0-9a-f]+\./, 'xxxxxxxxxxxxxxxx.');
   }
@@ -32,8 +32,8 @@ export function anonymise(doc) {
 
   const samples = doc.samples.map(s => {
     const out = {...s, t: t(s.t), pos_t: t(s.pos_t)};
-    // Position is the whole risk. Accuracy is kept because the accuracy-class rules are
-    // tested against it; the coordinates themselves are dropped, not fuzzed.
+    // Coordinates are dropped rather than fuzzed. Accuracy is kept, since the
+    // accuracy-class rules are tested against it.
     out.lat = null;
     out.lon = null;
     delete out.heading;
@@ -41,8 +41,8 @@ export function anonymise(doc) {
     return out;
   });
 
-  // A typed note or mark can name a street. Machine-written text is kept because the
-  // scheduler and wake-lock tests read it; anything else is dropped.
+  // A typed note or mark can name a street, so only machine-written text is kept; the
+  // scheduler and wake-lock tests read it.
   const machine = x => x != null && MACHINE_TEXT.some(re => re.test(x));
   const events = (doc.events || []).map(e => ({
     ...e, t: t(e.t), lat: null, lon: null,
@@ -56,7 +56,7 @@ export function anonymise(doc) {
   if (session.environment) {
     session.environment = {
       ...session.environment,
-      // The user agent is a fingerprint and, on some browsers, a fiction anyway.
+      // The user agent is a fingerprint.
       user_agent: REDACT,
       timezone: REDACT,
       screen: REDACT
@@ -73,18 +73,17 @@ export function anonymise(doc) {
   };
 }
 
-// The probe endpoints are public infrastructure and appear in the recorded configuration;
-// they are not what needs hiding. Removing them first keeps the scan aimed at subscriber
-// data rather than tripping over the addresses the tool is built to contact.
+// The probe endpoints are public infrastructure and appear in the recorded configuration.
+// Removing them before the scan keeps it aimed at subscriber data rather than at the
+// addresses the tool contacts by design.
 const PUBLIC_ENDPOINTS = [
   '1.1.1.1', '2606:4700:4700::1111', 'stun:stun.cloudflare.com:3478',
   'speed.cloudflare.com', 'www.gstatic.com', 'wts-dns-control.github.io'
 ];
 
-// Every key a fixture may contain, by level. An allowlist rather than a list of things to
-// look for: a scan for known-bad shapes passes anything the schema grows next, and the
-// consequence of missing one here is a home address in a public repository. Adding a field
-// to the recorder means adding it here, deliberately, with a rule for its value.
+// Every key a fixture may contain, by level. An allowlist, since a scan for known-bad shapes
+// passes whatever the schema grows next. A field added to the recorder has to be added here
+// with a rule for its value.
 const KEYS = {
   root: ['format', 'version', 'source_app_version', 'note', 'session', 'samples', 'events'],
   session: ['id', 'name', 'operator', 'connection', 'note', 'started', 'stopped', 'intervalMs',
@@ -105,8 +104,8 @@ const KEYS = {
   event: ['sessionId', 'id', 't', 'mono', 'type', 'lat', 'lon', 'text']
 };
 
-// Free text is the other half of the risk: a note saying where someone got off is as
-// identifying as a coordinate. Only machine-written text is allowed through, by shape.
+// A typed note saying where someone got off is as identifying as a coordinate, so text is
+// allowed through only when it matches one of these machine-written shapes.
 const MACHINE_TEXT = [
   /^<redacted>$/,
   /^mark \d+$/,
@@ -130,13 +129,13 @@ function checkKeys(obj, level, where) {
   }
 }
 
-// Anything that could carry a subscriber's identity through a string. Applied after the
-// endpoints the tool is built to contact have been taken out of the text.
+// String contents that could identify a subscriber. Applied after the tool's own endpoints
+// have been removed from the text.
 function checkString(v, where) {
   if (/iPhone|Android|Mozilla|Safari|Chrome/.test(v)) fail(`${where}: a user agent survived: ${v}`);
   if (/\b\d{1,3}(\.\d{1,3}){3}\b/.test(v)) fail(`${where}: an IPv4 address survived: ${v}`);
-  // Compressed IPv6 too: "2a02:a473::9" has only three groups and slipped past a rule
-  // that wanted four.
+  // Compressed form included: "2a02:a473::9" carries three groups, so a rule requiring four
+  // misses it.
   if (/(?:[0-9a-f]{1,4}:){2,}[0-9a-f]{0,4}/i.test(v) || /[0-9a-f]{1,4}::/i.test(v)) {
     fail(`${where}: an IPv6 address survived: ${v}`);
   }
@@ -144,20 +143,20 @@ function checkString(v, where) {
 
 function checkTime(v, where) {
   if (typeof v !== 'number') return;
-  // Wall-clock milliseconds. Anything of this magnitude has to have been shifted, or the
-  // fixture says when the journey happened.
+  // Wall-clock milliseconds: a value of this magnitude that is not near the epoch says when
+  // the journey happened.
   if (v > 1e12 && Math.abs(v - EPOCH) > 86400000) fail(`${where}: an unshifted timestamp: ${v}`);
 }
 
-// Fails loudly rather than committing something that only looks anonymised.
+// Throws on the first field that could identify anyone.
 export function assertClean(fixture) {
   const strip = v => {
     let t = String(v);
     for (const e of PUBLIC_ENDPOINTS) t = t.split(e).join('<endpoint>');
     return t;
   };
-  // Values are checked where they are, so the message names the field rather than an offset
-  // into one long line of JSON.
+  // Values are checked in place, so a failure names the field rather than an offset into the
+  // JSON.
   const scan = (v, where, textAllowed = false) => {
     if (v == null) return;
     if (typeof v === 'string') {

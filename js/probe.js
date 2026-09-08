@@ -1,60 +1,55 @@
 // Seven probes run in parallel every round, each isolating a different layer.
 //
-// ip6/ip4 use address literals, so no name resolution happens at all — that is what makes
-// them a clean read on the radio link. On an IPv6-only carrier (NAT64/DNS64, the normal
-// Dutch mobile configuration) ip4 cannot work: iOS has no CLAT, so it relies on DNS64
-// synthesising an address during lookup, and a literal skips lookup entirely. Availability
-// is therefore established once per session rather than rediscovered every round.
+// ip6/ip4 use address literals, so no name resolution happens. On an IPv6-only carrier
+// (NAT64/DNS64) ip4 cannot work: iOS has no CLAT and depends on DNS64 synthesising an
+// address during lookup, which a literal skips. Availability is established once per
+// session by checkIpv4.
 //
 // dns requests a random <label>.github.io. The wildcard record and the *.github.io
-// certificate make any label valid, so the carrier's resolver must perform a lookup it
-// cannot have cached. dns_ctl requests a fixed label at the same destination, whose name
-// stays cached for an hour — so dns failing while dns_ctl succeeds is a resolution failure
-// and nothing else, with the destination held constant.
+// certificate make any label valid, so the resolver must perform an uncached lookup.
+// dns_ctl requests a fixed label at the same destination, whose name stays cached for an
+// hour, so dns failing while dns_ctl succeeds isolates resolution with the destination
+// held constant.
 
-// Time-boxed rather than fixed-size. A 250 kB body never leaves TCP slow start, so the rate
-// it implies is how fast the congestion window ramps, not what the link can carry — 4 Mb/s
-// on 5G. The probe now pulls for a fixed span, discards the ramp, and measures what is left.
-export const DOWNLOAD_REQUEST_BYTES = 50000000;   // asked for; abandoned long before it arrives
+// A 250 kB body completes inside TCP slow start, so its implied rate measures how fast the
+// congestion window ramps: 4 Mb/s on 5G. The download pulls for a fixed span instead,
+// discards the ramp and rates the remainder.
+export const DOWNLOAD_REQUEST_BYTES = 50000000;   // requested; the transfer is aborted long before this arrives
 export const DEFAULT_DOWN_BUDGET_MS = 2000;
 export const DEFAULT_DOWN_MAX_BYTES = 5000000;
-// Slow start is over once the window has had time to grow: whichever of these comes later.
+// The ramp ends at whichever of these two thresholds is reached later.
 export const WARMUP_MS = 500;
 export const WARMUP_BYTES = 131072;
-// A window this short is still thousands of packets on a fast link; the limit exists for
-// clock resolution, not sample size. It also has to be reachable when the byte ceiling ends
-// the transfer in a couple of hundred milliseconds.
+// Lower bound on the rated span, set by clock resolution. It has to stay reachable when the
+// byte ceiling ends the transfer within a few hundred milliseconds.
 export const MIN_STEADY_MS = 100;
 export const PEAK_WINDOW_MS = 500;
-// 8 s for everything that uses TCP. Journey data showed small probes succeeding at 3885 ms
-// against a 4000 ms ceiling, so the old limit was recording slow-but-working rounds as
-// failures and destroying the distinction between slow and gone.
+// Applies to every TCP probe. Small probes have been observed succeeding at 3885 ms, so a
+// lower ceiling records slow-but-working rounds as failures.
 export const TIMEOUT_MS = 8000;
-export const STUN_TIMEOUT_MS = 3000;      // UDP either answers quickly or not at all
+export const STUN_TIMEOUT_MS = 3000;      // UDP answers within a round trip or not at all
 export const MIN_TIMEOUT_MS = 1000;
 
-// A probe whose connection has wedged fails every round while its peers succeed. Safari
-// cannot be told to open a fresh connection, so recovery is to stop asking for a while and
-// let the browser retire the connection on idle.
+// A probe whose connection has stopped carrying traffic fails every round while its peers
+// succeed. Safari cannot be told to open a fresh connection, so the probe stops running for
+// STUCK_COOLDOWN rounds and the browser retires the connection on idle.
 export const STUCK_AFTER = 3;
 export const STUCK_COOLDOWN = 6;
 export const STUN_SERVER = 'stun:stun.cloudflare.com:3478';
 export const IPV4_PREFLIGHT_MS = 2000;
 
 export const PROBES = [
-  // Repeated within the round: a single round trip is noisy, so the reported figure is the
-  // median of the samples that fit in the budget, with every sample kept.
+  // Probes with `samples` run repeatedly within the round; `ms` is the median of the
+  // samples that fit in the budget and every sample is kept.
   {id: 'ip6',     label: 'no DNS · v6', kind: 'trace',    url: 'https://[2606:4700:4700::1111]/cdn-cgi/trace', samples: 3},
   {id: 'ip4',     label: 'no DNS · v4', kind: 'trace',    url: 'https://1.1.1.1/cdn-cgi/trace'},
   {id: 'dns',     label: 'DNS fresh',   kind: 'opaque',   url: 'https://%RANDOM%.github.io/',      method: 'HEAD'},
-  // Sampled like ip6, so the four latency probes are comparable: one of them discarding a
-  // cold first sample while the others kept theirs made their medians mean different things.
+  // Sampled like the other latency probes, so their medians cover the same thing.
   {id: 'dns_ctl', label: 'DNS cached',  kind: 'opaque',   url: 'https://wts-dns-control.github.io/', method: 'HEAD', samples: 3},
   {id: 'web',     label: 'other net',   kind: 'opaque',   url: 'https://www.gstatic.com/generate_204', samples: 3},
   {id: 'down',    label: 'throughput',  kind: 'download', url: 'https://speed.cloudflare.com/__down'},
-  // The only probe that leaves over UDP. Streaming and calls use UDP, and a carrier can
-  // treat it differently from TCP, so a UDP path that fails while TCP holds is its own
-  // finding — and the address it reports is the NAT mapping for a different transport.
+  // The only probe over UDP, which is what streaming and calls use. A carrier can treat UDP
+  // differently from TCP, and the address reported is the NAT mapping for that transport.
   {id: 'udp',     label: 'UDP',         kind: 'stun',     url: STUN_SERVER, samples: 3}
 ];
 
@@ -76,9 +71,9 @@ function parseTrace(text) {
 const IPV4 = /^\d{1,3}(\.\d{1,3}){3}$/;
 const IPV6 = /^[0-9a-fA-F:]+$/;
 
-// The body has to be the one Cloudflare produces for the request that was actually made,
-// not merely trace-shaped. A middlebox answering on its behalf, or rewriting the Host on
-// the way through, shows up here rather than as a plausible-looking measurement.
+// Checks that the body is the one Cloudflare produced for this request. A middlebox
+// answering on its behalf, or rewriting the Host in transit, is reported as a parse
+// failure with a reason.
 function validateTrace(trace, url) {
   if (!trace.ip || !trace.colo) return 'missing fields';
   if (!IPV4.test(trace.ip) && !IPV6.test(trace.ip)) return 'egress is not an address';
@@ -88,9 +83,9 @@ function validateTrace(trace, url) {
   return null;
 }
 
-// Cloudflare's own view of the connection: RTT in microseconds, retransmits, losses,
-// delivery rate and congestion window. Congestion looks different from a coverage gap
-// here — retrans and cwnd move while reachability does not.
+// Cloudflare's view of the connection: RTT in microseconds, retransmits, losses, delivery
+// rate and congestion window. Under congestion retrans and cwnd move while reachability
+// holds.
 function parseServerTiming(header) {
   if (!header) return null;
   const m = /cfL4;desc="([^"]*)"/.exec(header);
@@ -105,13 +100,13 @@ function parseServerTiming(header) {
 }
 
 // On a reused connection the spec sets connectStart, connectEnd and secureConnectionStart
-// all equal to fetchStart, so a non-zero secureConnectionStart does not imply a handshake —
-// only a connect window with a TLS phase inside it does. These fields are zeroed
-// cross-origin unless the server sends timing-allow-origin, which of the seven endpoints
-// only the download one does.
+// all equal to fetchStart, so a handshake is indicated by a connect window with a TLS phase
+// inside it rather than by a non-zero secureConnectionStart. These fields are zeroed
+// cross-origin unless the server sends timing-allow-origin; of the seven endpoints only the
+// download one does.
 async function readTiming(url) {
-  // The entry is queued at responseEnd and is occasionally not visible yet when the body
-  // finishes resolving; without the retry, TTFB comes back undefined at random.
+  // The entry is queued at responseEnd and is sometimes not visible when the body resolves;
+  // without the retry, TTFB is undefined at random.
   let e = null;
   for (let i = 0; i < 3 && !e; i++) {
     e = performance.getEntriesByName(url, 'resource').pop() || null;
@@ -121,9 +116,8 @@ async function readTiming(url) {
   const reused = e.connectEnd === e.connectStart;
   const ms = (a, b) => (a > 0 && b > 0 && b >= a ? Math.round(b - a) : null);
   return {
-    // The phases before the payload starts. On the download endpoint they are most of the
-    // round trip, which is why a rate computed over the whole request describes the
-    // handshake as much as the link.
+    // The phases before the payload starts. On the download endpoint they cover most of the
+    // request, so a rate computed over the whole request includes the handshake.
     lookup_ms: ms(e.domainLookupStart, e.domainLookupEnd),
     connect_ms: reused ? 0 : ms(e.connectStart, e.connectEnd),
     tls_ms: reused ? 0 : ms(e.secureConnectionStart, e.connectEnd),
@@ -142,19 +136,18 @@ function probeUrl(probe) {
   return base + (base.includes('?') ? '&' : '?') + '_=' + Date.now() + rand().slice(0, 4);
 }
 
-// A resolver that gets no answer retries on a fixed timer, so a cluster of near-identical
-// multi-second values is packet loss wearing latency's clothes. Three readings 23 ms apart
-// at 2.2 s in one journey is a timer, not a slow lookup.
+// A resolver that gets no answer retries on a fixed timer, so a lookup time within
+// tolerance of one of those timers indicates packet loss rather than a slow lookup.
 const RETRY_TIMERS_MS = [2000, 5000];
 const RETRY_TOLERANCE_MS = 300;
 export function looksLikeRetry(ms) {
   return ms != null && RETRY_TIMERS_MS.some(t => Math.abs(ms - t) <= RETRY_TOLERANCE_MS);
 }
 
-// `fail` is the reason, never merely the fact: timeout | network | http | parse | abort.
-// `ms` is filled in on failure too, since how long a probe took to fail separates a refused
-// connection from a link that hung until the deadline.
-// One attempt. `runProbe` wraps this with repetition for probes that ask for samples.
+// `fail` carries the reason: timeout | network | http | parse | abort. `ms` is set on
+// failure too, since how long a probe took to fail separates a refused connection from a
+// link that hung until the deadline. One attempt; runProbe adds repetition for probes that
+// ask for samples.
 async function runOnce(probe, {timeoutMs = TIMEOUT_MS, signal, download = {}} = {}) {
   if (probe.kind === 'stun') return runStun(probe, {timeoutMs, signal});
   const r = {ok: false, ms: null, status: null, fail: null};
@@ -181,7 +174,7 @@ async function runOnce(probe, {timeoutMs = TIMEOUT_MS, signal, download = {}} = 
     });
 
     if (probe.kind === 'opaque') {
-      // Opaque: the status is genuinely unknowable, so success means the request completed.
+      // An opaque response has no readable status, so success means the request completed.
       r.ok = true;
       r.ms = since();
       if (probe.id === 'dns' && looksLikeRetry(r.ms)) r.retry_suspected = true;
@@ -212,16 +205,15 @@ async function runOnce(probe, {timeoutMs = TIMEOUT_MS, signal, download = {}} = 
   }
 }
 
-// Pulls for a fixed span rather than a fixed size, discards the ramp, and measures what is
-// left. A 250 kB body finishes inside TCP slow start, so the rate it implies describes the
-// congestion window growing, not the link — 4 Mb/s on a 5G connection that carries far more.
-// Aborted early on purpose: the request asks for far more than will ever be read.
+// Reads for `budgetMs` or until `maxBytes`, discards the ramp and rates the remainder. The
+// request asks for far more than will be read, so the transfer is aborted when the read
+// ends.
 async function readDownload(res, r, url, since, timedOut, ctl, opts) {
   const budgetMs = opts.budgetMs ?? DEFAULT_DOWN_BUDGET_MS;
   const maxBytes = opts.maxBytes ?? DEFAULT_DOWN_MAX_BYTES;
   const server = parseServerTiming(res.headers.get('server-timing'));
   const t0 = performance.now();
-  // One mark per chunk. Everything below is a question about this series.
+  // One mark per chunk; every figure below is derived from this series.
   const marks = [{t: 0, bytes: 0}];
   let bytes = 0;
   let reason = 'eof';
@@ -230,9 +222,9 @@ async function readDownload(res, r, url, since, timedOut, ctl, opts) {
   let reader = null;
   try {
     reader = res.body.getReader();
-    // Checking the budget only between chunks leaves a stalled stream running to the fetch
-    // timeout, which turns a congested cell — the case this probe exists for — into a
-    // failure instead of a slow measurement. The clock has to bound the read itself.
+    // The budget bounds each read, not just the loop: checking only between chunks leaves a
+    // stalled stream running to the fetch timeout, recording a congested cell as a failure
+    // instead of a slow measurement.
     const stopAt = t0 + budgetMs;
     for (;;) {
       const left = stopAt - performance.now();
@@ -250,17 +242,17 @@ async function readDownload(res, r, url, since, timedOut, ctl, opts) {
     }
   } catch (e) {
     truncated = true;
-    // The reason has to come from the error, not from a flag captured before the read began.
+    // The reason comes from the error; the timeout flag was captured before the read began.
     reason = e && e.name === 'AbortError' ? 'aborted' : 'network';
     r.fail = e && e.name === 'AbortError' ? 'abort' : 'network';
   }
-  // Stop the transfer rather than let the rest of a 50 MB body arrive unread. Not awaited:
-  // a cancel that never settles would hang the round.
+  // Stops the rest of the 50 MB body from arriving unread. Not awaited: a cancel that never
+  // settles would hang the round.
   if (reader) { try { reader.cancel(); } catch { /* already closed */ } }
   if (reason !== 'eof') ctl.abort();
 
-  // Wall clock, not the last chunk's timestamp: a stream that stalled spent that time too,
-  // and charging it to the rate is the point.
+  // Wall clock rather than the last chunk's timestamp, so time spent stalled is charged to
+  // the rate.
   const duration = Math.round(performance.now() - t0);
   r.ms = since();
   r.bytes = bytes;
@@ -275,29 +267,27 @@ async function readDownload(res, r, url, since, timedOut, ctl, opts) {
   r.warmup_bytes = warm ? warm.bytes : null;
 
   const steadyMs = warm ? duration - warm.t : 0;
-  // Enough wall clock to divide by, and enough of the transfer that the ramp is not most of
-  // what is being rated.
+  // Needs enough wall clock to divide by, and enough of the transfer outside the ramp.
   if (!warm || steadyMs < MIN_STEADY_MS || steadyMs < duration / 3) {
-    // Nothing outside the ramp to divide by. Say so rather than grade the ramp.
+    // Nothing outside the ramp to rate.
     r.bps_steady = null;
     r.insufficient_sample = true;
   } else {
     r.bps_steady = Math.round(((bytes - warm.bytes) * 8) / (steadyMs / 1000));
     r.insufficient_sample = false;
   }
-  // The peak window has to fit inside the steady portion, or it drags the ramp back in and
-  // reports a "peak" below the sustained rate. A transfer too short to rate has no peak
-  // either: two adjacent chunks of a 10-byte body put 14 kb/s on the record, and one chunk
-  // the browser had already buffered put 7.5 Gb/s there.
+  // The peak window has to fit inside the steady portion, or it includes the ramp and
+  // reports a peak below the sustained rate. Under three marks the window spans one or two
+  // chunks, which yields anything from 14 kb/s on a 10-byte body to 7.5 Gb/s on a chunk the
+  // browser had already buffered.
   r.bps_peak = r.insufficient_sample || marks.length < 3 ? null
              : bestWindow(marks, Math.min(PEAK_WINDOW_MS, Math.max(100, duration / 3)));
 
   r.ok = bytes > 0 && !truncated;
   if (!r.ok && !r.fail) {
-    // Nothing arrived, and which nothing it was matters. A stalled read is the congested
-    // cell this probe exists to catch: the connection opened and the headers came back, and
-    // then the budget ran out with no payload. An empty body means something answered for
-    // the endpoint and had nothing to send, which is not the radio at all.
+    // 'stalled': headers came back and the budget ran out with no payload, which is a
+    // congested cell. 'empty': the body ended with no bytes, so something answered for the
+    // endpoint with nothing to send.
     r.fail = reason === 'time' ? 'stalled' : reason === 'eof' ? 'empty' : 'network';
   }
   r.colo = res.headers.get('cf-meta-colo') || null;
@@ -305,32 +295,30 @@ async function readDownload(res, r, url, since, timedOut, ctl, opts) {
   return r;
 }
 
-// Where the ramp ends. A fixed 500 ms fails at both extremes: on a fast link the byte
-// ceiling arrives first — 5 MB lands in 300 ms at 133 Mb/s, so 500 ms never comes and the
-// round would report nothing — and on a very slow one 128 kB never arrives inside the
-// budget, which would discard exactly the congested cell worth measuring.
+// Where the ramp ends. A fixed 500 ms gate fails at both extremes: on a fast link the byte
+// ceiling arrives first (5 MB in 300 ms at 133 Mb/s), and on a very slow one 128 kB never
+// arrives inside the budget.
 function warmupMark(marks, duration, reason) {
-  // Normal case, with the time requirement capped so there is always something left to rate.
+  // The time requirement is capped at a third of the transfer, so a rated span always remains.
   const gate = Math.min(WARMUP_MS, duration / 3);
   const found = marks.find(m => m.t >= gate && m.bytes >= WARMUP_BYTES);
   if (found) return found;
 
-  // Slower than 128 kB in the whole budget. On a link like that the congestion window is
-  // not the limit — the link is — so the ramp is not worth discarding beyond a fraction.
+  // Under 128 kB in the whole budget: the link rather than the congestion window is the
+  // limit, so only the first quarter of the transfer is discarded.
   if (reason === 'time' && marks[marks.length - 1].bytes > 0) {
     return marks.find(m => m.t >= duration * 0.25) || null;
   }
   return null;
 }
 
-// The best sustained rate over any window of the given width — the closest this gets to
-// "what the link managed at its best", uncontaminated by the ramp at either end.
+// The highest sustained rate over any window of the given width.
 function bestWindow(marks, widthMs) {
   let best = null;
   for (let i = 0, j = 1; j < marks.length; j++) {
-    // At least one interval always stays inside the window. Sliding it shut whenever two
-    // chunks are further apart than the width made a bursty stream — which is what iOS
-    // delivers on a fast link — report a peak far below its sustained rate, or none at all.
+    // At least one interval always stays inside the window: closing it whenever two chunks
+    // are further apart than the width reports no peak, or one below the sustained rate, for
+    // the bursty delivery iOS produces on a fast link.
     while (j - i > 1 && marks[j].t - marks[i].t > widthMs) i++;
     const span = marks[j].t - marks[i].t;
     if (span <= 0) continue;
@@ -345,10 +333,9 @@ const median = xs => {
   return v.length % 2 ? v[(v.length - 1) / 2] : Math.round((v[v.length / 2 - 1] + v[v.length / 2]) / 2);
 };
 
-// A single round trip is noise. Where a probe asks for samples, it is run repeatedly inside
-// its own deadline and `ms` becomes the median; every sample is kept alongside. Repetition
-// stops at the first failure, since repeating a failed probe within one round says nothing
-// new and spends budget the round may still need.
+// A probe that asks for samples is run repeatedly inside one deadline; `ms` becomes the
+// median and every sample is kept alongside. Repetition stops at the first failure, which
+// leaves the remaining budget to the rest of the round.
 export async function runProbe(probe, opts = {}) {
   if (!probe.samples || probe.samples < 2) return runOnce(probe, opts);
 
@@ -358,9 +345,8 @@ export async function runProbe(probe, opts = {}) {
   let slowest = 0;
   for (let i = 0; i < probe.samples; i++) {
     const left = deadline - performance.now();
-    // Stop rather than start a sample the remaining budget cannot fairly hold: a later
-    // sample timing out purely because it was given less time reported the whole probe as
-    // failed, on exactly the slow-but-working link the 8 s ceiling exists to keep.
+    // A sample the remaining budget cannot hold is skipped: one timing out only because it
+    // was given less time than its predecessors marks the whole probe failed.
     if (i > 0 && left < Math.max(MIN_TIMEOUT_MS, slowest)) break;
     const r = await runOnce(probe, {...opts, timeoutMs: left});
     runs.push(r);
@@ -374,40 +360,37 @@ export async function runProbe(probe, opts = {}) {
   last.samples_ok = good.length;
   if (good.length) {
     last.ms = median(good);
-    // A median of [893, 4275, 52] hides everything interesting about that round.
+    // The median alone hides a spread like 52-4275 ms within one round.
     last.ms_min = Math.min(...good);
     last.ms_max = Math.max(...good);
   }
   return last;
 }
 
-// Establishing this once means an IPv6-only network does not spend the rest of the session
-// reporting the same failure as though it were news.
+// Run once per session: on an IPv6-only network the ip4 probe would otherwise report the
+// same failure every round.
 export async function checkIpv4(signal) {
   const probe = PROBES.find(p => p.id === 'ip4');
   const r = await runProbe(probe, {timeoutMs: IPV4_PREFLIGHT_MS, signal});
   return {available: r.ok, ms: r.ms, fail: r.fail};
 }
 
-// No probe may outlive its own round, or a slow stretch stacks rounds on top of each other
-// and the cadence stops being a cadence. Every deadline is therefore capped by the interval,
-// not only the download's. Cut short at the deadline, a download still reports what it
-// managed to pull, which on a congested cell is the measurement rather than a loss.
+// Every deadline is capped by the interval: a probe outliving its round stacks rounds on
+// top of each other and the cadence drifts. A download cut short at the deadline still
+// reports what it pulled.
 export function timeoutFor(probe, intervalMs) {
   const base = probe.kind === 'stun' ? STUN_TIMEOUT_MS : TIMEOUT_MS;
   return Math.max(MIN_TIMEOUT_MS, Math.min(base, intervalMs - 500));
 }
 
-// ICE gathering against a STUN server, and nothing else: no data channel, no track, no
-// remote description, so no peer connection is ever established and nothing can be sent
-// anywhere. The server sees a binding request carrying no payload. Every server-reflexive
-// candidate is kept, because a dual-stack network reports one per address family and the
-// pair is the UDP NAT mapping.
+// ICE gathering against a STUN server only: no data channel, no track and no remote
+// description, so no peer connection is established and nothing can be sent. The server sees
+// a binding request carrying no payload. Every server-reflexive candidate is kept: a
+// dual-stack network reports one per address family, and the pair is the UDP NAT mapping.
 function runStun(probe, {timeoutMs, signal}) {
   const r = {ok: false, ms: null, status: null, fail: null, public_ips: [], candidates: 0};
-  // A browser without WebRTC is a missing capability, not an outage. Flagged the way an
-  // absent IPv4 path is, or every round of the journey would tally as degraded and the
-  // real-time grade would sit on red for the whole of it.
+  // Flagged `expected`, like an absent IPv4 path: a browser without WebRTC would otherwise
+  // mark every round degraded and hold the real-time grade on red.
   if (typeof RTCPeerConnection === 'undefined') {
     r.fail = 'unsupported';
     r.expected = true;
@@ -440,8 +423,8 @@ function runStun(probe, {timeoutMs, signal}) {
     if (signal) signal.addEventListener('abort', onAbort, {once: true});
 
     pc.onicecandidate = e => {
-      // Gathering finished. Without a server-reflexive candidate there is no UDP path out,
-      // and that needs a reason like any other failure.
+      // No candidate means gathering has finished. Without a server-reflexive candidate
+      // there is no UDP path out.
       if (!e.candidate) return finish(r.public_ips.length ? null : 'no_srflx');
       r.candidates++;
       if (e.candidate.type !== 'srflx') return;
@@ -460,8 +443,8 @@ function runStun(probe, {timeoutMs, signal}) {
 export async function runRound({signal, download = {}, intervalMs = 5000,
                                 ipv4Available = true, resting = null} = {}) {
   const results = await Promise.all(PROBES.map(p => {
-    // A probe resting to clear a wedged connection still produces a row, so the round stays
-    // complete and the reason is in the data rather than looking like twenty more timeouts.
+    // A resting probe still produces a row, so the round is complete and carries the reason
+    // instead of another timeout.
     if (resting?.has(p.id)) {
       return Promise.resolve({ok: false, ms: null, status: null, fail: 'resting', stuck: true});
     }
@@ -470,15 +453,15 @@ export async function runRound({signal, download = {}, intervalMs = 5000,
   const out = {};
   PROBES.forEach((p, i) => {
     const r = results[i];
-    // An IPv4 literal on an IPv6-only network is a known-absent path, not an outage.
+    // An IPv4 literal on an IPv6-only network is a known-absent path.
     if (p.id === 'ip4' && !r.ok && !ipv4Available) r.expected = true;
     out[p.id] = r;
   });
   return out;
 }
 
-// The resource timing buffer defaults to 250 entries; at seven probes a round it would fill
-// within two minutes and silently stop recording, taking handshake detection with it.
+// The resource timing buffer defaults to 250 entries; at seven probes a round it fills
+// within two minutes, after which it stops recording and handshake detection stops with it.
 export function clearTimings() {
   performance.clearResourceTimings();
 }
