@@ -8,7 +8,6 @@ import {exportSession, exportAll} from './export.js';
 const PREFS_KEY = 'wts.prefs';
 const $ = ui.$;
 
-const fails = {};
 let degradedRounds = 0;
 let scoredRounds = 0;
 let listDirty = true;
@@ -39,12 +38,8 @@ const uuid = () => (crypto.randomUUID ? crypto.randomUUID()
 
 const recorder = createRecorder({
   onSample(sample) {
-    if (!sample.skipped && !sample.round_error) {
-      // Expected failures (no IPv4 path) are excluded from the tally.
-      for (const p of PROBES) if (ui.counts(sample.probes[p.id])) fails[p.id] = (fails[p.id] || 0) + 1;
-    }
-    // Rounds with at least one failing probe, which is the common case; full outages are
-    // rare.
+    // Rounds carrying at least one failure that was not a known-absent path, which is the
+    // common case; full outages are rare.
     if (!sample.skipped && !sample.round_error) {
       scoredRounds++;
       if (PROBES.some(p => ui.counts(sample.probes[p.id]))) degradedRounds++;
@@ -161,17 +156,22 @@ function newSession() {
 
 /* ---- run control ---- */
 
-async function begin() {
-  // A recovery offer on screen must not survive into a new session.
-  dismissRecovery();
-  for (const p of PROBES) fails[p.id] = 0;
+// Everything on screen that belongs to one session. Both ways into a session reset the
+// same set, so state added here cannot carry from one session into the next.
+function resetReadout(intervalMs) {
   degradedRounds = scoredRounds = 0;
   lastFirstPacket = null;
   ui.clearLog();
   ui.clearStrip();
-  ui.setStripWindow(profile().intervalMs);
-  ui.notice('');
+  ui.setStripWindow(intervalMs);
   $('readout').hidden = false;
+}
+
+async function begin() {
+  // A recovery offer on screen must not survive into a new session.
+  dismissRecovery();
+  resetReadout(profile().intervalMs);
+  ui.notice('');
   writePrefs();
 
   // Blanked before the first round lands, or the previous session's colours stay for a whole
@@ -214,13 +214,7 @@ async function checkRecovery() {
     // Start may have been pressed while the banner was up.
     if (busy || recorder.status().running) return;
     $('recover').hidden = true;
-    for (const p of PROBES) fails[p.id] = 0;
-    degradedRounds = scoredRounds = 0;
-    lastFirstPacket = null;
-    ui.clearLog();
-    ui.clearStrip();
-    ui.setStripWindow(session.intervalMs);
-    $('readout').hidden = false;
+    resetReadout(session.intervalMs);
     ui.pushLog(`${ui.clock(Date.now())}  resumed "${session.name}" at round ${last ? last.seq + 1 : 0}`, 'mark');
     // performance.now() restarts on reload, so the monotonic clock is carried across the gap
     // with the wall clock. Both clocks are in the data, so the bridge is checkable.
