@@ -18,7 +18,7 @@ const REFUSED_BYTES = 100;      // an IPv4 literal with no path never gets a con
 // STUN is UDP: there is no handshake to charge, and no connection to resume.
 const cost = p => (WARM_BYTES[p.kind] * (p.samples || 1)) + (p.kind === 'stun' ? 0 : RESUMED_BYTES);
 
-export const APP_VERSION = '3.3.0';
+export const APP_VERSION = '3.3.1';
 
 // Two profiles instead of loose settings. The download is the only probe that measures
 // throughput rather than reachability, so it runs every round and the interval carries the
@@ -615,16 +615,6 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
     emit();
   }
 
-  // What the connection felt like, from the person using it. The probes cannot see this,
-  // and without it there is nothing to check the thresholds against.
-  function label(value) {
-    if (!running) return;
-    const p = position();
-    record({sessionId: session.id, t: Date.now(), mono: Math.round(mono()), type: 'label',
-            lat: p.lat, lon: p.lon, text: value});
-    emit();
-  }
-
   function note(text) {
     if (!running || !text) return;
     const p = position();
@@ -636,5 +626,5 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
     if (document.visibilityState === 'visible' && running) acquireWakeLock();
   });
 
-  return {start, stop, mark, note, label, status, flush};
+  return {start, stop, mark, note, status, flush};
 }

@@ -3,14 +3,12 @@ import * as ui from './ui.js';
 import {PROBES} from './probe.js';
 import {createRecorder, environment, projectedBytes, spentSoFar, PROFILES,
         DOWNLOAD_DEFAULTS} from './session.js';
-import {createDisplay} from './grade.js';
 import {exportSession, exportAll} from './export.js';
 
 const PREFS_KEY = 'wts.prefs';
 const $ = ui.$;
 
 const fails = {};
-const display = createDisplay();
 let degradedRounds = 0;
 let scoredRounds = 0;
 let listDirty = true;
@@ -53,11 +51,7 @@ const recorder = createRecorder({
       scoredRounds++;
       if (PROBES.some(p => ui.counts(sample.probes[p.id]))) degradedRounds++;
     }
-    ui.trackLatency(sample);
-    // Hysteresis lives here: the tiles show a state the window has agreed with twice, so a
-    // single slow round does not repaint the screen on a moving train.
-    const shown = sample.skipped ? display.current() : display.push(sample.grades);
-    ui.setSignals(sample, fails, scoredRounds, shown);
+    ui.setSignals(sample);
     ui.setLamps(sample);
     const kind = ui.classify(sample);
     ui.pushStrip(kind);
@@ -178,8 +172,6 @@ async function begin() {
   for (const p of PROBES) fails[p.id] = 0;
   degradedRounds = scoredRounds = 0;
   lastFirstPacket = null;
-  display.reset();
-  ui.resetHistory();
   ui.clearLog();
   ui.clearStrip();
   ui.setStripWindow(profile().intervalMs);
@@ -189,7 +181,7 @@ async function begin() {
 
   // Blank the readout before the first round lands, or the previous session's colours sit
   // there for a whole interval — half a minute on the coarse profile.
-  ui.setSignals(null, fails, 0, {});
+  ui.setSignals(null);
   ui.setLamps(null);
 
   const session = newSession();
@@ -230,8 +222,6 @@ async function checkRecovery() {
     for (const p of PROBES) fails[p.id] = 0;
     degradedRounds = scoredRounds = 0;
     lastFirstPacket = null;
-    display.reset();
-    ui.resetHistory();
     ui.clearLog();
     ui.clearStrip();
     ui.setStripWindow(session.intervalMs);
@@ -336,14 +326,6 @@ $('btn-start').onclick = async () => {
   }
 };
 $('btn-mark').onclick = () => recorder.mark();
-for (const b of document.querySelectorAll('#labels button')) {
-  b.onclick = () => {
-    recorder.label(b.dataset.label);
-    // A brief confirmation, because a tap with no feedback gets tapped twice.
-    b.classList.add('on');
-    setTimeout(() => b.classList.remove('on'), 900);
-  };
-}
 for (const id of ['f-connection', 'f-operator', 'f-profile']) $(id).onchange = syncSetup;
 ui.bindExplanations();
 

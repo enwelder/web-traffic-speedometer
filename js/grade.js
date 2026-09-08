@@ -68,68 +68,11 @@ export function gradeRound(sample) {
   return out;
 }
 
-// Worst of the last N rounds, so one slow round does not repaint the screen — and one good
-// one does not clear a bad stretch either.
-export function windowGrade(recent, capability) {
-  let g = null;
-  for (const grades of recent) g = worse(g, grades?.[capability] ?? null);
-  return g;
-}
-
-// Displayed state changes only after the window has agreed with itself twice. Without this
-// the colours flicker on a moving train and stop being readable at a glance.
-export function createDisplay({windowRounds = 3, confirmations = 2} = {}) {
-  const history = [];
-  const shown = {};
-  const pending = {};
-
-  return {
-    push(grades) {
-      history.push(grades);
-      if (history.length > windowRounds) history.shift();
-      for (const cap of CAPABILITIES) {
-        const candidate = windowGrade(history, cap);
-        if (candidate === shown[cap]) { pending[cap] = null; continue; }
-        pending[cap] = pending[cap]?.grade === candidate
-          ? {grade: candidate, seen: pending[cap].seen + 1}
-          : {grade: candidate, seen: 1};
-        // Losing the input is a change like any other and waits for the same confirmation:
-        // a probe resting for six rounds must not blank the tile that went red because of
-        // the very failure that put it to rest.
-        // The first reading, or the first after a blank, has nothing to confirm against.
-        if ((shown[cap] == null && candidate != null) || pending[cap].seen >= confirmations) {
-          shown[cap] = candidate;
-          pending[cap] = null;
-        }
-      }
-      return {...shown};
-    },
-    current: () => ({...shown}),
-    reset() {
-      history.length = 0;
-      for (const k of Object.keys(shown)) delete shown[k];
-      for (const k of Object.keys(pending)) delete pending[k];
-    }
-  };
-}
-
-// Variance, reported beside the colour and never inside it. A connection that alternates
-// between 40 ms and 900 ms is a different thing from one steady at 400, and averaging them
-// into one grade would hide exactly the behaviour worth seeing.
 // Nearest rank: the smallest value at or above the quantile. Rounding the index down put a
 // ten-sample window on its own last element, so anything labelled p90 was the maximum.
 export function quantile(sorted, q) {
   if (!sorted.length) return null;
   return sorted[Math.min(sorted.length - 1, Math.max(0, Math.ceil(sorted.length * q) - 1))];
-}
-
-export function stability(values) {
-  const v = values.filter(x => x != null).sort((a, b) => a - b);
-  if (v.length < 4) return null;
-  const at = q => quantile(v, q);
-  const p50 = at(0.5);
-  if (p50 == null || p50 <= 0) return null;   // a ratio against zero is not a number
-  return {ratio: Math.round((at(0.9) / p50) * 10) / 10, iqr: at(0.75) - at(0.25), n: v.length};
 }
 
 // Which probe reading each capability is graded on, so the UI shows the number behind the

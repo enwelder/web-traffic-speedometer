@@ -282,16 +282,5 @@ r.test('the recordings agree with what the scheduler promises', () => {
   }
 });
 
-r.test('the stability figure separates a swinging link from a slow one', () => {
-  // Real values rather than invented ones: the two journeys differ in exactly this way.
-  const series = name => journeys[name].samples
-    .map(s => s.probes.ip6?.ok ? s.probes.ip6.ms : null).filter(v => v != null);
-  const good = g.stability(series('good-5g'));
-  const mixed = g.stability(series('mixed-commute'));
-  assert.ok(good && mixed, 'both have enough readings');
-  assert.ok(mixed.ratio > good.ratio,
-            `the commute swings more than the stationary run: ×${mixed.ratio} vs ×${good.ratio}`);
-  assert.ok(good.ratio >= 1, 'a ratio is never below one');
-});
 
 await r.run();

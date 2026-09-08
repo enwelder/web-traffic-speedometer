@@ -1,11 +1,10 @@
 // DOM rendering only. Nothing here is persisted; the screen is a live readout.
 
 import {PROBES} from './probe.js';
-import {CAPABILITIES, GRADES, gradeRound, worse, stability, capabilityValue} from './grade.js';
+import {CAPABILITIES, GRADES, gradeRound, worse, capabilityValue} from './grade.js';
 import {countsAsFailure} from './export.js';
 
 const STRIP_BARS = 48;
-const STABILITY_ROUNDS = 10;
 
 export const $ = id => document.getElementById(id);
 const pad = n => String(n).padStart(2, '0');
@@ -54,71 +53,34 @@ const EXPLAIN = {
   video:    'Sustained rate after the connection has finished ramping up. The ramp is discarded, so this is what the link carries rather than how fast it accelerates.'
 };
 
-const history = {};
-let last = {sample: null, fails: {}, rounds: 0, shown: {}};
-
-export function trackLatency(sample) {
-  if (!sample || sample.skipped) return;
-  for (const cap of CAPABILITIES) {
-    const v = capabilityValue(cap, sample);
-    if (v == null) continue;
-    (history[cap] ??= []).push({t: sample.t, v});
-    while (history[cap].length > STABILITY_ROUNDS) history[cap].shift();
-  }
-}
-
-export function resetHistory() {
-  for (const k of Object.keys(history)) delete history[k];
-  last = {sample: null, fails: {}, rounds: 0, shown: {}};
-}
-
-export function stabilityOf(cap) {
-  return stability((history[cap] || []).map(x => x.v));
-}
-
 function displayValue(cap, value) {
   if (value == null) return '—';
   return cap === 'video' ? rate(value) : String(Math.round(value));
 }
 
-export function setSignals(sample, fails, rounds, shown) {
-  last = {sample, fails, rounds, shown};
+// A tile carries one status, and the number it shows is the round that status was taken
+// from. Smoothing the colour over a window while printing the current round's number made
+// the two describe different moments: 35.5 Mb/s under a red border, because a round three
+// back had been slow. History is the strip's job.
+export function setSignals(sample) {
+  const grades = sample && !sample.skipped ? (sample.grades || gradeRound(sample)) : null;
   for (const cap of CAPABILITIES) {
     const cell = $(`cap-${cap}`);
     cell.classList.remove(...GRADES);
-    const grade = shown?.[cap];
-    if (grade) cell.classList.add(grade);
+    if (grades?.[cap]) cell.classList.add(grades[cap]);
     $(`val-${cap}`).textContent = sample && sample.skipped
       ? '–' : displayValue(cap, capabilityValue(cap, sample));
   }
-  renderSubtitles();
+  renderExplanations();
 }
 
-// Called on every round and again the moment an explanation is dismissed, so a tile never
-// keeps showing prose until the next measurement lands — which on the coarse profile would
-// leave it there for half a minute.
-export function renderSubtitles() {
-  const {sample, shown} = last;
-  const p = sample && !sample.skipped ? sample.probes : null;
-
+// The explanation replaces the number while it is on, rather than sitting beside it: a tile
+// that is being asked what it measures is not being read for its value.
+export function renderExplanations() {
   for (const cap of CAPABILITIES) {
-    if ($(`cap-${cap}`).dataset.explain === 'on') { $(`sub-${cap}`).textContent = EXPLAIN[cap]; continue; }
-    const parts = [];
-    // Variance sits beside the colour and never inside it: a link alternating between 40 ms
-    // and 900 ms is a different thing from one steady at 400.
-    const st = stabilityOf(cap);
-    if (st) parts.push(st.ratio >= 2 ? `swinging ×${st.ratio}` : `steady ×${st.ratio}`);
-    if (cap === 'realtime' && p) parts.push(`v4 ${p.ip4?.expected ? 'n/a' : p.ip4?.ok ? 'ok' : 'no'}`);
-    if (cap === 'newsite' && p?.dns_ctl) {
-      parts.push(p.dns_ctl.ok ? `known host ${p.dns_ctl.ms} ms` : 'known host unreachable');
-      if (p.dns?.retry_suspected) parts.push('resolver retried');
-    }
-    if (cap === 'video' && p?.down) {
-      if (p.down.insufficient_sample) parts.push('sample too short to rate');
-      else if (p.down.bps_peak) parts.push(`peak ${rate(p.down.bps_peak)}`);
-    }
-    if (shown?.[cap]) parts.push(shown[cap]);
-    $(`sub-${cap}`).textContent = parts.filter(Boolean).join(' · ') || '—';
+    const on = $(`cap-${cap}`).dataset.explain === 'on';
+    $(`cap-${cap}`).classList.toggle('explaining', on);
+    $(`explain-${cap}`).textContent = on ? EXPLAIN[cap] : '';
   }
 }
 
@@ -220,25 +182,22 @@ export function setRunning(running) {
   $('btn-mark').hidden = !running;
   $('btn-mark').disabled = !running;
   $('setup').hidden = running;
-  $('labels').hidden = !running;
 }
 
-// Tap a tile to see what it measures; tap again to get the numbers back.
-
-
+// Tap a tile to see what it measures; tap again to get the number back.
 export function bindExplanations() {
   for (const cap of CAPABILITIES) {
     const cell = $(`cap-${cap}`);
     cell.onclick = () => {
       cell.dataset.explain = cell.dataset.explain === 'on' ? 'off' : 'on';
-      renderSubtitles();
+      renderExplanations();
     };
   }
 }
 
 export function setExplainAll(on) {
   for (const cap of CAPABILITIES) $(`cap-${cap}`).dataset.explain = on ? 'on' : 'off';
-  renderSubtitles();
+  renderExplanations();
 }
 
 export function switchView(name) {

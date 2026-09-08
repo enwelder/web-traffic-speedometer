@@ -79,13 +79,6 @@ t.test('a percentile of a short series is not the maximum', () => {
   assert.equal(g.quantile(ten, 1), 10);
 });
 
-t.test('stability needs enough samples and a median to divide by', () => {
-  assert.equal(g.stability([1, 2, 3]), null, 'three samples say nothing about variance');
-  assert.ok(g.stability([1, 2, 3, 4]), 'four do');
-  assert.equal(g.stability([0, 0, 0, 0]), null, 'and a ratio against zero is not a number');
-  assert.equal(g.stability([]), null);
-  assert.equal(g.stability([null, undefined, 1, 2, 3, 4]).n, 4, 'gaps are dropped, not counted');
-});
 
 t.test('the accuracy class turns over at exactly 100 m', async () => {
   const rows = await withFixes([fix(51.9, 4.4, 100), fix(51.9001, 4.4, 100)]);
@@ -671,8 +664,7 @@ x.test('the file survives every character a person can type into it', () => {
   assert.equal(back.session.name, session.name, 'the name round-trips exactly');
   assert.equal(back.session.note, session.note, 'and so does anything that looks like markup');
   assert.equal(back.events[0].text, events[0].text);
-  assert.deepEqual(back.labels, [{t: 2, mono: 2, label: 'slow', lat: null, lon: null}],
-                   'labels are lifted out for the join, and still present among the events');
+  assert.equal(back.events.length, 2, 'and every event is in the file as recorded');
 });
 
 x.test('a session with no rounds exports a file rather than failing', () => {
@@ -686,48 +678,53 @@ x.test('a session with no rounds exports a file rather than failing', () => {
 
 await x.run();
 
-/* ---------------- the display, under every sequence ---------------- */
+/* ---------------- what a tile says ---------------- */
 
-const h = suite('hysteresis edges');
+const h = suite('tile edges');
 
-h.test('a single round cannot repaint the screen, and a run of them must', () => {
-  const disp = g.createDisplay();
-  const round = grade => disp.push({realtime: grade, tap: grade, newsite: grade, video: grade});
-  assert.equal(round('green').realtime, 'green', 'the first reading paints at once');
-  assert.equal(round('red').realtime, 'green', 'one bad round does not');
-  assert.equal(round('red').realtime, 'red', 'two agreeing windows do');
-  assert.equal(round('green').realtime, 'red', 'and one good round does not clear it');
-  assert.equal(round('green').realtime, 'red', 'nor two, while a red round is still in the window');
-  assert.equal(round('green').realtime, 'red', 'the window is clear now, but unconfirmed');
-  assert.equal(round('green').realtime, 'green', 'four: three to clear the window and one to agree');
+h.test('a tile shows the grade of the round whose number it shows', () => {
+  // The colour was smoothed over three rounds while the number was the current one, so a
+  // round measured at 35.5 Mb/s — green by any threshold — was painted red because a round
+  // three back had been slow. There is nothing left to disagree: one round, one colour.
+  const rows = [3.4e6, 3.2e6, 33.6e6, 1.1e6, 35.5e6, 12.0e6, 9.2e6, 48.5e6].map((bps, seq) => ({
+    seq, skipped: null, probes: {down: {ok: true, bps_steady: bps}}
+  }));
+  for (const row of rows) {
+    const grades = g.gradeRound(row);
+    assert.equal(grades.video, g.gradeValue('video', g.capabilityValue('video', row)),
+                 `${(row.probes.down.bps_steady / 1e6).toFixed(1)} Mb/s: the colour is this ` +
+                 `round's, taken from the number the tile shows`);
+  }
+  assert.equal(g.gradeRound(rows[4]).video, 'green', '35.5 Mb/s is green, whatever came before it');
+  assert.equal(g.gradeRound(rows[3]).video, 'red', 'and 1.1 Mb/s is red, whatever came after');
 });
 
-h.test('losing the input clears a tile, but only after the same confirmation', () => {
-  const disp = g.createDisplay();
-  for (let i = 0; i < 3; i++) disp.push({realtime: 'red'});
-  assert.equal(disp.current().realtime, 'red');
-  // A probe rested for six rounds produces no grade at all. The tile must not blank on the
-  // first of them: the rest was caused by the failure the tile is showing.
-  assert.equal(disp.push({realtime: null}).realtime, 'red');
-  assert.equal(disp.push({realtime: null}).realtime, 'red');
-  assert.equal(disp.push({realtime: null}).realtime, 'red', 'the window still holds a red round');
-  assert.equal(disp.push({realtime: null}).realtime, null, 'and it clears once nothing is left');
-  assert.equal(disp.push({realtime: 'green'}).realtime, 'green', 'the first reading after a blank paints at once');
+h.test('the strip and the tiles cannot disagree', async () => {
+  const ui = await import('../js/ui.js');
+  // The strip takes the worst grade in the round; every tile takes its own. The worst tile
+  // and the strip bar are therefore the same colour, by construction rather than by luck.
+  const rows = [
+    {probes: {ip6: {ok: true, ms: 30}, web: {ok: true, ms: 30}, dns: {ok: true, ms: 30},
+              down: {ok: true, bps_steady: 50e6}}},
+    {probes: {ip6: {ok: true, ms: 30}, web: {ok: true, ms: 30}, dns: {ok: true, ms: 2500},
+              down: {ok: true, bps_steady: 50e6}}},
+    {probes: {ip6: {ok: false, fail: 'timeout'}, web: {ok: true, ms: 30}, dns: {ok: true, ms: 30},
+              down: {ok: true, bps_steady: 50e6}}}
+  ];
+  for (const row of rows) {
+    const grades = g.gradeRound(row);
+    let worst = null;
+    for (const cap of g.CAPABILITIES) worst = g.worse(worst, grades[cap]);
+    assert.equal(ui.classify(row), worst,
+                 `the bar is the worst tile: ${JSON.stringify(grades)}`);
+  }
 });
 
-h.test('alternating rounds settle rather than flicker', () => {
-  const disp = g.createDisplay();
-  const seen = [];
-  for (let i = 0; i < 12; i++) seen.push(disp.push({realtime: i % 2 ? 'green' : 'red'}).realtime);
-  const changes = seen.filter((x, i) => i && x !== seen[i - 1]).length;
-  assert.ok(changes <= 1, `a flapping link repaints at most once, not twelve times: ${seen.join(' ')}`);
-});
-
-h.test('a session that ends and starts again shows nothing carried over', () => {
-  const disp = g.createDisplay();
-  for (let i = 0; i < 4; i++) disp.push({realtime: 'red'});
-  disp.reset();
-  assert.deepEqual(disp.current(), {}, 'the next journey starts blank');
+h.test('a round that never ran colours nothing', () => {
+  assert.equal(g.gradeRound({skipped: 'overlap', probes: {}}), null);
+  const empty = g.gradeRound({probes: {}});
+  assert.ok(g.CAPABILITIES.every(c => empty[c] === null),
+            'and a round with no probe results grades nothing rather than green');
 });
 
 await h.run();

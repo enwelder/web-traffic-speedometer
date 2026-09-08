@@ -150,20 +150,21 @@ b.test('a session records, survives a reload, and exports losslessly', async () 
   await page.selectOption('#f-operator', 'Odido');
   await page.click('#btn-start');
   await page.waitForTimeout(3000);
-  assert.match(await page.textContent('#sub-realtime'), /v4 n\/a/, 'an absent IPv4 path is not a failure');
-  assert.match(await page.textContent('#sub-newsite'), /known host/, 'the cached control shares the row');
+  assert.match(await page.$eval('#lamp-ip4', e => e.className), /\bna\b/,
+               'an absent IPv4 path dims its lamp rather than failing a tile');
+  assert.match(await page.$eval('#lamp-ip6', e => e.className), /\bon\b/,
+               'while the path that works is lit');
   await page.click('#btn-mark');
 
-  // Hysteresis: the window has to agree with itself before the screen repaints, so one bad
-  // round does not flash red on a moving train.
+  // A tile carries the round it names: the colour changes with the round, not three rounds
+  // later, because that is what made a 35 Mb/s reading sit under a red border.
   const red = () => page.$eval('#cap-realtime', e => e.classList.contains('red'));
   state.mode = 'fail';
-  await page.waitForTimeout(2600);
-  assert.equal(await red(), false, 'a single failing round does not repaint the screen');
-  await page.waitForTimeout(9000);
-  assert.equal(await red(), true, 'sustained failure does');
+  await page.waitForTimeout(3000);
+  assert.equal(await red(), true, 'a failing round paints its own tile');
   state.mode = 'ok';
-  await page.waitForTimeout(2500);
+  await page.waitForTimeout(3000);
+  assert.equal(await red(), false, 'and a good one clears it, without waiting for agreement');
 
   let db = await readDb(page);
   const session = db.sessions[0];
@@ -304,28 +305,6 @@ b.test('the newest log line is on top and nothing hides behind the controls', as
   await ctx.close();
 });
 
-b.test('the label buttons record what it felt like', async () => {
-  const {ctx} = await context();
-  const page = await ctx.newPage();
-  await page.goto(BASE, {waitUntil: 'networkidle'});
-  assert.equal(await page.locator('#labels').isHidden(), true, 'nothing to label before a run');
-  await page.click('#btn-start');
-  await page.waitForTimeout(3000);
-  assert.equal(await page.locator('#labels').isHidden(), false);
-
-  await page.click('#labels button[data-label="slow"]');
-  await page.click('#labels button[data-label="broken"]');
-  await page.waitForTimeout(600);
-  await page.click('#btn-start');
-  await page.waitForTimeout(600);
-
-  const db = await readDb(page);
-  const labels = db.events.filter(e => e.type === 'label').map(e => e.text);
-  assert.deepEqual(labels, ['slow', 'broken'], 'each tap is its own event');
-  assert.ok(db.events.filter(e => e.type === 'label').every(e => e.t && e.mono != null),
-            'timestamped on both clocks, so it lines up with the rounds');
-  await ctx.close();
-});
 
 b.test('the lamps report each path without a sentence to read', async () => {
   const {ctx, state} = await context();
@@ -386,42 +365,33 @@ b.test('the log grows into the space a taller window gives it', async () => {
             `a taller window gives the log more room: ${heights[852]} then ${heights[1100]}`);
 });
 
-b.test('a tile explains itself on tap and gives the numbers back', async () => {
+b.test('a tile explains itself on tap and gives the number back', async () => {
   const {ctx} = await context();
   const page = await ctx.newPage();
   await page.goto(BASE, {waitUntil: 'networkidle'});
   await page.click('#btn-start');
   await page.waitForTimeout(5000);
 
-  const sub = () => page.textContent('#sub-tap');
-  const numbers = await sub();
-  assert.ok(!/tap on a link costs/.test(numbers), 'it shows measurements by default');
+  const explain = () => page.textContent('#explain-tap');
+  const value = () => page.$eval('#val-tap', e => e.offsetParent !== null);
+  assert.equal(await explain(), '', 'a tile shows its measurement by default');
+  assert.equal(await value(), true);
+
   await page.click('#cap-tap');
-  assert.match(await sub(), /tap on a link costs/, 'tapping says what the row measures');
+  assert.match(await explain(), /tap on a link costs/, 'tapping says what the tile measures');
+  assert.equal(await value(), false, 'in place of the number, not beside it');
   await page.waitForTimeout(2500);
-  assert.match(await sub(), /tap on a link costs/, 'and the next round does not overwrite it');
+  assert.match(await explain(), /tap on a link costs/, 'and the next round does not overwrite it');
+
   await page.click('#cap-tap');
-  await page.waitForTimeout(2500);
-  assert.ok(!/tap on a link costs/.test(await sub()), 'tapping again returns the numbers');
+  assert.equal(await explain(), '', 'tapping again returns the number');
+  assert.equal(await value(), true);
 
   // Tapping is not discoverable on its own, so one control turns them all on.
   await page.click('#btn-help');
   await page.waitForTimeout(200);
-  const shown = await page.$$eval('.signal .sub', els => els.filter(e => e.textContent.length > 40).length);
-  assert.equal(shown, 4, 'the help button explains every row at once');
-
-  // Dismissing must restore the numbers now. Waiting for the next round would leave prose
-  // on the tile for a whole interval — half a minute on the coarse profile.
-  await page.click('#btn-help');
-  await page.waitForTimeout(150);
-  const restored = await page.$$eval('.signal .sub', els => els.map(e => e.textContent));
-  assert.ok(restored.every(t => !/Round trip|Resolving|Sustained/.test(t)),
-            `numbers come back immediately, not next round: ${restored.join(' | ')}`);
-
-  // The explanation replaced a paragraph that used to sit permanently under the tiles.
-  const clutter = await page.$$eval('#readout .hint', els => els.length);
-  assert.equal(clutter, 0, 'no standing explanatory paragraph remains');
-  await page.click('#btn-start');
+  const shown = await page.$$eval('.signal .explain', els => els.filter(e => e.textContent.length > 40).length);
+  assert.equal(shown, 4, 'the help control explains every tile at once');
   await ctx.close();
 });
 

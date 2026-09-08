@@ -295,10 +295,9 @@ r.test('a percentile is the nearest rank, not the largest value that fits', asyn
   assert.equal(ui.quantile([], 0.9), null);
   assert.equal(ui.quantile([7], 0.9), 7);
 
-  // And through the stability figure, which is built on the same ranking: nine identical
-  // readings with one spike must not report as the spike.
-  const st = ui.stability([10, 10, 10, 10, 10, 10, 10, 10, 10, 900]);
-  assert.equal(st.ratio, 1, `one outlier in ten does not become the ninetieth percentile: ×${st.ratio}`);
+  // Nine identical readings with one spike: the ninetieth percentile is the reading, not
+  // the spike. Rounding the index down put every short window on its own last element.
+  assert.equal(ui.quantile([10, 10, 10, 10, 10, 10, 10, 10, 10, 900], 0.9), 10);
 });
 
 // The operator is typed in; the egress address is not. A hotspot picked up mid-journey

@@ -74,49 +74,6 @@ s.test('an unmeasurable rate is never graded', () => {
   assert.equal(g.gradeRound(round({down: bad()})).video, 'red', 'a real failure still is');
 });
 
-s.test('the window takes the worst of the recent rounds', () => {
-  const good = {realtime: 'green'}, mid = {realtime: 'yellow'}, poor = {realtime: 'orange'};
-  assert.equal(g.windowGrade([good, good, good], 'realtime'), 'green');
-  assert.equal(g.windowGrade([good, poor, good], 'realtime'), 'orange', 'one bad round shows');
-  assert.equal(g.windowGrade([good, mid, poor], 'realtime'), 'orange');
-  assert.equal(g.windowGrade([], 'realtime'), null);
-});
-
-s.test('the display waits for the window to agree with itself', () => {
-  const d = g.createDisplay({windowRounds: 3, confirmations: 2});
-  // The first reading has nothing to confirm against, so it shows immediately.
-  assert.equal(d.push({realtime: 'green'}).realtime, 'green');
-  assert.equal(d.push({realtime: 'green'}).realtime, 'green');
-
-  // One bad round is not enough to repaint the screen.
-  assert.equal(d.push({realtime: 'red'}).realtime, 'green', 'first window disagreeing: hold');
-  assert.equal(d.push({realtime: 'red'}).realtime, 'red', 'second agreeing window: change');
-
-  // And it holds on the way back, symmetrically: the window has to lose the bad rounds
-  // first, then agree with itself twice. Recovering faster than it degraded would make the
-  // colour optimistic exactly where it matters.
-  assert.equal(d.push({realtime: 'green'}).realtime, 'red', 'window still holds two red rounds');
-  assert.equal(d.push({realtime: 'green'}).realtime, 'red');
-  assert.equal(d.push({realtime: 'green'}).realtime, 'red', 'window clean, first confirmation');
-  assert.equal(d.push({realtime: 'green'}).realtime, 'green', 'second confirmation clears it');
-
-  d.reset();
-  assert.deepEqual(d.current(), {}, 'a new session starts with no state');
-});
-
-s.test('variance is reported, never folded into the colour', () => {
-  const steady = g.stability([100, 102, 98, 101, 99, 100, 103, 97]);
-  const swinging = g.stability([40, 900, 45, 850, 38, 920, 42, 880]);
-  assert.ok(steady.ratio < 1.2, `steady: ×${steady.ratio}`);
-  assert.ok(swinging.ratio > 5, `swinging: ×${swinging.ratio}`);
-
-  // Both can sit in the same band, which is the point of keeping them apart: the colour
-  // says what works, the ratio says whether it will keep working.
-  assert.equal(g.gradeValue('tap', 100), 'green');
-  assert.equal(g.gradeValue('tap', 103), 'green');
-  assert.equal(g.stability([1, 2]), null, 'too few readings claim nothing');
-});
-
 s.test('every threshold is reachable and ordered', () => {
   for (const [cap, t] of Object.entries(g.THRESHOLDS)) {
     const sorted = [...t.edges].sort((a, b) => t.dir === 'low' ? a - b : b - a);

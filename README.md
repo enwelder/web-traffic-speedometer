@@ -57,7 +57,7 @@ npm run serve   # http://localhost:8731
 
 `tests/unit.mjs` exercises the probes, the round loop, classification and export with no
 browser and no network; the store is injected, so failure and retry paths are reachable.
-`tests/grading.mjs` covers the thresholds, the window and the hysteresis.
+`tests/grading.mjs` covers the thresholds and what each capability is read from.
 `tests/replay.mjs` runs three anonymised real journeys — a good 5G run, a commute with pauses
 and coarse positions, and the one where a probe wedged for twenty rounds — through the
 grading and the rollup. Synthetic fixtures agree with whatever the code does; recordings do
@@ -402,17 +402,6 @@ the link's put a 33 ms connection in orange.
 The grades are resolved once per round and stored in the file, so what was on screen and what
 is in the export cannot disagree.
 
-### Windows and hysteresis
-
-The screen shows the worst of the last three rounds, and changes only after the window has
-agreed with itself twice — in both directions. One slow round does not repaint a screen being
-read on a moving train, and one good round does not clear a bad stretch.
-
-Losing the input is a change like any other and waits for the same confirmation. A probe
-rested for six rounds must not blank the tile that went red because of the failure that put
-it to rest, and a tile whose input dries up for good does eventually clear rather than
-holding a colour from twenty minutes ago.
-
 ### Reading it while travelling
 
 Four tiles, one per capability, each naming what it is about rather than which probe fed it:
@@ -421,11 +410,13 @@ That is what makes a failure placeable by reading down them — real-time alone 
 UDP path, opening a new site alone in red is resolution, video alone in red is a congested
 cell while everything else answers promptly.
 
-Under each tile is the number the colour was taken from and, once there are enough samples,
-how steady it has been: the p90 over the recent window divided by the median, as `steady ×1.2`
-or `swinging ×4.0`. A link alternating between 40 ms and 900 ms is a different thing from one
-steady at 400, and this is where that shows, next to the colour and never inside it. Tapping a
-tile says what it measures; the **?** in the header turns all four explanations on at once.
+A tile carries one status and nothing else: its name, the number, and the colour that number
+grades to. Both come from the same round, so they cannot describe different moments. The
+screen was previously smoothed over three rounds while printing the current round's figure,
+which put 35.5 Mb/s under a red border because a round three back had been slow. History
+belongs to the strip below, where every round is its own bar; the worst tile and the newest
+bar are the same colour by construction. Tapping a tile replaces its number with what it
+measures; the **?** in the header does that to all four at once.
 
 Below them, two lamps show which paths are carrying traffic — IPv4 and UDP — lit, dim where a
 path is known absent, red where it has failed. The IPv4 verdict is written to the log once and
@@ -440,10 +431,8 @@ statistics miss almost all of it.
 
 Only what cannot be derived from the samples. `mark` is the subjective half of the
 measurement, pressed when the failure is noticed rather than when the probes see it — the
-premise of the exercise is that those two disagree. `label` is the same judgement offered as a
-choice — fine, slow or broken — pressed as the connection is being used, which is what the
-thresholds are calibrated against. `pause` records JavaScript being frozen, with the bridged
-duration. `note` is free text, and the recorder writes its own notices there too: a wake lock
+premise of the exercise is that those two disagree. `pause` records JavaScript being frozen,
+with the bridged duration. `note` is free text, and the recorder writes its own notices there too: a wake lock
 lost or regained, position quality changing, a probe rested, an egress address changing under
 an unchanged operator label.
 

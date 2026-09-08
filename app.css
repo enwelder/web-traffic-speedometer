@@ -50,8 +50,9 @@ main{flex:1;overflow-y:auto;overscroll-behavior:contain;-webkit-overflow-scrolli
 .signal{background:var(--panel);border:1px solid var(--line);border-radius:10px;
         padding:12px 10px 11px;position:relative;overflow:hidden;cursor:pointer}
 .signal[data-explain="on"]{border-color:var(--rail)}
-.signal[data-explain="on"] .sub{white-space:normal;color:var(--text);font-family:var(--ui);
-                                font-size:11.5px;line-height:1.35}
+/* The explanation takes the tile over rather than sitting under the number: a tile being
+   asked what it measures is not being read for its value. */
+.signal.explaining .value,.signal.explaining .unit{display:none}
 .signal::before{content:"";position:absolute;inset:0 auto 0 0;width:3px;
                 background:var(--line);transition:background .18s}
 .signal.green::before{background:var(--good)}
@@ -67,8 +68,8 @@ main{flex:1;overflow-y:auto;overscroll-behavior:contain;-webkit-overflow-scrolli
 .signal .unit{font-size:11px;color:var(--muted);margin-left:2px}
 .signal.red .value{color:var(--bad)}
 .signal.orange .value{color:var(--poor)}
-.signal .sub{font-size:11px;color:var(--muted);margin-top:3px;font-family:var(--num);
-              line-height:1.35;min-height:2.7em}
+.signal .explain{font-size:11.5px;color:var(--text);line-height:1.35;
+                 white-space:normal;min-height:0}
 
 .hint{font-size:12.5px;color:var(--muted);margin:-4px 0 0}
 .hint b{color:var(--text);font-weight:600}
@@ -133,14 +134,6 @@ input:focus,select:focus{outline:2px solid var(--rail);outline-offset:1px}
 /* Outside the scrolling area entirely. As a sticky element inside it the bar floated over
    whatever happened to be behind it, and every layout change was another chance for a log
    line to end up underneath. */
-/* Three taps that say what it felt like. Sat above the controls, outside the scroll area,
-   so they are reachable the instant something goes wrong. */
-.labels{flex:0 0 auto;display:flex;gap:8px;max-width:560px;width:100%;margin:0 auto;
-        padding:8px 14px 0;background:var(--ground)}
-.labels button{flex:1;font-size:13px;font-weight:500;padding:12px 8px;color:var(--muted)}
-.labels button[data-label="fine"].on{background:var(--good);border-color:var(--good);color:#06231A}
-.labels button[data-label="slow"].on{background:var(--ok);border-color:var(--ok);color:#1E1B04}
-.labels button[data-label="broken"].on{background:var(--bad);border-color:var(--bad);color:#2A0A08}
 .controls{flex:0 0 auto;display:flex;gap:8px;background:var(--ground);
           padding:8px 14px 10px;max-width:560px;width:100%;margin:0 auto;
           border-top:1px solid var(--line)}

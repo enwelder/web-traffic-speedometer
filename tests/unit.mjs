@@ -644,7 +644,6 @@ e.test('the rollup describes the session without judging it', () => {
   assert.equal(out.samples.length, samples.length, 'alongside every raw row');
 
   // What it felt like, lifted out so checking a threshold against it is a join, not a filter.
-  assert.deepEqual(out.labels, [{t: 5, mono: 5, label: 'slow', lat: 1, lon: 2}]);
   assert.equal(out.events.length, 2, 'and still present among the events');
 });
 

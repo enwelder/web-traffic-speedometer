@@ -91,10 +91,6 @@ export function sessionJson(session, samples, events) {
     exported: new Date().toISOString(),
     probes: PROBES.map(p => ({id: p.id, url: p.url, kind: p.kind})),
     summary: summarise(samples),
-    // Pulled out of the event list so a confusion matrix of label against grade is one join
-    // rather than a filter: this is what the thresholds get checked against.
-    labels: events.filter(e => e.type === 'label')
-                  .map(e => ({t: e.t, mono: e.mono, label: e.text, lat: e.lat, lon: e.lon})),
     session, samples, events
   }, null, 1);
 }
