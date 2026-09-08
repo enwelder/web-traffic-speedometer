@@ -10,7 +10,7 @@ let dbPromise = null;
 
 function open() {
   if (dbPromise) return dbPromise;
-  dbPromise = new Promise((resolve, reject) => {
+  const mine = dbPromise = new Promise((resolve, reject) => {
     const req = indexedDB.open(DB_NAME, DB_VERSION);
     req.onupgradeneeded = () => {
       const db = req.result;
@@ -26,11 +26,33 @@ function open() {
         e.createIndex('bySession', 'sessionId');
       }
     };
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
-    req.onblocked = () => reject(new Error('database blocked by another tab'));
+    req.onsuccess = () => {
+      const db = req.result;
+      // iOS closes the connection when the tab is backgrounded and under storage pressure.
+      // A cached promise for a closed connection makes every later write throw
+      // InvalidStateError for the rest of the session, which is the one failure this tool
+      // cannot have: drop it so the next call opens again.
+      db.onclose = () => { if (dbPromise === mine) dbPromise = null; };
+      db.onversionchange = () => { db.close(); if (dbPromise === mine) dbPromise = null; };
+      resolve(db);
+    };
+    req.onerror = () => { if (dbPromise === mine) dbPromise = null; reject(req.error); };
+    req.onblocked = () => { if (dbPromise === mine) dbPromise = null;
+                            reject(new Error('database blocked by another tab')); };
   });
-  return dbPromise;
+  return mine;
+}
+
+// A connection can also be found closed only when it is used, and the throw is synchronous.
+// Every access goes through here so it is retried once against a fresh connection.
+async function withDb(fn) {
+  try {
+    return await fn(await open());
+  } catch (e) {
+    if (e && e.name !== 'InvalidStateError') throw e;
+    dbPromise = null;
+    return fn(await open());
+  }
 }
 
 function tx(db, stores, mode) {
@@ -59,23 +81,26 @@ export async function ready() {
 }
 
 export async function putSession(session) {
-  const db = await open();
-  const {t, done} = tx(db, ['sessions'], 'readwrite');
-  t.objectStore('sessions').put(session);
-  await done;
+  await withDb(async db => {
+    const {t, done} = tx(db, ['sessions'], 'readwrite');
+    t.objectStore('sessions').put(session);
+    await done;
+  });
   return session;
 }
 
 export async function getSession(id) {
-  const db = await open();
-  const {t} = tx(db, ['sessions'], 'readonly');
-  return ask(t.objectStore('sessions').get(id));
+  return withDb(db => {
+    const {t} = tx(db, ['sessions'], 'readonly');
+    return ask(t.objectStore('sessions').get(id));
+  });
 }
 
 export async function allSessions() {
-  const db = await open();
-  const {t} = tx(db, ['sessions'], 'readonly');
-  const list = await ask(t.objectStore('sessions').getAll());
+  const list = await withDb(db => {
+    const {t} = tx(db, ['sessions'], 'readonly');
+    return ask(t.objectStore('sessions').getAll());
+  });
   return list.sort((a, b) => b.started - a.started);
 }
 
@@ -83,57 +108,63 @@ export async function allSessions() {
 // retrying a failed write can never produce half-written rounds.
 export async function putSamples(samples) {
   if (!samples.length) return;
-  const db = await open();
-  const {t, done} = tx(db, ['samples'], 'readwrite');
-  const store = t.objectStore('samples');
-  for (const s of samples) store.put(s);
-  await done;
+  return withDb(async db => {
+    const {t, done} = tx(db, ['samples'], 'readwrite');
+    const store = t.objectStore('samples');
+    for (const s of samples) store.put(s);
+    await done;
+  });
 }
 
 export async function putEvents(events) {
   if (!events.length) return;
-  const db = await open();
-  const {t, done} = tx(db, ['events'], 'readwrite');
-  const store = t.objectStore('events');
-  for (const e of events) store.put(e);
-  await done;
+  return withDb(async db => {
+    const {t, done} = tx(db, ['events'], 'readwrite');
+    const store = t.objectStore('events');
+    for (const e of events) store.put(e);
+    await done;
+  });
 }
 
 // The index is keyed on sessionId and iterated in primary-key order, so samples come back
 // ordered by seq without an explicit sort.
 export async function getSamples(sessionId) {
-  const db = await open();
-  const {t} = tx(db, ['samples'], 'readonly');
-  return ask(t.objectStore('samples').index('bySession').getAll(sessionId));
+  return withDb(db => {
+    const {t} = tx(db, ['samples'], 'readonly');
+    return ask(t.objectStore('samples').index('bySession').getAll(sessionId));
+  });
 }
 
 export async function getEvents(sessionId) {
-  const db = await open();
-  const {t} = tx(db, ['events'], 'readonly');
-  const list = await ask(t.objectStore('events').index('bySession').getAll(sessionId));
+  const list = await withDb(db => {
+    const {t} = tx(db, ['events'], 'readonly');
+    return ask(t.objectStore('events').index('bySession').getAll(sessionId));
+  });
   return list.sort((a, b) => a.t - b.t);
 }
 
 export async function countSamples(sessionId) {
-  const db = await open();
-  const {t} = tx(db, ['samples'], 'readonly');
-  return ask(t.objectStore('samples').index('bySession').count(sessionId));
+  return withDb(db => {
+    const {t} = tx(db, ['samples'], 'readonly');
+    return ask(t.objectStore('samples').index('bySession').count(sessionId));
+  });
 }
 
 export async function deleteSession(id) {
-  const db = await open();
-  const {t, done} = tx(db, ['sessions', 'samples', 'events'], 'readwrite');
-  t.objectStore('sessions').delete(id);
-  for (const name of ['samples', 'events']) {
-    const cursor = t.objectStore(name).index('bySession').openKeyCursor(IDBKeyRange.only(id));
-    cursor.onsuccess = () => {
-      const c = cursor.result;
-      if (!c) return;
-      t.objectStore(name).delete(c.primaryKey);
-      c.continue();
-    };
-  }
-  await done;
+  return withDb(async db => {
+    const {t, done} = tx(db, ['sessions', 'samples', 'events'], 'readwrite');
+    t.objectStore('sessions').delete(id);
+    for (const name of ['samples', 'events']) {
+      const cursor = t.objectStore(name).index('bySession').openKeyCursor(IDBKeyRange.only(id));
+      cursor.onsuccess = () => {
+        const c = cursor.result;
+        if (!c) return;
+        t.objectStore(name).delete(c.primaryKey);
+        c.continue();
+      };
+    }
+    await done;
+  });
 }
 
 export async function estimate() {

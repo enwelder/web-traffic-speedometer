@@ -122,7 +122,7 @@ b.test('the page loads clean, and the setup asks only what it cannot know', asyn
   await ctx.close();
 });
 
-b.test('the projection says where the cost goes and when the speed probe stops', async () => {
+b.test('the projection says what the run will cost before Start', async () => {
   const {ctx} = await context();
   const page = await ctx.newPage();
   await page.goto(PLAIN, {waitUntil: 'networkidle'});
@@ -132,15 +132,14 @@ b.test('the projection says where the cost goes and when the speed probe stops',
   await page.selectOption('#f-profile', 'fine');
   const fine = await read();
 
-  // A time-boxed download reaches its ceiling every round on a fast link, so the cap decides
-  // the total and the interval decides how much of the journey gets throughput data.
+  // Nothing stops the download partway, so the interval is the whole of the cost: the
+  // figure has to move with it, and visibly.
   const mb = t => Number(t.match(/≈ (\d+) MB/)[1]);
-  assert.ok(Math.abs(mb(fine) - mb(coarse)) < 20,
-            `both land near the cap: ${mb(coarse)} and ${mb(fine)} MB`);
-  const minutes = t => Number(t.match(/about (\d+) minutes/)[1]);
-  assert.ok(minutes(coarse) > minutes(fine) * 1.8,
-            `and the coarse profile keeps measuring longer: ${minutes(fine)} vs ${minutes(coarse)} min`);
-  assert.match(fine, /speed probe stops/, 'and it says so before Start rather than mid-journey');
+  assert.ok(Math.abs(mb(fine) - mb(coarse) * 2) < mb(coarse) * 0.1,
+            `halving the interval doubles the bill: ${mb(coarse)} then ${mb(fine)} MB`);
+  assert.match(fine, /Nothing caps it/, 'and it says the total is the operator to watch');
+  assert.equal(await page.$eval('#budget', e => e.classList.contains('warn')), true,
+               'a run in the hundreds of megabytes is flagged, not just stated');
   await ctx.close();
 });
 

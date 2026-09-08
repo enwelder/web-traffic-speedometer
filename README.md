@@ -18,10 +18,12 @@ iOS exposes no radio metrics to a browser: no RSRP, no RSRQ, no SINR, no cell ID
 browser *can* do is send requests and time them. This tool does that continuously for the
 length of a journey, records position alongside, and writes one file per session.
 
-It is a logger. It performs no analysis, computes no summaries and stores no conclusions.
-Where the line falls between noise and an outage changes the answer, so that decision
-belongs downstream, next to the timetables, track maps and cell databases the data will be
-joined against.
+It is a logger. Every round is written down whole and nothing is ever aggregated away: the
+raw rows are the only source of truth, and both the grades shown on screen and the rollup in
+the export are recomputable from them. What it does not do is decide anything — where the
+line falls between noise and an outage changes the answer, so that decision belongs
+downstream, next to the timetables, track maps and cell databases the data will be joined
+against.
 
 ## Running it
 
@@ -60,16 +62,22 @@ browser and no network; the store is injected, so failure and retry paths are re
 and coarse positions, and the one where a probe wedged for twenty rounds — through the
 grading and the rollup. Synthetic fixtures agree with whatever the code does; recordings do
 not, and both times the grading was wrong it was a recording that said so.
+`tests/edges.mjs` covers the boundaries and the things a network does: a value exactly on a
+threshold, a percentile of two samples, a captive portal, a saturated cell whose body never
+arrives, a tunnel, a carrier that blocks UDP, a handover that changes the egress address, a
+wall clock that jumps backwards, and storage the system closed underneath a running session.
 `tests/regressions.mjs` pins bugs found in the field rather than in review.
 `tests/browser.mjs` drives a real browser for the parts that only exist there — IndexedDB,
 crash recovery, the service worker, downloads, the CSP and the phone layout — against a
 simulated IPv6-only network. `tests/security.mjs` is described below.
 
-Every push runs the functional and security suites and CodeQL. A push to `main` that passes
-publishes to GitHub Pages; if `package.json` has a new version, that push is also tagged and
-released. The version is stated once in `package.json`, and a security test fails the build
-if `APP_VERSION` or the service worker cache name has drifted from it — a stale cache name
-would leave clients on the old build.
+Every push runs the functional and security suites; CodeQL runs on `main` and on pull
+requests. A push to `main` that passes publishes to GitHub Pages; if `package.json` has a new
+version, that push is also tagged and released. The version is stated once in `package.json`,
+and a security test fails the build if `APP_VERSION` or the service worker cache name has
+drifted from it. Publishing files that changed since the last release under that same version
+is refused outright: the service worker keys its cache on the version, so it would leave every
+installed client on the old build with nothing to tell it otherwise.
 
 ## Security properties
 
@@ -79,8 +87,10 @@ stops being true:
 
 - **It contacts nothing but its seven probes.** Every URL in the source is checked against
   the allowlist.
-- **It has no way to upload what it records.** No request may carry a body; no `sendBeacon`,
-  `WebSocket`, `EventSource` or `RTCPeerConnection` may appear. Data leaves only when you
+- **It has no way to upload what it records.** There is exactly one `fetch` in the
+  application and its URL comes from the probe table; no request may carry a body, and no
+  `sendBeacon`, `WebSocket` or `XMLHttpRequest` may appear. Nor may a URL reach the network
+  by another route — an image, a stylesheet, a `src` assignment. Data leaves only when you
   export it.
 - **It sends no credentials or referrer** to any of those origins.
 - **It executes no dynamic code** and writes no markup: no `eval`, no `new Function`, no
@@ -113,7 +123,7 @@ failure can be attributed rather than merely noted.
 | `dns` | `https://<random>.github.io/` (HEAD) | can the carrier's resolver resolve a name it cannot have cached |
 | `dns_ctl` | `https://wts-dns-control.github.io/` (HEAD) | is that same destination reachable with the name already cached |
 | `web` | `https://www.gstatic.com/generate_204` | is a provider other than Cloudflare reachable |
-| `down` | `https://speed.cloudflare.com/__down?bytes=N` | how fast does a page-sized payload actually arrive |
+| `down` | `https://speed.cloudflare.com/__down?bytes=50000000` | what rate does the connection actually sustain |
 | `udp` | `stun:stun.cloudflare.com:3478` | is there a UDP path out, and what does it map to |
 
 Reading them together:
@@ -124,7 +134,7 @@ Reading them together:
 - only `web` fails → a fault specific to one provider's edge rather than the network.
 - everything answers but `down` collapses → congestion. A saturated cell still replies
   quickly to a small request while delivering almost no throughput, which is why latency
-  alone cannot see it.
+  alone cannot see it. This is the case a fixed-size download misses too — see below.
 - `udp` fails while the rest hold → the carrier is treating UDP differently from TCP. Calls
   and streaming ride on UDP, so this is a failure the other six cannot see.
 
@@ -143,10 +153,13 @@ That is information, not a defect. A preflight at session start settles it once,
 ### Latency is a median, not a sample
 
 A single round trip is noise: a cold connection, one retransmission, or a scheduling delay
-moves it by an order of magnitude. `ip6` is therefore run repeatedly inside its own deadline
-and `ms` is the median of the samples that succeeded, with every sample kept in
-`ms_samples`. Repetition stops at the first failure — repeating a failed probe within one
-round says nothing new and spends budget the round may still need.
+moves it by an order of magnitude. Every latency probe — `ip6`, `dns_ctl`, `web`, `udp` — is
+therefore run three times inside its own deadline, and `ms` is the median of the samples that
+succeeded, with every sample kept in `ms_samples`. All four are sampled the same way, so
+their medians are comparable; `dns` is the exception, because a repeated lookup would be
+answered from cache and stop being a lookup. Repetition stops at the first failure —
+repeating a failed probe within one round says nothing new and spends budget the round may
+still need.
 
 This follows RMBT, which takes between 10 and 200 latency samples and reports the median for
 the same reason. Three is the compromise here, because unlike a one-off speed test this runs
@@ -180,9 +193,15 @@ under suspicion.
 A connection can end up in a state the browser will not retire: after an outage every other
 probe recovers within a round while one keeps timing out, alone, for as long as the session
 lasts. Twenty consecutive false failures were recorded that way. A browser cannot be told to
-open a fresh connection, so a probe that fails three rounds running while its peers succeed
-is marked `stuck` and rested for six rounds, which lets the browser retire the connection on
-idle. Rested rounds are still written, with `fail: "resting"`, so the row stays complete and
+open a fresh connection, so a probe that fails three rounds running while most of the others
+answer is marked `stuck` and rested for six rounds, which lets the browser retire the
+connection on idle. Only a `timeout`, a `network` error or a `stalled` read counts towards
+that, because those are the only failures a fresh connection could fix. A `parse` failure
+means the connection worked perfectly and delivered a body — a captive portal answering for
+Cloudflare — and resting the probe would hide the portal for six rounds out of every nine
+without repairing anything. Most of the others, not merely one: a single probe still answering is no
+evidence that six separate connections have each wedged, and treating an outage that way
+rested every probe at once and blanked the readout exactly when the network was worst. Rested rounds are still written, with `fail: "resting"`, so the row stays complete and
 the reason is in the data rather than looking like more timeouts.
 
 ### The body has to be Cloudflare's
@@ -211,28 +230,32 @@ Every server-reflexive candidate is kept, because a dual-stack network reports o
 address family, and comparing them against the TCP egress in the same round shows whether
 the two transports leave by the same path.
 
-### The download
+### The download is timed, not sized
 
-The payload is sized to a real page rather than to a token request: 250 kB is about a
-text-heavy article with images, the workload that actually fails on a commute. At much
-smaller sizes the connection setup dominates and the resulting figure describes the
-handshake instead of the link.
+A fixed payload cannot measure a link whose speed spans two orders of magnitude. A 250 kB
+body finishes inside TCP slow start, so the rate it implies describes the congestion window
+growing rather than what the connection carries: on real cellular it under-reported by 8.5×,
+putting 4 Mb/s on a 5G link.
 
-It runs in every round, on the same cadence as everything else, so throughput forms a
-continuous series alignable with the latency series rather than a sparse one.
+So the request asks for far more than will ever be read — 50 MB — and the read is bounded
+instead: it stops after 2 s or 5 MB, whichever comes first, and the stream is cancelled.
+Both limits are recorded, along with which one stopped it, in `aborted_reason`.
 
-The body is streamed and counted rather than awaited whole, so a download cut short by its
-deadline still yields a figure. On a congested cell that partial number is the measurement.
+The ramp is then discarded and only what follows is rated. The gate adapts, because the
+rule has to hold at both extremes: at 133 Mb/s the ceiling arrives in 300 ms and a fixed
+500 ms warmup would leave nothing, while below 0.5 Mb/s the 128 kB threshold never arrives
+at all and the first quarter of the time is dropped instead. What survives is reported as:
 
-Throughput is reported twice and labelled:
+- `bps_steady` — the rate after the ramp. This is what the grade is taken on.
+- `bps_peak` — the fastest window inside the same stream, which says what the link reached
+  rather than what it sustained.
+- `warmup_ms` `warmup_bytes` — how much was discarded, so the judgement is checkable.
+- `insufficient_sample` — the steady phase was shorter than 100 ms. A sample too short to
+  rate is not a slow one, and the round is graded `null` rather than red.
 
-- `bps_transfer` — the payload phase alone, `responseStart` to `responseEnd`. This is the
-  throughput figure, and it is what a stalled page load experiences.
-- `bps_end_to_end` — the whole request including DNS, connect, TLS and time to first byte.
-  Always lower, and the gap between them is the cost of setting the connection up.
-
-Either is left empty when its window is under 2 ms, which is shorter than the clock
-resolves; `bytes` and `transfer_ms` are always kept so the analysis can judge for itself.
+A download stopped by its own budget is a measurement, not a failure, and `ok` stays true.
+One cut short by the 8 s deadline is a failure, with `truncated` recording that bytes did
+arrive first.
 
 ### Deadlines and cadence
 
@@ -244,29 +267,38 @@ and that distinction is the point of the measurement.
 
 Each round is scheduled from when the previous one actually fired rather than onto a fixed
 grid. On a grid, any lateness pulls the next slot closer, and after a long freeze the next
-round fires immediately and collides with the one still running. A round costs a full page
-download, so two of them moments apart measure the same instant twice.
+round fires immediately and collides with the one still running. A round costs megabytes, so
+two of them moments apart measure the same instant twice and pay twice for it.
 
 ### Two profiles
 
 **Fine** runs every 15 s, **Coarse** every 30 s. Both use the same 8 s deadlines and both run
 the download in every round, because the download is the only probe that measures throughput
 rather than reachability and sampling it occasionally leaves most rounds with none. The
-interval carries the cost instead.
+interval therefore sets the cost as well as the resolution, which is the trade the two
+profiles are: Fine locates a dropout to within 15 s and costs twice as much doing it.
 
 ## Every attempt is recorded
 
 A round that fails is the measurement. Nothing is dropped, skipped or summarised away, and
 no failure is represented only by an absence.
 
-- `fail` gives the reason, not just the fact: `timeout`, `network`, `http`, `parse`, `abort`.
+- `fail` gives the reason, not just the fact. `timeout` and `network` are the transport;
+  `http` is a status the server chose; `parse` is a body that was not the endpoint's;
+  `abort` is the session ending mid-probe; `stalled` is a download whose headers arrived and
+  whose body never did; `empty` is a 200 with nothing in it; `no_srflx` is a UDP path that
+  gathered candidates but never reached the STUN server. Two more are not failures of the
+  network and stay out of every tally: `resting`, where the recorder stood the probe down,
+  and `unsupported`, where the browser has no such API — flagged `expected`, like an absent
+  IPv4 path.
 - `ms` is recorded on failure too. How long a probe took to fail separates a refused
   connection from a link that hung until the deadline.
 - A round that could not start because the previous one was still in flight is written with
   `skipped: "overlap"` rather than passed over.
 - `late_ms` appears on every row. iOS freezes JavaScript when the tab is hidden or the
-  screen locks; a round more than twice the interval late also writes a `pause` event with
-  the bridged duration, and `visible` records the tab state per row.
+  screen locks; a round that misses a whole slot also writes a `pause` event with the bridged
+  duration, and `visible` records the tab state per row. One missed slot rather than two: at a
+  10 s interval a 13.7 s delay went unlogged under the looser rule.
 - If an IndexedDB write fails, rows stay in memory and are retried, with the pending count
   shown on screen. Silent data loss is the one failure this tool cannot have.
 
@@ -277,11 +309,12 @@ containing the session metadata, the environment, a descriptive rollup, every sa
 every event.
 
 The `summary` block holds per-probe p50, p90, max, ok and failure counts, the download's rate
-percentiles and total bytes, and counts of skipped, paused and degraded rounds. It states no
-verdict — no outage definition, no thresholds — and every figure in it is recomputable from
-the samples, which is what keeps the raw rows the only source of truth. It exists so a reader
-does not rebuild the same six aggregates every time. CSV, GPX or
-GeoJSON are a few lines to derive from it wherever the analysis happens.
+percentiles and total bytes, and counts of skipped, paused and degraded rounds. It defines no
+outage, and every figure in it is recomputable from the samples, which is what keeps the raw
+rows the only source of truth — it exists so a reader does not rebuild the same six aggregates
+every time. The grade thresholds are copied in beside it, because a file read a year later has
+to say which version's scale produced the colours stored on its rows. CSV, GPX or GeoJSON are
+a few lines to derive from it wherever the analysis happens.
 
 ### Per round
 
@@ -303,6 +336,8 @@ GeoJSON are a few lines to derive from it wherever the analysis happens.
 | `wake_lock` | whether the screen was being held awake for this round |
 | `prev_round_ms` | how long the previous round actually took. A frozen tab suspends the abort timers too, so a round can outlast every deadline in it; without this an overlap cannot be told from the app stalling |
 | `speed_derived` `speed_source` | speed computed from consecutive fixes, and whether the reported value is `gps` or `derived` |
+| `grades` | the four capability grades this round produced, as they were shown |
+| `first_packet_ms` | the quickest first response in the round: the closest thing to the cost of waking the radio. Reported, never graded |
 
 ### Per probe, under `probes.<id>`
 
@@ -313,14 +348,16 @@ GeoJSON are a few lines to derive from it wherever the analysis happens.
 | `expected` | `ip4` | the failure was a known-absent path rather than an outage, and is excluded from tallies |
 | `stuck` | any | the probe was failing alone and has been rested to clear its connection |
 | `egress_ip` `colo` | `ip6` `ip4` `down` | the operator's public address and the Cloudflare PoP |
-| `ms_samples` `samples_ok` `ms_min` `ms_max` | `ip6` | every latency sample taken this round, how many succeeded, and the spread; `ms` is their median. A median of [893, 4275, 52] hides the round's whole story |
+| `ms_samples` `samples_ok` `ms_min` `ms_max` | `ip6` `dns_ctl` `web` `udp` | every latency sample taken this round, how many succeeded, and the spread; `ms` is their median. A median of [893, 4275, 52] hides the round's whole story |
 | `parse_reason` | `ip6` `ip4` | why a trace body was rejected as not Cloudflare's |
 | `public_ips` `candidates` | `udp` | the NAT mapping per address family, and how many ICE candidates were gathered |
 | `host` | `dns` `dns_ctl` | the hostname used — random each round for `dns`, constant for `dns_ctl` |
-| `bytes` `transfer_ms` `ttfb_ms` | `down` | bytes counted, the window they arrived in, and time to first byte |
-| `bps_transfer` `bps_end_to_end` | `down` | the two rates described above |
-| `truncated` | `down` | the deadline cut the body short; the partial figure still stands |
-| `handshake` `reused` `protocol` | `down` | connection setup |
+| `retry_suspected` | `dns` | the answer arrived within 300 ms of a resolver retry timer (2 s or 5 s), so the first query was lost. Loss, not slowness, and red regardless of the number |
+| `bytes` `duration_ms` `ttfb_ms` | `down` | bytes counted, how long the read ran, and time to first byte |
+| `bps_steady` `bps_peak` `warmup_ms` `warmup_bytes` `insufficient_sample` | `down` | the rates described above and the ramp that was discarded to get them |
+| `aborted_reason` | `down` | which limit stopped the read: `time`, `bytes` or `eof` |
+| `truncated` | `down` | the 8 s deadline cut the body short. Unlike the budget, this is a failure |
+| `handshake` `reused` `protocol` `lookup_ms` `connect_ms` `tls_ms` | `down` | connection setup, phase by phase |
 | `server` | `down` | Cloudflare's `cfL4` view: `rtt_us`, `min_rtt_us`, `rtt_var_us`, `lost`, `retrans`, `delivery_rate`, `cwnd` |
 
 Connection setup and `server` are readable only because `speed.cloudflare.com` sends
@@ -351,9 +388,11 @@ yellow for hours. Each capability is graded on thresholds that belong to it:
 | opening a new site | fresh lookup and reach | <400 ms | 400–1200 | 1200–3000 | >3000 |
 | video & downloads | sustained rate after the ramp | >10 Mb/s | 5–10 | 1.5–5 | <1.5 |
 
-Every edge is a constant in `THRESHOLDS`, tunable in one place. Nothing consults the
-session's own statistics: a connection is not good merely because it is no worse than the
-rest of the journey.
+Every edge is a constant in `THRESHOLDS`, tunable in one place, and a value sitting exactly
+on an edge takes the worse side. Nothing consults the session's own statistics: a connection
+is not good merely because it is no worse than the rest of the journey. Nothing that is not a
+finite, non-negative number is graded at all — a NaN from a division by zero is not a red
+connection, and a negative latency is not a green one.
 
 A capability with no usable input is graded `null` rather than guessed — a download too short
 to rate is not a slow one. UDP contributes whether the path exists, not how long it took: a
@@ -369,76 +408,44 @@ The screen shows the worst of the last three rounds, and changes only after the 
 agreed with itself twice — in both directions. One slow round does not repaint a screen being
 read on a moving train, and one good round does not clear a bad stretch.
 
-Variance is reported beside the colour and never inside it. A link alternating between 40 ms
-and 900 ms is a different thing from one steady at 400, and folding them into one grade would
-hide exactly the behaviour worth seeing.
-
-### Colours mean what the connection can carry
-
-Four grades, named for the experience rather than for round numbers:
-
-| grade | what still works |
-|---|---|
-| **good** | pages open promptly, music streams, chat is instant |
-| **ok** | music and chat fine, pages noticeably slow |
-| **poor** | chat still works, music stutters, pages barely load |
-| **bad** | nothing usable |
-
-Latency bounds — 300 ms, 1 s, 3 s — come from page loads, which spend several round trips
-before anything renders. Rate bounds — 3 Mb/s, 0.5 Mb/s, 0.1 Mb/s — come from the two things
-actually being done on a train: streamed audio needs about 0.3 Mb/s sustained, so 0.5 is the
-floor with room to buffer, and a 2 MB page needs 3 Mb/s to arrive in a few seconds rather
-than half a minute.
-
-A round takes the worst grade of anything in it. A fast link that cannot resolve names is not
-a good connection, and neither is a responsive one delivering no bytes — which is how a
-screen full of green used to sit above latencies nobody would call healthy.
+Losing the input is a change like any other and waits for the same confirmation. A probe
+rested for six rounds must not blank the tile that went red because of the failure that put
+it to rest, and a tile whose input dries up for good does eventually clear rather than
+holding a colour from twenty minutes ago.
 
 ### Reading it while travelling
 
-Every tile is labelled on one axis — the metric, then what this probe varies, then who
-answered — so the five read as a set rather than as five unrelated things:
+Four tiles, one per capability, each naming what it is about rather than which probe fed it:
+**calls & real-time**, **tapping a link**, **opening a new site**, **video & downloads**.
+That is what makes a failure placeable by reading down them — real-time alone in red is the
+UDP path, opening a new site alone in red is resolution, video alone in red is a congested
+cell while everything else answers promptly.
 
-| tile | varies |
-|---|---|
-| latency direct *(Cloudflare)* | no name lookup at all |
-| latency DNS *(GitHub)* | a fresh lookup every round |
-| latency *(Google)* | a different company |
-| latency UDP *(Cloudflare)* | the other transport |
-| rate *(Cloudflare)* | bytes, not a round trip |
+Under each tile is the number the colour was taken from and, once there are enough samples,
+how steady it has been: the p90 over the recent window divided by the median, as `steady ×1.2`
+or `swinging ×4.0`. A link alternating between 40 ms and 900 ms is a different thing from one
+steady at 400, and this is where that shows, next to the colour and never inside it. Tapping a
+tile says what it measures; the **?** in the header turns all four explanations on at once.
 
-Four latencies and one rate, which is what makes a failure placeable by reading down them:
-if the direct one answers the connection works, if DNS fails beside it the fault is
-resolution, if only Google fails the fault is at one company, if only UDP fails the carrier
-is treating real-time traffic differently, and if all four answer while the rate collapses
-the cell is congested. Tapping a tile says what it measures; the **?** in the header turns
-all five explanations on at once.
-
-Below them, three lamps show which paths are carrying traffic — IPv6, IPv4, UDP — lit, dim
-where a path is known absent, red where it has failed. That replaces a standing sentence
-about IPv4; the verdict is written to the log once and to `ipv4_available` in the file.
-
-The live view shows a rolling p90 over the last five minutes beside each current value,
-computed by nearest rank — under about ten samples the figure is labelled `max` instead,
-because at that size a ninetieth percentile *is* the largest value and calling it p90
-overstates it. A
-median across a whole journey came out at 82 ms and said nothing about the experience; the
-p90 over a few minutes is the number that moves when the connection does.
+Below them, two lamps show which paths are carrying traffic — IPv4 and UDP — lit, dim where a
+path is known absent, red where it has failed. The IPv4 verdict is written to the log once and
+to `ipv4_available` in the file, so the lamp does not have to carry a standing sentence.
 
 **Degraded** is the share of rounds in which some probe failed. Full outages turned out to be
 rare — the longest ran four rounds — while the share of partially failing rounds reached 47%
 over the worst stretch with a median latency of a perfectly healthy 96 ms. Outage-only
 statistics miss almost all of it.
 
-Each tile explains what it measures when tapped, so the screen carries numbers rather than
-captions.
-
 ### Events
 
 Only what cannot be derived from the samples. `mark` is the subjective half of the
 measurement, pressed when the failure is noticed rather than when the probes see it — the
-premise of the exercise is that those two disagree. `pause` records JavaScript being frozen,
-with the bridged duration. `note` is free text.
+premise of the exercise is that those two disagree. `label` is the same judgement offered as a
+choice — fine, slow or broken — pressed as the connection is being used, which is what the
+thresholds are calibrated against. `pause` records JavaScript being frozen, with the bridged
+duration. `note` is free text, and the recorder writes its own notices there too: a wake lock
+lost or regained, position quality changing, a probe rested, an egress address changing under
+an unchanged operator label.
 
 ## Operator and connection type
 
@@ -455,17 +462,14 @@ One SIM is active at a time, so comparing operators means comparing journeys.
 
 ## Data usage
 
-A full page download in every round is almost the entire cost; the six small probes come to
-roughly 11 kB per round between them, of which the sampled latency probe is about 3 kB and
-the UDP probe a few hundred bytes. The projection for the chosen settings is shown before
-a run starts and a running estimate during it, and the projection turns amber past 50 MB.
+A time-boxed download in every round is almost the entire cost; the six small probes come to
+roughly 12 kB per round between them, of which each sampled latency probe is about 1.2 kB. The projection for the chosen settings is shown before a
+run starts and a running estimate during it, and the projection turns amber past 50 MB.
 
-A time-boxed download reaches its byte ceiling every round on anything fast, so the session
-cap decides the total and the interval decides how much of the journey has throughput data.
-With the defaults — 2 s budget, 5 MB ceiling, 250 MB cap — both profiles land near 250 MB;
-the speed probe stops after about 12 minutes on Fine and 25 on Coarse, and every other probe
-carries on. The projection and the point at which the speed probe stops are both shown before
-Start.
+The download reaches its 5 MB byte ceiling every round on anything fast, so with the default
+2 s budget the cost is simply the number of rounds: about 800 MB for a 40-minute run on Fine,
+400 MB on Coarse. Nothing stops it partway — watching the total is the operator's job, which
+is why the running figure sits on the readout.
 
 The interval sets both the cost and the resolution: a 30-second interval cannot locate the
 start of a dropout more precisely than 30 seconds. The estimate charges a TLS handshake per
@@ -480,7 +484,10 @@ coarse fix. There is no way to press the platform harder than `enableHighAccurac
 browser, so instead: fixes are never taken from cache, a speed is derived from consecutive
 fixes only when *both* are under 100 m, and `accuracy_class` lets a consumer filter without
 reimplementing the threshold. Deriving from coarse fixes produced 682 km/h on a train — two
-tower estimates hundreds of metres apart look exactly like motion.
+tower estimates hundreds of metres apart look exactly like motion, and three such rows are
+still in the committed recordings. A derived rate above 400 km/h is discarded even when both
+fixes claim to be accurate, since two fixes can both be wrong; the coordinates stay on the
+rows either way, so the analysis can derive it differently.
 
 When precision changes mid-journey it is logged, the way a wake-lock change is, so a stretch
 of unusable coordinates explains itself.

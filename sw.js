@@ -1,7 +1,7 @@
 // Offline shell. Recovery after a crash means the page has to load on a degraded network,
 // which is exactly the condition the tool exists to measure.
 
-const CACHE = 'wts-v3.2.0';
+const CACHE = 'wts-v3.3.0';
 
 const SHELL = [
   './',
@@ -21,7 +21,14 @@ const SHELL = [
 ];
 
 self.addEventListener('install', e => {
-  e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL)));
+  // `cache: 'reload'` because addAll otherwise takes whatever the HTTP cache holds, which
+  // on a version bump is the previous build: the new cache would be filled with old files.
+  e.waitUntil(caches.open(CACHE).then(c =>
+    Promise.all(SHELL.map(u => fetch(new Request(u, {cache: 'reload'})).then(r => {
+      if (!r.ok) throw new Error(`${u}: ${r.status}`);
+      return c.put(u, r);
+    })))
+  ));
   // No skipWaiting: a new version must never take over a tab that is mid-session.
 });
 

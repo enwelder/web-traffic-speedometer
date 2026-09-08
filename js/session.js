@@ -2,9 +2,9 @@
 // the ones that could not run at all — a failed attempt is the measurement, and must never
 // be represented by a missing row.
 
-import {PROBES, runRound, checkIpv4, clearTimings, timeoutFor, looksLikeRetry,
-        STUCK_AFTER, STUCK_COOLDOWN, DEFAULT_DOWN_BUDGET_MS, DEFAULT_DOWN_MAX_BYTES,
-        DEFAULT_SESSION_CAP_MB} from './probe.js';
+import {PROBES, runRound, checkIpv4, clearTimings, timeoutFor,
+        STUCK_AFTER, STUCK_COOLDOWN, DEFAULT_DOWN_BUDGET_MS,
+        DEFAULT_DOWN_MAX_BYTES} from './probe.js';
 import {gradeRound} from './grade.js';
 import * as realStore from './store.js';
 
@@ -18,7 +18,7 @@ const REFUSED_BYTES = 100;      // an IPv4 literal with no path never gets a con
 // STUN is UDP: there is no handshake to charge, and no connection to resume.
 const cost = p => (WARM_BYTES[p.kind] * (p.samples || 1)) + (p.kind === 'stun' ? 0 : RESUMED_BYTES);
 
-export const APP_VERSION = '3.2.0';
+export const APP_VERSION = '3.3.0';
 
 // Two profiles instead of loose settings. The download is the only probe that measures
 // throughput rather than reachability, so it runs every round and the interval carries the
@@ -29,9 +29,8 @@ export const PROFILES = {
 };
 
 export const DOWNLOAD_DEFAULTS = {
-  downBudgetMs: DEFAULT_DOWN_BUDGET_MS,
-  downMaxBytes: DEFAULT_DOWN_MAX_BYTES,
-  sessionDataCapMB: DEFAULT_SESSION_CAP_MB
+  budgetMs: DEFAULT_DOWN_BUDGET_MS,
+  maxBytes: DEFAULT_DOWN_MAX_BYTES
 };
 
 const EARTH_M = 6371000;
@@ -39,6 +38,10 @@ const EARTH_M = 6371000;
 // produced 682 km/h on a train: two coarse fixes hundreds of metres apart in opposite
 // directions look like motion. iOS reports exactly 1414 m for that class of fix.
 const FINE_ACCURACY_M = 100;
+// 400 km/h. Above a Thalys at full speed, and far above anything on this route.
+const MAX_PLAUSIBLE_MS = 111;
+// The failures that a fresh connection could plausibly fix.
+const WEDGE_FAILS = new Set(['timeout', 'network', 'stalled']);
 // Haversine. iOS fills coords.speed only sporadically — three journeys returned it on 0,
 // 2 and 51 of 158, 75 and 243 rounds — so it is derived from consecutive fixes instead,
 // with the measured value kept whenever the platform does supply one.
@@ -50,19 +53,13 @@ function metresBetween(a, b) {
   return 2 * EARTH_M * Math.asin(Math.min(1, Math.sqrt(h)));
 }
 
-// The download is time-boxed, so its size depends on the link. The projection assumes it
-// reaches its byte ceiling, which is what happens on anything fast, and stops at the session
-// cap — which on a quick connection arrives well before the journey ends.
+// The download is time-boxed, so what it pulls depends on the link. The projection assumes
+// it reaches its byte ceiling every round, which is what happens on anything fast — the
+// worst case, and the one worth showing before pressing Start.
 export function projectedBytes(intervalMs, settings = DOWNLOAD_DEFAULTS, minutes = 40) {
   const rounds = Math.round((minutes * 60000) / intervalMs);
   const small = PROBES.reduce((n, p) => n + cost(p), 0);
-  const capBytes = settings.sessionDataCapMB * 1e6;
-  const downloadRounds = Math.min(rounds, Math.floor(capBytes / settings.downMaxBytes));
-  return rounds * small + downloadRounds * settings.downMaxBytes;
-}
-
-export function downloadRoundsBeforeCap(settings = DOWNLOAD_DEFAULTS) {
-  return Math.floor((settings.sessionDataCapMB * 1e6) / settings.downMaxBytes);
+  return rounds * (small + settings.maxBytes);
 }
 
 export function environment(intervalMs, downloadSettings = DOWNLOAD_DEFAULTS) {
@@ -82,6 +79,38 @@ export function environment(intervalMs, downloadSettings = DOWNLOAD_DEFAULTS) {
     // Absent in Safari on every platform; recorded anyway so a browser that gains it contributes for free.
     network_information: c ? {type: c.type, effectiveType: c.effectiveType, downlink: c.downlink, rtt: c.rtt} : null
   };
+}
+
+// What a round is estimated to have cost. `contacted` carries across rounds: the first
+// request to a host pays for a handshake, later ones do not.
+function roundBytes(row, contacted) {
+  let n = 0;
+  for (const p of PROBES) {
+    const r = row.probes?.[p.id];
+    if (!r) continue;
+    if (r.expected && !r.ok) { n += REFUSED_BYTES; continue; }
+    if (r.fail === 'resting') continue;
+    const attempts = r.ms_samples ? r.ms_samples.length : 1;
+    n += WARM_BYTES[p.kind] * attempts + (p.kind === 'download' ? r.bytes || 0 : 0);
+    if (p.kind !== 'stun') {
+      n += contacted.has(p.id) ? RESUMED_BYTES : FIRST_CONTACT_BYTES;
+      contacted.add(p.id);
+    }
+  }
+  return n;
+}
+
+// A resumed session has already spent whatever the rows on disk describe. Without this the
+// on-screen total restarted at zero after a reload, understating a run whose only limit is
+// the person watching that number.
+export function spentSoFar(samples) {
+  const contacted = new Set();
+  let bytes = 0, downloadBytes = 0;
+  for (const row of samples) {
+    bytes += roundBytes(row, contacted);
+    downloadBytes += row.probes?.down?.bytes || 0;
+  }
+  return {bytes, downloadBytes};
 }
 
 // `store` is injectable so the round loop can be exercised against a fake one; everything
@@ -107,15 +136,16 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
   let lastSpeed = null;
   let lastSpeedSource = null;
   let wakeLockLost = false;
+  let wakeLockPending = false;
+  let egressIp = null;
   let fineFix = null;
   const consecutiveFails = {};
   const restingUntil = {};
   let throughput = null;
   let udpMs = null;
   let downloadBytesUsed = 0;
-  let capReached = false;
   let lastGrades = null;
-  let flushing = false;
+  let flushing = null;
   let writeFailed = false;
   let current = null;
 
@@ -129,7 +159,7 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
   function status() {
     return {
       running, session, seq, marks, bytes, throughput, udpMs, grades: lastGrades,
-      capReached, downloadMB: Math.round(downloadBytesUsed / 1e5) / 10,
+      downloadMB: Math.round(downloadBytesUsed / 1e5) / 10,
       speedKmh: lastSpeed == null ? null : Math.round(lastSpeed * 3.6),
       speedSource: lastSpeedSource,
       pending: pendingSamples.length + pendingEvents.length,
@@ -146,9 +176,12 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
     flush();
   }
 
+  // The in-flight promise, not a boolean: a caller that returned early because a flush was
+  // running had no way to wait for it, so stop()'s retries all returned immediately and the
+  // final rounds were left in memory — missing from an export taken straight afterwards.
   async function flush() {
-    if (flushing) return;
-    flushing = true;
+    if (flushing) return flushing;
+    flushing = (async () => {
     try {
       if (pendingSamples.length) {
         const batch = pendingSamples.slice();
@@ -166,9 +199,10 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
       writeFailed = true;
       onNotice?.(`Storage write failed (${e.message}). ${pendingSamples.length} rounds held in memory, retrying.`);
     } finally {
-      flushing = false;
       emit();
     }
+    })();
+    try { await flushing; } finally { flushing = null; }
   }
 
   function position() {
@@ -191,7 +225,14 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
       const seconds = (fix.t - prevFix.t) / 1000;
       // Two fixes at the same place seconds apart give a meaningless rate; a gap of minutes
       // averages away everything that happened between them.
-      if (seconds >= 1 && seconds <= 120) derived = metresBetween(prevFix, fix) / seconds;
+      if (seconds >= 1 && seconds <= 120) {
+        const rate = metresBetween(prevFix, fix) / seconds;
+        // Two fixes can both be accurate to 10 m and still be hundreds of metres apart if
+        // one of them is wrong. Nothing on this route travels faster than a Thalys, so a
+        // rate above that describes a bad fix, not motion. The coordinates stay on both
+        // rows either way, so the analysis can derive it differently.
+        derived = rate <= MAX_PLAUSIBLE_MS ? rate : null;
+      }
     }
     if (!prevFix || fix.t !== prevFix.t) prevFix = fix;
 
@@ -206,7 +247,7 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
       speed: measured,
       speed_derived: derived == null ? null : Math.round(derived * 100) / 100,
       speed_source: measured != null ? 'gps' : derived != null ? 'derived' : null,
-      heading: c.heading == null ? null : c.heading,
+      heading: c.heading == null || c.heading < 0 ? null : c.heading,
       // The fix's own timestamp, not the round's: a 30s-old fix on a 140 km/h train is
       // more than a kilometre out, and without this the error is invisible.
       pos_t: fix.t,
@@ -214,20 +255,7 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
     };
   }
 
-  function charge(row) {
-    for (const p of PROBES) {
-      const r = row.probes[p.id];
-      if (!r) continue;
-      if (r.expected && !r.ok) { bytes += REFUSED_BYTES; continue; }
-      if (r.fail === 'data_cap' || r.fail === 'resting') continue;
-      const attempts = r.ms_samples ? r.ms_samples.length : 1;
-      bytes += WARM_BYTES[p.kind] * attempts + (p.kind === 'download' ? r.bytes || 0 : 0);
-      if (p.kind !== 'stun') {
-        bytes += contacted.has(p.id) ? RESUMED_BYTES : FIRST_CONTACT_BYTES;
-        contacted.add(p.id);
-      }
-    }
-  }
+  function charge(row) { bytes += roundBytes(row, contacted); }
 
   function keep(row) {
     pendingSamples.push(row);
@@ -268,18 +296,41 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
   // A probe that keeps failing while its peers succeed is not reporting the network: its
   // connection has wedged. Journey data showed the control probe timing out for twenty
   // consecutive rounds after an outage, alone, while every other probe recovered within one.
+  // The operator label is typed in and the egress address is not, so a change of address
+  // under an unchanged label is the one place the session says it is not what it claims —
+  // a hotspot picked up mid-journey, or a handover onto a different core network.
+  function noteEgressChange(row) {
+    const seen = PROBES.map(p => row.probes[p.id]?.egress_ip).find(Boolean);
+    if (!seen) return;
+    if (!egressIp) { egressIp = seen; return; }
+    if (seen === egressIp) return;
+    noteEvent('egress address changed');
+    egressIp = seen;
+  }
+
   function updateStuck(row) {
-    const anyOk = PROBES.some(p => row.probes[p.id]?.ok);
+    // "While its peers succeed" has to mean most of them: one probe answering is not evidence
+    // that six separate connections have each wedged, and treating an outage that way rested
+    // every probe at once — the readout went blank exactly when the network was worst.
+    const healthy = PROBES.filter(p => row.probes[p.id]?.ok).length;
+    const isolated = healthy > PROBES.length / 2;
     for (const p of PROBES) {
       const r = row.probes[p.id];
       if (!r || r.fail === 'resting') continue;
       if (r.ok) { consecutiveFails[p.id] = 0; delete restingUntil[p.id]; continue; }
       if (r.expected) continue;
-      consecutiveFails[p.id] = (consecutiveFails[p.id] || 0) + 1;
-      if (anyOk && consecutiveFails[p.id] >= STUCK_AFTER && restingUntil[p.id] == null) {
+      // Only a failure resting could actually fix. A parse failure means the connection
+      // worked and delivered a body — a captive portal answering for Cloudflare — and an
+      // HTTP status means the server replied; standing the probe down for six rounds hides
+      // the very thing it just found and cannot repair either one.
+      if (!WEDGE_FAILS.has(r.fail)) { consecutiveFails[p.id] = 0; continue; }
+      const n = consecutiveFails[p.id] = (consecutiveFails[p.id] || 0) + 1;
+      if (isolated && n >= STUCK_AFTER && restingUntil[p.id] == null) {
         r.stuck = true;
-        restingUntil[p.id] = seq + STUCK_COOLDOWN;
-        onNotice?.(`${p.id} has failed ${consecutiveFails[p.id]} rounds while the others answer; ` +
+        // seq has already been advanced by baseRow, so this row's own number is seq - 1.
+        restingUntil[p.id] = (seq - 1) + STUCK_COOLDOWN + 1;
+        consecutiveFails[p.id] = 0;
+        onNotice?.(`${p.id} has failed ${n} rounds while the others answer; ` +
                    `resting it for ${STUCK_COOLDOWN} rounds to clear the connection.`);
       }
     }
@@ -305,8 +356,7 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
         download: session.download || DOWNLOAD_DEFAULTS,
         intervalMs: interval(),
         ipv4Available: session.ipv4_available,
-        resting: resting(),
-        skipDownload: capReached
+        resting: resting()
       });
     } catch (e) {
       row.round_error = String(e && e.message || e);
@@ -319,23 +369,15 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
     }
 
     if (!holdingWakeLock()) acquireWakeLock();
-    // The download is the only probe with an open-ended appetite, so it is the only one the
-    // cap can stop. Everything else keeps running: reachability still matters after the
-    // budget for measuring speed has gone.
-    const pulled = row.probes.down?.bytes || 0;
-    downloadBytesUsed += pulled;
-    const capMB = (session.download || DOWNLOAD_DEFAULTS).sessionDataCapMB;
-    if (!capReached && downloadBytesUsed >= capMB * 1e6) {
-      capReached = true;
-      noteEvent(`download probe stopped: ${Math.round(downloadBytesUsed / 1e6)} MB data cap reached`);
-      onNotice?.('Data cap reached — the throughput probe has stopped. Everything else continues.');
-    }
+    downloadBytesUsed += row.probes.down?.bytes || 0;
 
     // The radio has to wake before anything answers; the quickest first response in the
     // round is the closest measure of that cost. Reported, never graded.
+    // connect_ms is zero both for a reused connection and when timing is unreadable, which
+    // made this report 0 ms on most rounds. Only real first responses count.
     const firsts = [row.probes.ip6?.ms_samples?.[0], row.probes.web?.ms_samples?.[0],
-                    row.probes.dns_ctl?.ms_samples?.[0], row.probes.udp?.ms_samples?.[0],
-                    row.probes.down?.connect_ms].filter(v => v != null && v >= 0);
+                    row.probes.dns_ctl?.ms_samples?.[0], row.probes.udp?.ms_samples?.[0]]
+                   .filter(v => v != null && v > 0);
     row.first_packet_ms = firsts.length ? Math.min(...firsts) : null;
 
     // Resolved here, once, so the file says what was shown and the screen does not
@@ -343,6 +385,15 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
     row.grades = gradeRound(row);
     lastGrades = row.grades;
 
+    // A radio still waking at session start can refuse the preflight. One success overturns
+    // the verdict rather than leaving the probe exempt for the whole journey.
+    if (session.ipv4_available === false && row.probes.ip4?.ok) {
+      session.ipv4_available = true;
+      noteEvent('IPv4 available after all; the preflight caught a sleeping radio');
+      store.putSession(session);
+    }
+
+    noteEgressChange(row);
     updateStuck(row);
     charge(row);
     clearTimings();
@@ -355,7 +406,8 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
   function tick() {
     if (!running) return;
     const now = mono();
-    const late = Math.round(now - due);
+    // Timer rounding can put a tick a hair early; lateness is never negative.
+    const late = Math.max(0, Math.round(now - due));
 
     // iOS freezes JS when the tab is backgrounded or the screen locks. Recording the gap
     // explicitly is the only way it stays distinguishable from an outage afterwards. A whole
@@ -393,8 +445,11 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
   const holdingWakeLock = () => !!wakeLock && !wakeLock.released;
 
   async function acquireWakeLock() {
-    if (!navigator.wakeLock || holdingWakeLock()) return;
+    if (!navigator.wakeLock || holdingWakeLock() || wakeLockPending) return;
     if (document.visibilityState !== 'visible') return;
+    // Requested from the round loop, from visibilitychange and from the release handler; two
+    // concurrent requests orphan a sentinel whose later release logs a loss that never was.
+    wakeLockPending = true;
     try {
       const sentinel = await navigator.wakeLock.request('screen');
       wakeLock = sentinel;
@@ -411,6 +466,8 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
         onNotice?.('The screen will not stay awake. Set auto-lock longer, or turn off Low Power Mode.');
         if (running) noteEvent(`screen wake lock refused (${e && e.name || 'unknown'})`);
       }
+    } finally {
+      wakeLockPending = false;
     }
   }
 
@@ -423,11 +480,13 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
     acquireWakeLock();
   }
 
-  function noteEvent(text) {
+  function event(type, text) {
     const p = position();
-    record({sessionId: session.id, t: Date.now(), mono: Math.round(mono()), type: 'note',
+    record({sessionId: session.id, t: Date.now(), mono: Math.round(mono()), type,
             lat: p.lat, lon: p.lon, text});
   }
+
+  const noteEvent = text => event('note', text);
 
   function startGeolocation() {
     if (!navigator.geolocation) { posError = 'unavailable'; return; }
@@ -461,17 +520,33 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
   // `monoBase` continues the monotonic clock across a reload: performance.now() restarts,
   // so the gap is bridged with the wall clock. Both columns are in the data, which is what
   // makes the bridge checkable rather than a silent fudge.
-  async function start(s, {resumeSeq = 0, monoBase = 0, resumedGapMs = 0} = {}) {
+  async function start(s, {resumeSeq = 0, monoBase = 0, resumedGapMs = 0, spent = null} = {}) {
     session = s;
     seq = resumeSeq;
     running = true;
+    // One recorder lives for the page, so everything scoped to a session has to be cleared
+    // when a new one starts. A rest scheduled by seq in the previous session otherwise
+    // silenced a probe for the whole of the next one.
+    if (!resumeSeq) {
+      for (const k of Object.keys(consecutiveFails)) delete consecutiveFails[k];
+      for (const k of Object.keys(restingUntil)) delete restingUntil[k];
+      marks = 0;
+      lastRoundMs = null;
+      inPause = false;
+      prevFix = null;
+      egressIp = null;
+      lastPos = null;
+      posError = null;
+      fineFix = null;
+      lastSpeed = null;
+      lastSpeedSource = null;
+    }
     t0 = performance.now() - monoBase;
     due = monoBase;
-    bytes = 0;
+    bytes = spent?.bytes || 0;
     throughput = null;
     udpMs = null;
-    downloadBytesUsed = 0;
-    capReached = false;
+    downloadBytesUsed = spent?.downloadBytes || 0;
     lastGrades = null;
     wakeLockLost = false;
     inFlight = false;
@@ -499,11 +574,19 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
       record({sessionId: session.id, t: Date.now(), mono: Math.round(monoBase), type: 'pause',
               lat: null, lon: null, text: `${(resumedGapMs / 1000).toFixed(1)}s bridged across reload`});
     }
+    // Set after the preflight and the wake lock, or the first row reports the start-up time
+    // as scheduling lateness — and a slow radio at start would log a pause that never happened.
+    due = mono();
     tick();
     emit();
   }
 
   async function stop() {
+    // Stopping what was never started, or stopping twice: the tab was reloaded mid-session,
+    // or two taps landed inside the same await. Neither may throw, and neither may stamp a
+    // second end time on a journey that already has one.
+    if (!session) return null;
+    if (!running && session.stopped) return session;
     running = false;
     clearTimeout(timer);
     timer = null;
@@ -514,9 +597,9 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
     if (wakeLock) { try { await wakeLock.release(); } catch { /* already gone */ } wakeLock = null; }
 
     session.stopped = Date.now();
-    // Retry the buffer a few times before giving up, so a transient write error does not
-    // end the session with rounds stranded in memory.
-    for (let i = 0; i < 3 && (pendingSamples.length || pendingEvents.length); i++) await flush();
+    // Drain rather than fire and hope: each pass now waits for any flush already running, so
+    // a row written during one is picked up by the next.
+    for (let i = 0; i < 5 && (pendingSamples.length || pendingEvents.length); i++) await flush();
     await store.putSession(session);
     store.setActive(null);
     emit();

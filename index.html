@@ -22,7 +22,7 @@
 </head>
 <body>
 
-<h1>Web Traffic Speedometer<button id="btn-help" type="button" aria-label="Explain the measurements">?</button></h1>
+<h1>Web Traffic Speedometer<button id="btn-help" type="button" aria-pressed="false" aria-label="Explain the measurements">?</button></h1>
 
 <main>
 
@@ -116,8 +116,6 @@
     <div class="log" id="log"><div>Not started.</div></div>
   </div>
 
-  <div class="notice" id="notice"></div>
-
 </section>
 
 <section class="view" id="view-sessions" hidden>
@@ -129,6 +127,10 @@
 </section>
 
 </main>
+
+<!-- Outside the views: an export confirmation or failure belongs on the tab where the
+     export button is, and that is not the measure tab. -->
+<div class="notice" id="notice" role="status" aria-live="polite"></div>
 
 <!-- What it felt like, said by the person using it. Nothing else records that, and without
      it the thresholds have nothing to be checked against. -->

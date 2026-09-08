@@ -1,8 +1,8 @@
 import * as store from './store.js';
 import * as ui from './ui.js';
 import {PROBES} from './probe.js';
-import {createRecorder, environment, projectedBytes, downloadRoundsBeforeCap,
-        PROFILES, DOWNLOAD_DEFAULTS} from './session.js';
+import {createRecorder, environment, projectedBytes, spentSoFar, PROFILES,
+        DOWNLOAD_DEFAULTS} from './session.js';
 import {createDisplay} from './grade.js';
 import {exportSession, exportAll} from './export.js';
 
@@ -30,6 +30,10 @@ function profile() {
 }
 
 let lastFirstPacket = null;
+// Start and Stop both await storage before the recorder's own flag moves, and a second tap
+// inside that window used to begin a whole second round chain: two sessions written, two
+// tick loops running, one of them never closed.
+let busy = false;
 
 const uuid = () => (crypto.randomUUID ? crypto.randomUUID()
   : 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
@@ -115,15 +119,13 @@ function syncSetup() {
   $('f-operator-other').hidden = $('f-operator').value !== '__other';
   const {intervalMs} = profile();
   const mb = projectedBytes(intervalMs, DOWNLOAD_DEFAULTS) / 1048576;
-  const rounds = downloadRoundsBeforeCap(DOWNLOAD_DEFAULTS);
-  const minutes = Math.round((rounds * intervalMs) / 60000);
   const el = $('budget');
-  // The throughput probe pulls for a fixed span, so on a fast link it reaches its ceiling
-  // every round and the cap arrives long before the journey ends. Better said here than
-  // discovered halfway.
-  el.textContent = `≈ ${Math.round(mb)} MB for a 40-minute run. The speed probe stops after ` +
-    `${DOWNLOAD_DEFAULTS.sessionDataCapMB} MB — about ${minutes} minutes on a fast link — ` +
-    `and everything else keeps running.`;
+  // The speed probe pulls for a fixed span, so on a fast link it reaches its byte ceiling
+  // every round. This is the worst case, and nothing stops it — keeping an eye on the total
+  // is the operator's job, and the running figure is on the readout.
+  el.textContent = `up to ≈ ${Math.round(mb)} MB for a 40-minute run on a fast link, ` +
+    `almost all of it the speed probe. Nothing caps it; the running total is shown while ` +
+    `recording.`;
   // Past this the run costs more than a chunk of a monthly bundle, which is worth seeing
   // before pressing Start rather than afterwards.
   el.classList.toggle('warn', mb > 50);
@@ -171,6 +173,8 @@ function newSession() {
 /* ---- run control ---- */
 
 async function begin() {
+  // A recovered session offered on screen must not keep running alongside a new one.
+  dismissRecovery();
   for (const p of PROBES) fails[p.id] = 0;
   degradedRounds = scoredRounds = 0;
   lastFirstPacket = null;
@@ -182,6 +186,11 @@ async function begin() {
   ui.notice('');
   $('readout').hidden = false;
   writePrefs();
+
+  // Blank the readout before the first round lands, or the previous session's colours sit
+  // there for a whole interval — half a minute on the coarse profile.
+  ui.setSignals(null, fails, 0, {});
+  ui.setLamps(null);
 
   const session = newSession();
   await store.putSession(session);
@@ -215,6 +224,8 @@ async function checkRecovery() {
   $('recover').hidden = false;
 
   $('recover-resume').onclick = async () => {
+    // Start may have been pressed while the banner was still up.
+    if (busy || recorder.status().running) return;
     $('recover').hidden = true;
     for (const p of PROBES) fails[p.id] = 0;
     degradedRounds = scoredRounds = 0;
@@ -232,7 +243,8 @@ async function checkRecovery() {
     await recorder.start(session, {
       resumeSeq: last ? last.seq + 1 : 0,
       monoBase: last ? last.mono + gap : 0,
-      resumedGapMs: gap
+      resumedGapMs: gap,
+      spent: spentSoFar(samples)
     });
     ui.setRunning(true);
   };
@@ -247,6 +259,12 @@ async function checkRecovery() {
   };
 }
 
+function dismissRecovery() {
+  $('recover').hidden = true;
+  $('recover-resume').onclick = null;
+  $('recover-close').onclick = null;
+}
+
 /* ---- sessions ---- */
 
 async function renderSessions() {
@@ -257,8 +275,16 @@ async function renderSessions() {
   listDirty = false;
 }
 
+// The list shows the running session too. Editing the copy the list rendered and writing it
+// back was silently undone by stop(), which writes the recorder's own object afterwards.
+function liveOrGiven(session) {
+  const active = recorder.status().session;
+  return active && active.id === session.id ? active : session;
+}
+
 const handlers = {
-  async export(session) {
+  async export(given) {
+    const session = liveOrGiven(given);
     try {
       const {samples, events} = await exportSession(session);
       session.exportedAt = Date.now();
@@ -269,21 +295,24 @@ const handlers = {
       ui.notice(`Export failed: ${e.message}`);
     }
   },
-  async rename(session) {
+  async rename(given) {
+    const session = liveOrGiven(given);
     const name = prompt('Session name', session.name);
     if (name == null) return;
     session.name = name.trim() || session.name;
     await store.putSession(session);
     renderSessions();
   },
-  async note(session) {
+  async note(given) {
+    const session = liveOrGiven(given);
     const note = prompt('Note', session.note || '');
     if (note == null) return;
     session.note = note.trim();
     await store.putSession(session);
     renderSessions();
   },
-  async remove(session) {
+  async remove(given) {
+    const session = liveOrGiven(given);
     const warning = session.exportedAt ? '' : '\n\nThis session has never been exported.';
     if (!confirm(`Delete "${session.name}" and all its rounds?${warning}`)) return;
     await store.deleteSession(session.id);
@@ -293,7 +322,19 @@ const handlers = {
 
 /* ---- wiring ---- */
 
-$('btn-start').onclick = () => (recorder.status().running ? end() : begin());
+$('btn-start').onclick = async () => {
+  if (busy) return;
+  busy = true;
+  $('btn-start').disabled = true;
+  try {
+    await (recorder.status().running ? end() : begin());
+  } catch (e) {
+    ui.notice(`Could not ${recorder.status().running ? 'stop' : 'start'}: ${e.message}`);
+  } finally {
+    busy = false;
+    $('btn-start').disabled = false;
+  }
+};
 $('btn-mark').onclick = () => recorder.mark();
 for (const b of document.querySelectorAll('#labels button')) {
   b.onclick = () => {
@@ -338,9 +379,16 @@ setInterval(() => {
 }, 1000);
 
 applyPrefs();
-await store.ready();
-await checkRecovery();
-await renderSessions();
+
+// A rejected top-level await kills the rest of the module: storage refused in private mode
+// would leave the page bound but with no service worker and no explanation on screen.
+try {
+  await store.ready();
+  await checkRecovery();
+  await renderSessions();
+} catch (e) {
+  ui.notice(`Storage unavailable: ${e && e.message || e}. Sessions cannot be saved.`);
+}
 
 if ('serviceWorker' in navigator) {
   // Recovery after a crash needs the page to load on a degraded network, which is exactly

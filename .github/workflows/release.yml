@@ -19,6 +19,8 @@ jobs:
   publish:
     name: publish to pages
     needs: verify
+    # A manual dispatch from any branch would otherwise deploy that branch to the live site.
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
       pages: write
@@ -28,6 +30,25 @@ jobs:
       url: ${{ steps.deploy.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      # The service worker keys its cache on the version. Shipping changed files under a
+      # version that is already released leaves every installed client on the old build
+      # with nothing to tell it otherwise, and no way to notice from the outside.
+      - name: refuse to ship changed files under a released version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          v=$(node -p "require('./package.json').version")
+          previous=$(git tag --list 'v*' --sort=-v:refname | head -1)
+          [ -z "$previous" ] && exit 0
+          changed=$(git diff --name-only "$previous"..HEAD -- \
+                    index.html app.css sw.js manifest.webmanifest js icon.svg icon-180.png icon-512.png)
+          if [ -n "$changed" ] && [ "v$v" = "$previous" ]; then
+            echo "these ship to users but the version is still $v (released as $previous):"
+            echo "$changed"
+            exit 1
+          fi
       - name: assemble the site
         # Only the application ships. Tests, workflows and dependencies stay out of it.
         run: |
@@ -44,6 +65,7 @@ jobs:
   tag:
     name: release the published version
     needs: publish
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
       contents: write

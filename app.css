@@ -106,8 +106,9 @@ main{flex:1;overflow-y:auto;overscroll-behavior:contain;-webkit-overflow-scrolli
 .log .mark{color:var(--rail)}
 .log .warn{color:var(--amber)}
 
-.notice{font-size:12px;color:var(--amber);min-height:16px}
-.notice:empty{min-height:0}
+.notice{font-size:12px;color:var(--amber);max-width:560px;width:100%;margin:0 auto;
+        padding:0 14px}
+.notice:empty{display:none}
 
 .setup{display:grid;gap:8px}
 .field{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
@@ -136,7 +137,7 @@ input:focus,select:focus{outline:2px solid var(--rail);outline-offset:1px}
    so they are reachable the instant something goes wrong. */
 .labels{flex:0 0 auto;display:flex;gap:8px;max-width:560px;width:100%;margin:0 auto;
         padding:8px 14px 0;background:var(--ground)}
-.labels button{flex:1;font-size:13px;font-weight:500;padding:11px 8px;color:var(--muted)}
+.labels button{flex:1;font-size:13px;font-weight:500;padding:12px 8px;color:var(--muted)}
 .labels button[data-label="fine"].on{background:var(--good);border-color:var(--good);color:#06231A}
 .labels button[data-label="slow"].on{background:var(--ok);border-color:var(--ok);color:#1E1B04}
 .labels button[data-label="broken"].on{background:var(--bad);border-color:var(--bad);color:#2A0A08}
@@ -160,10 +161,12 @@ button:disabled{opacity:.4;cursor:default}
 .recover p{margin:0;font-size:13px}
 .recover .row{display:grid;grid-template-columns:1fr 1fr;gap:8px}
 
-.sessions{display:grid;gap:8px}
+.sessions{display:grid;grid-template-columns:minmax(0,1fr);gap:8px}
 .session{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:11px 13px;display:grid;gap:7px}
-.session .top{display:flex;justify-content:space-between;gap:10px;align-items:baseline}
-.session .title{font-weight:600;font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.session{min-width:0}
+.session .top{display:flex;justify-content:space-between;gap:10px;align-items:baseline;min-width:0}
+.session .title{font-weight:600;font-size:14px;min-width:0;overflow:hidden;
+                text-overflow:ellipsis;white-space:nowrap}
 .session .when{font-size:11.5px;color:var(--muted);font-family:var(--num);flex:0 0 auto}
 .session .meta{font-size:12px;color:var(--muted);font-family:var(--num);
                display:flex;flex-wrap:wrap;gap:4px 12px}

@@ -89,7 +89,7 @@ s.test('an absent IPv4 path is settled once and flagged, not rediscovered', asyn
 });
 
 s.test('a repeated probe reports the median and keeps every sample', async () => {
-  const times = [10, 90, 20];
+  const times = [10, 50, 90];   // median 50, last 90: a wrapper returning either is told apart
   let i = 0;
   globalThis.fetch = async () => {
     const wait = times[i++ % times.length];
@@ -337,7 +337,7 @@ function recorder(store, opts = {}) {
 
 const session = () => ({id: 's1', name: 't', operator: 'KPN', connection: 'cellular',
                         intervalMs: 100, started: Date.now(),
-                        download: {downBudgetMs: 60, downMaxBytes: 25000, sessionDataCapMB: 250},
+                        download: {budgetMs: 60, maxBytes: 25000},
                         ipv4_available: null, ipv4_check: null});
 
 l.test('every scheduled round produces a row, healthy or not', async () => {
@@ -412,7 +412,8 @@ l.test('a failing store holds rows in memory and retries rather than dropping th
   globalThis.fetch = async () => ({ok: true, status: 200, type: 'opaque', headers: {get: () => null},
                                    body: bodyOf(25000), text: async () => TRACE});
   const store = fakeStore();
-  const {rec, notices} = recorder(store);
+  const produced = [];
+  const {rec, notices} = recorder(store, {onSample: s => produced.push(s)});
   await rec.start(session());
   await sleep(200);
   const held = store.written.samples.length;
@@ -421,36 +422,77 @@ l.test('a failing store holds rows in memory and retries rather than dropping th
   await rec.stop();
   assert.ok(notices.some(n => n.includes('Storage write failed')), 'the failure reaches the screen');
   assert.ok(store.written.samples.length > held, 'and the held rows land on retry');
+
+  // Counting rows is not enough: dropping the rejected batch and carrying on also makes the
+  // total grow. Every round the recorder produced has to be on disk, in an unbroken run.
+  const seqs = store.written.samples.map(x => x.seq).sort((a, b) => a - b);
+  assert.equal(new Set(seqs).size, seqs.length, 'no round is written twice');
+  assert.deepEqual(seqs, produced.map(x => x.seq).sort((a, b) => a - b),
+                   `every round survived the outage: wrote ${seqs.length} of ${produced.length}`);
 });
 
-l.test('the data cap, not the interval, decides what a session costs', async () => {
-  const {DOWNLOAD_DEFAULTS, downloadRoundsBeforeCap} = await import('../js/session.js');
+l.test('the interval decides what a session costs', async () => {
+  const {DOWNLOAD_DEFAULTS} = await import('../js/session.js');
   assert.equal(PROFILES.fine.intervalMs, 15000);
   assert.equal(PROFILES.coarse.intervalMs, 30000);
 
   const fine = projectedBytes(PROFILES.fine.intervalMs, DOWNLOAD_DEFAULTS);
   const coarse = projectedBytes(PROFILES.coarse.intervalMs, DOWNLOAD_DEFAULTS);
-  const capBytes = DOWNLOAD_DEFAULTS.sessionDataCapMB * 1e6;
 
-  // A time-boxed download reaches its byte ceiling every round on a fast link, so both
-  // profiles hit the cap and the totals converge. The interval decides how much of the
-  // journey has throughput data, not how many megabytes it costs.
-  assert.ok(Math.abs(fine - coarse) < capBytes * 0.05,
-            `both land near the cap: ${(fine / 1e6) | 0} MB and ${(coarse / 1e6) | 0} MB`);
-  assert.ok(fine <= capBytes * 1.05, 'and neither runs away past it');
+  // Nothing stops the session partway, so cost is rounds times the ceiling: halving the
+  // interval doubles the bill. That is the number the estimate has to show before Start.
+  assert.ok(Math.abs(fine - coarse * 2) < coarse * 0.02,
+            `twice the rounds costs twice as much: ${(fine / 1e6) | 0} vs ${(coarse / 1e6) | 0} MB`);
+  assert.ok(fine > 40 * DOWNLOAD_DEFAULTS.maxBytes,
+            'and a 40-minute run is priced in hundreds of megabytes, not tens');
 
-  const rounds = downloadRoundsBeforeCap(DOWNLOAD_DEFAULTS);
-  const fineMinutes = (rounds * PROFILES.fine.intervalMs) / 60000;
-  const coarseMinutes = (rounds * PROFILES.coarse.intervalMs) / 60000;
-  assert.ok(coarseMinutes > fineMinutes * 1.9,
-            `the coarse profile keeps measuring speed twice as long: ${fineMinutes} vs ${coarseMinutes} min`);
-  assert.ok(fineMinutes < 40, 'and on the fine profile the cap arrives before a commute ends');
+  const ten = projectedBytes(PROFILES.fine.intervalMs, DOWNLOAD_DEFAULTS, 10);
+  assert.ok(Math.abs(ten * 4 - fine) < fine * 0.02, 'the estimate is linear in duration too');
 });
 
 
+l.test('stopping waits for the write already running, so the last rounds are on disk', async () => {
+  globalThis.fetch = async () => ({ok: true, status: 200, type: 'opaque', headers: {get: () => null},
+                                   body: bodyOf(25000), text: async () => TRACE});
+  const store = fakeStore();
+  // Every write takes longer than a round, so stop always arrives while one is in flight.
+  store.holdWrites(150);
+  const produced = [];
+  const {rec} = recorder(store, {onSample: s => produced.push(s)});
+  await rec.start(session());
+  await sleep(400);
+  await rec.stop();
+
+  assert.equal(rec.status().pending, 0, 'stop left nothing in memory');
+  assert.equal(store.written.samples.length, produced.length,
+               `every round is on disk when stop resolves: ${store.written.samples.length} of ${produced.length}`);
+});
+
+l.test('a resumed session keeps counting from what it has already spent', async () => {
+  const {spentSoFar} = await import('../js/session.js');
+  const row = seq => ({seq, probes: {ip6: {ok: true, ms: 20, ms_samples: [20, 21, 22]},
+                                     down: {ok: true, bytes: 5000000}}});
+  const one = spentSoFar([row(0)]);
+  const three = spentSoFar([row(0), row(1), row(2)]);
+  assert.equal(one.downloadBytes, 5000000, 'the download is counted exactly, not estimated');
+  assert.equal(three.downloadBytes, 15000000);
+  assert.ok(three.bytes > one.bytes, 'and the small probes accumulate too');
+  // The first request to a host pays for a handshake and later ones do not, so three rounds
+  // cost less than three times one.
+  assert.ok(three.bytes < one.bytes * 3, `handshakes are charged once: ${one.bytes} then ${three.bytes}`);
+
+  const store = fakeStore();
+  const {rec} = recorder(store);
+  await rec.start(session(), {resumeSeq: 12, monoBase: 1000, spent: {bytes: 900, downloadBytes: 7e6}});
+  const st = rec.status();
+  await rec.stop();
+  assert.ok(st.bytes >= 900, `the estimate resumes rather than restarting: ${st.bytes}`);
+  assert.ok(st.downloadMB >= 7, `and so does the figure on screen: ${st.downloadMB} MB`);
+});
+
 l.test('the environment block makes a session self-describing', () => {
   const env = environment(10000);
-  assert.ok(env.download.downBudgetMs > 0 && env.download.downMaxBytes > 0,
+  assert.ok(env.download.budgetMs > 0 && env.download.maxBytes > 0,
             'the download settings travel with the session');
   assert.equal(env.probes.length, probe.PROBES.length);
   assert.ok(Object.values(env.timeouts_ms).every(t => t < 10000), 'every deadline fits inside a round');
@@ -473,7 +515,7 @@ c.test('an expected failure colours nothing and counts as nothing', () => {
   assert.equal(ui.counts(BAD({expected: true})), false);
   assert.equal(ui.counts(undefined), false, 'a probe with no record is not a failure');
   assert.equal(ui.counts({}), false);
-  assert.equal(ui.counts(BAD({fail: 'data_cap'})), false, 'nor the cap stopping the download');
+  assert.equal(ui.counts(BAD({fail: 'resting'})), false, 'nor a probe the recorder is resting');
   assert.equal(ui.counts(BAD({fail: 'resting'})), false, 'nor a probe resting to recover');
   assert.equal(ui.counts(BAD()), true);
   assert.equal(ui.classify({probes: healthy()}), 'green', 'a missing IPv4 path is not degraded');
@@ -556,7 +598,7 @@ e.test('the rollup describes the session without judging it', () => {
     probes: {ip6: probe(true, 10 * (i + 1)), ip4: probe(false, 5, {expected: true}),
              dns: probe(true, 100), dns_ctl: probe(true, 20), web: probe(true, 30),
              udp: probe(true, 15),
-             down: probe(true, 400, {bps_transfer: 1e6 * (i + 1), bytes: 250000})},
+             down: probe(true, 400, {bps_steady: 1e6 * (i + 1), insufficient_sample: false, bytes: 250000})},
     ...over
   });
   const samples = [...Array(10)].map((_, i) => row(i));
@@ -573,11 +615,22 @@ e.test('the rollup describes the session without judging it', () => {
   assert.equal(sum.probes.ip4.expected, 11, 'a known-absent path is counted apart from failures');
   assert.deepEqual(sum.probes.ip4.fails, {}, 'and never as a failure');
   assert.equal(sum.probes.web.fails.timeout, 1);
+
+  // A probe the recorder stopped on purpose is not a failure, and must not be counted as one
+  // — a wedged probe rests for six rounds at a time.
+  const rested = samples.map((x, i) => i < 3 && x.probes.down
+    ? {...x, probes: {...x.probes, down: {ok: false, fail: 'resting'}}} : x);
+  const s2 = summarise(rested);
+  assert.deepEqual(s2.probes.down.fails, {}, 'resting is not failing');
+  assert.equal(s2.probes.down.stopped.resting, 3, 'it is counted, apart');
+  assert.equal(s2.degraded, sum.degraded, 'and it does not move the degraded count');
   // Eleven rounds ran: ten at 10..100 ms and the twelfth row at 120, the skipped one apart.
   assert.equal(sum.probes.ip6.ms_p50, 60);
   assert.equal(sum.probes.ip6.ms_max, 120);
-  assert.ok(sum.probes.down.bps_transfer_p10 < sum.probes.down.bps_transfer_p50,
+  assert.ok(sum.probes.down.bps_steady_p10 < sum.probes.down.bps_steady_p50,
             'the rate has a low end reported separately');
+  assert.equal(sum.probes.down.bps_steady_p50 != null, true,
+               'summarising the rate the grades were taken on, not one that no longer exists');
   assert.equal(sum.probes.down.bytes_total, 250000 * 11);
   assert.equal(sum.fixes_gps, 11);
 
@@ -593,6 +646,22 @@ e.test('the rollup describes the session without judging it', () => {
   // What it felt like, lifted out so checking a threshold against it is a join, not a filter.
   assert.deepEqual(out.labels, [{t: 5, mono: 5, label: 'slow', lat: 1, lon: 2}]);
   assert.equal(out.events.length, 2, 'and still present among the events');
+});
+
+e.test('the screen and the file agree on what a failure is', async () => {
+  const ui = await import('../js/ui.js');
+  const {countsAsFailure} = await import('../js/export.js');
+  const cases = [
+    undefined, {}, {ok: true}, {ok: false, fail: 'timeout'}, {ok: false, fail: 'network'},
+    {ok: false, fail: 'resting'}, {ok: false, expected: true, fail: 'network'},
+    {ok: false, fail: 'budget'}
+  ];
+  for (const c of cases) {
+    assert.equal(ui.counts(c), countsAsFailure(c),
+                 `the percentage on screen and the count in the file must agree on ${JSON.stringify(c)}`);
+  }
+  assert.equal(countsAsFailure({ok: false, fail: 'resting'}), false);
+  assert.equal(countsAsFailure({ok: false, fail: 'timeout'}), true);
 });
 
 await e.run();

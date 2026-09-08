@@ -8,6 +8,7 @@ const probe = await import('../js/probe.js');
 const {createRecorder} = await import('../js/session.js');
 
 const P = Object.fromEntries(probe.PROBES.map(p => [p.id, p]));
+const PROBE_IDS = probe.PROBES.map(p => p.id);
 const r = suite('regressions');
 
 const okResponse = () => ({ok: true, status: 200, type: 'opaque', headers: {get: () => null},
@@ -100,6 +101,25 @@ r.test('a probe failing alone is rested rather than believed', async () => {
   assert.ok(rows.every(x => x.probes.ip6.ok), 'the probes that work are untouched');
   assert.ok(notices.some(n => /resting/.test(n)), 'and the screen says why');
 
+  // The rule is "failing alone". When everything fails the network is down, and resting
+  // every probe at once blanked the readout at the worst possible moment.
+  const outage = fakeStore();
+  const rec2 = createRecorder({store: outage});
+  globalThis.fetch = async () => { throw netError(); };
+  await rec2.start(session());
+  await sleep(900);
+  await rec2.stop();
+  const dead = outage.written.samples.filter(x => !x.skipped);
+  assert.ok(dead.length >= 6, 'enough rounds for a rest to have been triggered');
+  assert.ok(dead.every(x => PROBE_IDS.every(id => !x.probes[id]?.stuck)),
+            'a total outage marks nothing stuck');
+  assert.ok(dead.every(x => PROBE_IDS.every(id => x.probes[id]?.fail !== 'resting')),
+            'and rests nothing, so the failure stays visible');
+  globalThis.fetch = async url => {
+    if (String(url).includes('gstatic') && webWedged) throw netError();
+    return okResponse();
+  };
+
   // Once it works again it is trusted again, without restarting the session.
   webWedged = false;
   await sleep(900);
@@ -151,6 +171,22 @@ r.test('speed is derived from consecutive fixes when the platform will not suppl
   assert.equal(s.speed_source, 'derived', 'and the row says where the number came from');
   assert.ok(Math.abs(s.speed_derived - 50) < 5, `~50 m/s over 1 km in 20 s, got ${s.speed_derived}`);
 
+  // A pair of tower-class fixes must produce nothing: two 1414 m estimates hundreds of
+  // metres apart in opposite directions read as 682 km/h on a train.
+  const store2 = fakeStore();
+  const rec2 = createRecorder({store: store2});
+  await rec2.start(session());
+  const t2 = Date.now();
+  watcher({coords: {latitude: 51.9244, longitude: 4.4777, accuracy: 1414, speed: null, heading: null}, timestamp: t2});
+  await sleep(250);
+  watcher({coords: {latitude: 51.9334, longitude: 4.4777, accuracy: 1414, speed: null, heading: null}, timestamp: t2 + 20000});
+  await sleep(250);
+  await rec2.stop();
+  assert.ok(store2.written.samples.every(x => x.speed_derived == null),
+            'a speed is never derived from tower-class fixes');
+  assert.ok(store2.written.samples.some(x => x.accuracy_class === 'coarse'),
+            'and the row says the fix was coarse rather than leaving it unexplained');
+
   stubBrowser();
   Object.defineProperty(globalThis, 'navigator', {value: {userAgent: 'node-test', language: 'en', geolocation: null}, configurable: true});
 });
@@ -163,12 +199,21 @@ r.test('rounds inside a bridged gap are flagged on the row', async () => {
   const rec = createRecorder({store});
   await rec.start(session());
   await sleep(200);
-  const until = Date.now() + 300;
+  const until = Date.now() + 250;
   while (Date.now() < until) { /* frozen */ }
   await sleep(300);
   await rec.stop();
 
   assert.ok(store.written.events.some(e => e.type === 'pause'), 'the gap is still an event');
+  // The threshold is one missed slot, not two: a 13.7 s delay at a 10 s interval went
+  // unlogged under the old rule. Tying the count to late_ms pins the number rather than
+  // relying on the freeze happening to be long enough.
+  const missed = store.written.samples.filter(x => x.late_ms >= 100);
+  const pauses = store.written.events.filter(e => e.type === 'pause');
+  assert.ok(missed.length > 0, 'the freeze produced a late round to judge');
+  assert.equal(pauses.length, missed.length,
+               `one pause per missed slot: ${pauses.length} events, ${missed.length} rounds ` +
+               `late by ${missed.map(x => x.late_ms)} ms`);
   assert.ok(store.written.samples.some(x => x.in_pause === true),
             'and the round that follows it is filterable without matching timestamps');
   assert.ok(store.written.samples.some(x => x.in_pause === false), 'ordinary rounds are not flagged');
@@ -254,6 +299,26 @@ r.test('a percentile is the nearest rank, not the largest value that fits', asyn
   // readings with one spike must not report as the spike.
   const st = ui.stability([10, 10, 10, 10, 10, 10, 10, 10, 10, 900]);
   assert.equal(st.ratio, 1, `one outlier in ten does not become the ninetieth percentile: ×${st.ratio}`);
+});
+
+// The operator is typed in; the egress address is not. A hotspot picked up mid-journey
+// leaves the label saying one thing and the measurements describing another.
+r.test('a change of egress address under an unchanged label is written down', async () => {
+  stubStun();
+  let ip = '2a02:a473::9';
+  globalThis.fetch = async () => ({ok: true, status: 200, type: 'opaque',
+                                   headers: {get: () => null}, body: bodyOf(1000),
+                                   text: async () => `fl=1\nip=${ip}\nts=1\ncolo=AMS\nvisit_scheme=https\n`});
+  const store = fakeStore();
+  const rec = createRecorder({store});
+  await rec.start(session());
+  await sleep(300);
+  ip = '2a02:a473::77';
+  await sleep(300);
+  await rec.stop();
+
+  const notes = store.written.events.filter(e => /egress address changed/.test(e.text || ''));
+  assert.equal(notes.length, 1, `said once, not every round afterwards: ${notes.length}`);
 });
 
 const ok = await r.run();

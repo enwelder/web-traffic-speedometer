@@ -41,10 +41,18 @@ export function anonymise(doc) {
     return out;
   });
 
-  const events = (doc.events || []).map(e => ({...e, t: t(e.t), lat: null, lon: null}));
+  // A typed note or mark can name a street. Machine-written text is kept because the
+  // scheduler and wake-lock tests read it; anything else is dropped.
+  const machine = x => x != null && MACHINE_TEXT.some(re => re.test(x));
+  const events = (doc.events || []).map(e => ({
+    ...e, t: t(e.t), lat: null, lon: null,
+    text: machine(e.text) ? e.text : (e.text == null ? e.text : REDACT)
+  }));
 
-  const session = {...doc.session, started: t(doc.session.started), stopped: t(doc.session.stopped)};
+  const session = {...doc.session, started: t(doc.session.started), stopped: t(doc.session.stopped),
+                   exportedAt: t(doc.session.exportedAt)};
   session.name = 'anonymised session';
+  session.note = '';
   if (session.environment) {
     session.environment = {
       ...session.environment,
@@ -73,21 +81,143 @@ const PUBLIC_ENDPOINTS = [
   'speed.cloudflare.com', 'www.gstatic.com', 'wts-dns-control.github.io'
 ];
 
+// Every key a fixture may contain, by level. An allowlist rather than a list of things to
+// look for: a scan for known-bad shapes passes anything the schema grows next, and the
+// consequence of missing one here is a home address in a public repository. Adding a field
+// to the recorder means adding it here, deliberately, with a rule for its value.
+const KEYS = {
+  root: ['format', 'version', 'source_app_version', 'note', 'session', 'samples', 'events'],
+  session: ['id', 'name', 'operator', 'connection', 'note', 'started', 'stopped', 'intervalMs',
+            'downloadBytes', 'download', 'profile', 'ipv4_available', 'ipv4_check',
+            'environment', 'exportedAt'],
+  environment: ['app_version', 'user_agent', 'language', 'timezone', 'screen', 'interval_ms',
+                'download_bytes', 'download', 'timeouts_ms', 'probes', 'network_information'],
+  sample: ['sessionId', 'seq', 't', 'mono', 'late_ms', 'skipped', 'round_error', 'visible',
+           'in_pause', 'wake_lock', 'prev_round_ms', 'intervalMs', 'lat', 'lon', 'accuracy',
+           'accuracy_class', 'speed', 'speed_derived', 'speed_source', 'heading', 'pos_t',
+           'pos_error', 'probes', 'grades', 'first_packet_ms'],
+  probe: ['ok', 'ms', 'status', 'fail', 'egress_ip', 'colo', 'ms_samples', 'samples_ok',
+          'ms_min', 'ms_max', 'expected', 'stuck', 'host', 'bytes', 'truncated', 'server',
+          'ttfb_ms', 'transfer_ms', 'handshake', 'reused', 'protocol', 'lookup_ms',
+          'connect_ms', 'tls_ms', 'retry_suspected', 'parse_reason', 'bps_transfer',
+          'bps_end_to_end', 'bps_steady', 'bps_peak', 'warmup_ms', 'warmup_bytes',
+          'insufficient_sample', 'duration_ms', 'aborted_reason', 'public_ips', 'candidates'],
+  event: ['sessionId', 'id', 't', 'mono', 'type', 'lat', 'lon', 'text']
+};
+
+// Free text is the other half of the risk: a note saying where someone got off is as
+// identifying as a coordinate. Only machine-written text is allowed through, by shape.
+const MACHINE_TEXT = [
+  /^<redacted>$/,
+  /^mark \d+$/,
+  /^(fine|slow|broken)$/,
+  /^\d+(\.\d+)?s bridged( across reload)?$/,
+  /^IPv4 absent \([a-z_]+( in \d+ ms)?\)$/,
+  /^screen wake lock (released|refused \([A-Za-z]+\))$/,
+  /^screen stays awake again$/,
+  /^location (degraded|improved) to \d+ m$/,
+  /^[a-z_0-9]+ has failed \d+ rounds while the others answer; resting it for \d+ rounds to clear the connection\.$/,
+  /^egress address changed$/
+];
+
+const fail = why => { throw new Error(why); };
+
+function checkKeys(obj, level, where) {
+  for (const k of Object.keys(obj)) {
+    if (!KEYS[level].includes(k)) {
+      fail(`${where}: unknown ${level} field "${k}" — decide what it may contain and list it in KEYS`);
+    }
+  }
+}
+
+// Anything that could carry a subscriber's identity through a string. Applied after the
+// endpoints the tool is built to contact have been taken out of the text.
+function checkString(v, where) {
+  if (/iPhone|Android|Mozilla|Safari|Chrome/.test(v)) fail(`${where}: a user agent survived: ${v}`);
+  if (/\b\d{1,3}(\.\d{1,3}){3}\b/.test(v)) fail(`${where}: an IPv4 address survived: ${v}`);
+  // Compressed IPv6 too: "2a02:a473::9" has only three groups and slipped past a rule
+  // that wanted four.
+  if (/(?:[0-9a-f]{1,4}:){2,}[0-9a-f]{0,4}/i.test(v) || /[0-9a-f]{1,4}::/i.test(v)) {
+    fail(`${where}: an IPv6 address survived: ${v}`);
+  }
+}
+
+function checkTime(v, where) {
+  if (typeof v !== 'number') return;
+  // Wall-clock milliseconds. Anything of this magnitude has to have been shifted, or the
+  // fixture says when the journey happened.
+  if (v > 1e12 && Math.abs(v - EPOCH) > 86400000) fail(`${where}: an unshifted timestamp: ${v}`);
+}
+
 // Fails loudly rather than committing something that only looks anonymised.
 export function assertClean(fixture) {
-  let text = JSON.stringify(fixture);
-  for (const e of PUBLIC_ENDPOINTS) text = text.split(e).join('<endpoint>');
-  const checks = [
-    [/"lat":\s*-?\d/, 'a latitude survived'],
-    [/"lon":\s*-?\d/, 'a longitude survived'],
-    [/\b\d{1,3}(\.\d{1,3}){3}\b/, 'an IPv4 address survived'],
-    [/\b[0-9a-f]{1,4}(:[0-9a-f]{0,4}){4,}\b/i, 'an IPv6 address survived'],
-    [/iPhone|Android|Mozilla/, 'a user agent survived']
-  ];
-  for (const [re, why] of checks) {
-    const m = re.exec(text);
-    if (m) throw new Error(`${why}: ${m[0]}`);
+  const strip = v => {
+    let t = String(v);
+    for (const e of PUBLIC_ENDPOINTS) t = t.split(e).join('<endpoint>');
+    return t;
+  };
+  // Values are checked where they are, so the message names the field rather than an offset
+  // into one long line of JSON.
+  const scan = (v, where, textAllowed = false) => {
+    if (v == null) return;
+    if (typeof v === 'string') {
+      if (!textAllowed) checkString(strip(v), where);
+      return;
+    }
+    if (typeof v === 'number') return checkTime(v, where);
+    if (Array.isArray(v)) return v.forEach((x, i) => scan(x, `${where}[${i}]`, textAllowed));
+    if (typeof v === 'object') {
+      for (const [k, x] of Object.entries(v)) scan(x, `${where}.${k}`, textAllowed);
+    }
+  };
+
+  checkKeys(fixture, 'root', 'fixture');
+  scan(fixture.format, 'format');
+  scan(fixture.version, 'version');
+  scan(fixture.source_app_version, 'source_app_version');
+
+  const session = fixture.session || fail('fixture: no session');
+  checkKeys(session, 'session', 'session');
+  if (session.name !== 'anonymised session') fail(`session.name was not replaced: ${session.name}`);
+  if (session.note) fail(`session.note carries free text: ${session.note}`);
+  for (const k of ['started', 'stopped', 'exportedAt']) checkTime(session[k], `session.${k}`);
+  scan({...session, environment: undefined, note: undefined}, 'session');
+
+  if (session.environment) {
+    checkKeys(session.environment, 'environment', 'session.environment');
+    for (const k of ['user_agent', 'timezone', 'screen']) {
+      if (session.environment[k] !== REDACT) fail(`session.environment.${k} was not redacted`);
+    }
+    scan({...session.environment, user_agent: undefined, timezone: undefined, screen: undefined},
+         'session.environment');
   }
+
+  fixture.samples.forEach((s, i) => {
+    const at = `samples[${i}]`;
+    checkKeys(s, 'sample', at);
+    if (s.lat != null || s.lon != null) fail(`${at}: a coordinate survived`);
+    if ('heading' in s) fail(`${at}: heading survived`);
+    for (const k of ['t', 'pos_t']) checkTime(s[k], `${at}.${k}`);
+    for (const [id, r] of Object.entries(s.probes || {})) {
+      if (!r) continue;
+      checkKeys(r, 'probe', `${at}.probes.${id}`);
+      if (r.egress_ip && r.egress_ip !== REDACT) fail(`${at}.probes.${id}.egress_ip survived`);
+      if (r.public_ips?.some(x => x !== REDACT)) fail(`${at}.probes.${id}.public_ips survived`);
+    }
+    scan({...s, lat: undefined, lon: undefined}, at);
+  });
+
+  (fixture.events || []).forEach((e, i) => {
+    const at = `events[${i}]`;
+    checkKeys(e, 'event', at);
+    if (e.lat != null || e.lon != null) fail(`${at}: a coordinate survived`);
+    checkTime(e.t, `${at}.t`);
+    if (e.text != null && !MACHINE_TEXT.some(re => re.test(e.text))) {
+      fail(`${at}: text is not machine-written and may say where someone was: ${JSON.stringify(e.text)}`);
+    }
+    scan({...e, text: undefined, lat: undefined, lon: undefined}, at);
+  });
+
   return true;
 }
 

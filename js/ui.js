@@ -2,6 +2,7 @@
 
 import {PROBES} from './probe.js';
 import {CAPABILITIES, GRADES, gradeRound, worse, stability, capabilityValue} from './grade.js';
+import {countsAsFailure} from './export.js';
 
 const STRIP_BARS = 48;
 const STABILITY_ROUNDS = 10;
@@ -31,10 +32,9 @@ export function rate(bps) {
 
 export function notice(text) { $('notice').textContent = text || ''; }
 
-// A failure counts only if the probe ran and was not expected to fail: an absent record is
-// not a failure, and neither is an IPv4 literal on a network with no IPv4 path.
-export const counts = r => !!r && r.ok === false && !r.expected &&
-                           r.fail !== 'resting' && r.fail !== 'data_cap';
+// One definition of failure, shared with the export, so the percentage on screen and the
+// count in the file cannot drift apart.
+export {countsAsFailure as counts} from './export.js';
 
 // The round's colour on the strip is the worst capability in it.
 export function classify(sample) {
@@ -114,8 +114,7 @@ export function renderSubtitles() {
       if (p.dns?.retry_suspected) parts.push('resolver retried');
     }
     if (cap === 'video' && p?.down) {
-      if (p.down.fail === 'data_cap') parts.push('stopped at data cap');
-      else if (p.down.insufficient_sample) parts.push('sample too short to rate');
+      if (p.down.insufficient_sample) parts.push('sample too short to rate');
       else if (p.down.bps_peak) parts.push(`peak ${rate(p.down.bps_peak)}`);
     }
     if (shown?.[cap]) parts.push(shown[cap]);
@@ -189,13 +188,17 @@ export function sampleLine(sample) {
   const time = clock(sample.t);
   if (sample.skipped) return `${time}  skipped: ${sample.skipped} (${sample.late_ms} ms late)`;
   if (sample.round_error) return `${time}  round error: ${sample.round_error}`;
-  const failed = PROBES.filter(p => counts(sample.probes[p.id]));
+  const failed = PROBES.filter(p => countsAsFailure(sample.probes[p.id]));
   if (failed.length) return `${time}  ` + failed.map(p => `${p.id} ${sample.probes[p.id].fail}`).join('  ');
+  const num = v => (v == null ? '–' : v);
   const d = sample.probes.down;
-  const dns = sample.probes.dns.ms;
+  const dns = num(sample.probes.dns?.ms);
   const ctl = sample.probes.dns_ctl?.ms;
-  return `${time}  v6 ${sample.probes.ip6.ms}  dns ${dns}${ctl != null ? '/' + ctl : ''}` +
-         (d ? `  ${d.bps_transfer ? rate(d.bps_transfer) : 'fast'}` : '');
+  const speed = !d ? ''
+    : d.ok && d.bps_steady ? `  ${rate(d.bps_steady)}`
+    : d.ok ? '  unrated'
+    : `  ${d.fail}`;
+  return `${time}  v6 ${num(sample.probes.ip6?.ms)}  dns ${dns}${ctl != null ? '/' + ctl : ''}${speed}`;
 }
 
 export function setStats({rounds, elapsed, pos, speed, data, marks, degraded, firstPacket}) {

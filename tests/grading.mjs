@@ -69,8 +69,8 @@ s.test('a lookup that came back on a retry timer grades as loss', () => {
 s.test('an unmeasurable rate is never graded', () => {
   const short = round({down: {ok: true, ms: 300, bps_steady: null, insufficient_sample: true}});
   assert.equal(g.gradeRound(short).video, null, 'no grade rather than a grade of the ramp');
-  const capped = round({down: {ok: false, fail: 'data_cap'}});
-  assert.equal(g.gradeRound(capped).video, null, 'stopping at the cap is not a failure');
+  const rested = round({down: {ok: false, fail: 'resting'}});
+  assert.equal(g.gradeRound(rested).video, null, 'a rested probe grades nothing rather than red');
   assert.equal(g.gradeRound(round({down: bad()})).video, 'red', 'a real failure still is');
 });
 

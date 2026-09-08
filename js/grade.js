@@ -21,7 +21,10 @@ export const CAPABILITIES = Object.keys(THRESHOLDS);
 
 export function gradeValue(capability, value) {
   const t = THRESHOLDS[capability];
-  if (value == null) return null;
+  // Nothing is not a grade, and neither is nonsense. A negative latency graded green and a
+  // NaN graded red: both are arithmetic that went wrong upstream, and inventing a colour for
+  // them puts a number on screen that no measurement produced.
+  if (value == null || !Number.isFinite(value) || value < 0) return null;
   if (t.dir === 'low') {
     for (let i = 0; i < t.edges.length; i++) if (value < t.edges[i]) return GRADES[i];
     return 'red';
@@ -32,7 +35,10 @@ export function gradeValue(capability, value) {
 
 export const worse = (a, b) => (a == null ? b : b == null ? a : (RANK[a] >= RANK[b] ? a : b));
 
-const failed = r => !!r && r.ok === false && !r.expected && r.fail !== 'data_cap';
+// A probe resting to clear its own wedged connection has not told us anything about the
+// network. Grading the capability it feeds as red for the whole cool-down said the opposite
+// of what the rest exists to establish.
+const failed = r => !!r && r.ok === false && !r.expected && r.fail !== 'resting';
 
 // What each capability reads, and what makes it red regardless of the number.
 export function gradeRound(sample) {
@@ -83,12 +89,15 @@ export function createDisplay({windowRounds = 3, confirmations = 2} = {}) {
       if (history.length > windowRounds) history.shift();
       for (const cap of CAPABILITIES) {
         const candidate = windowGrade(history, cap);
-        if (candidate == null || candidate === shown[cap]) { pending[cap] = null; continue; }
+        if (candidate === shown[cap]) { pending[cap] = null; continue; }
         pending[cap] = pending[cap]?.grade === candidate
           ? {grade: candidate, seen: pending[cap].seen + 1}
           : {grade: candidate, seen: 1};
-        // The first reading a session ever gets has nothing to confirm against.
-        if (shown[cap] == null || pending[cap].seen >= confirmations) {
+        // Losing the input is a change like any other and waits for the same confirmation:
+        // a probe resting for six rounds must not blank the tile that went red because of
+        // the very failure that put it to rest.
+        // The first reading, or the first after a blank, has nothing to confirm against.
+        if ((shown[cap] == null && candidate != null) || pending[cap].seen >= confirmations) {
           shown[cap] = candidate;
           pending[cap] = null;
         }
@@ -119,7 +128,7 @@ export function stability(values) {
   if (v.length < 4) return null;
   const at = q => quantile(v, q);
   const p50 = at(0.5);
-  if (!p50) return null;
+  if (p50 == null || p50 <= 0) return null;   // a ratio against zero is not a number
   return {ratio: Math.round((at(0.9) / p50) * 10) / 10, iqr: at(0.75) - at(0.25), n: v.length};
 }
 

@@ -55,11 +55,48 @@ r.test('anonymising is repeatable and loses only what it claims to', () => {
   assert.notEqual(a.samples[0].probes.ip6.egress_ip, '2a02:a473::9');
   assert.match(a.samples[0].probes.dns.host, /^x+\.github\.io$/, 'the hostname keeps its shape only');
   assert.equal(a.session.environment.user_agent, '<redacted>');
+  assert.equal(a.events[0].text, '<redacted>', 'a typed mark can name a street; the time of it cannot');
   assert.equal(a.session.environment.app_version, '9.9.9', 'the version is needed to read the file');
   // Intervals preserved, absolute time not.
   assert.notEqual(a.samples[0].t, original.samples[0].t);
   assert.equal(a.samples[0].t - a.session.started, original.samples[0].t - original.session.started);
   assert.deepEqual(anonymise(original), a, 'the same input gives the same fixture');
+});
+
+// A scan for known-bad shapes blesses whatever the schema grows next, and the cost of a miss
+// is a home address in a public repository. These are the shapes that got through one.
+r.test('the anonymiser refuses anything it has not been taught to clean', () => {
+  const base = anonymise({
+    session: {started: 1700000000000, stopped: 1700000100000, name: 'Morning KPN', note: '',
+              environment: {app_version: '9.9.9', user_agent: 'Mozilla/5.0 (iPhone)',
+                            timezone: 'Europe/Amsterdam', screen: '393x852@3'}},
+    samples: [{seq: 0, t: 1700000000000, pos_t: 1700000000000, lat: 51.9244, lon: 4.4777,
+               accuracy: 12, heading: 71, probes: {ip6: {ok: true, ms: 33}}}],
+    events: []
+  });
+  const clone = () => JSON.parse(JSON.stringify(base));
+  const cases = {
+    'a compressed IPv6 address': d => { d.samples[0].probes.ip6.egress_ip = '2a02:a473::9'; },
+    'coordinates under a new name': d => { d.samples[0].latitude = 51.9244; },
+    'a coordinate as a string': d => { d.samples[0].lat = '51.9244'; },
+    'coordinates inside an array': d => { d.samples[0].pos = [51.9244, 4.4777]; },
+    'a bearing': d => { d.samples[0].heading = 71; },
+    'a typed note': d => { d.events.push({t: d.session.started, type: 'note', lat: null, lon: null,
+                                          text: 'left home at Stationsplein 1'}); },
+    'a journey in the session name': d => { d.session.name = 'Rotterdam-Utrecht 08:14'; },
+    'a session note': d => { d.session.note = 'got off at Gouda'; },
+    'a time zone': d => { d.session.environment.timezone = 'Europe/Amsterdam'; },
+    'an unshifted timestamp': d => { d.session.exportedAt = 1757000000000; },
+    'a user agent without the obvious words': d => {
+      d.session.environment.user_agent = 'Version/17.0 Safari/605.1';
+    }
+  };
+  for (const [what, mutate] of Object.entries(cases)) {
+    const doc = clone();
+    mutate(doc);
+    assert.throws(() => assertClean(doc), undefined, `${what} was accepted`);
+  }
+  assert.doesNotThrow(() => assertClean(base), 'and a clean fixture still passes');
 });
 
 r.test('grading runs over every recording without inventing or crashing', () => {
@@ -82,6 +119,88 @@ r.test('grading runs over every recording without inventing or crashing', () => 
     }
     assert.ok(graded > 20, `${name}: ${graded} rounds graded`);
   }
+});
+
+r.test('nothing derived from a real journey is a number that cannot exist', () => {
+  // The recordings are the only input this code has that nobody chose. Every figure taken
+  // from them is swept for the arithmetic that produces a colour out of nothing: NaN from a
+  // division by zero, Infinity from a zero-length window, a negative duration from a clock
+  // that moved.
+  const finite = (v, where) => {
+    if (v == null || typeof v !== 'number') return;
+    assert.ok(Number.isFinite(v), `${where} is ${v}`);
+  };
+  const nonNegative = (v, where) => {
+    finite(v, where);
+    if (typeof v === 'number') assert.ok(v >= 0, `${where} is negative: ${v}`);
+  };
+
+  for (const [name, j] of Object.entries(journeys)) {
+    for (const s of j.samples) {
+      const at = `${name} seq ${s.seq}`;
+      for (const k of ['late_ms', 'mono', 'accuracy', 'prev_round_ms', 'first_packet_ms']) {
+        nonNegative(s[k], `${at}.${k}`);
+      }
+      nonNegative(s.speed_derived, `${at}.speed_derived`);
+      for (const [id, probe] of Object.entries(s.probes || {})) {
+        if (!probe) continue;
+        for (const k of ['ms', 'ms_min', 'ms_max', 'bytes', 'duration_ms', 'ttfb_ms',
+                         'bps_steady', 'bps_peak', 'warmup_ms', 'warmup_bytes']) {
+          nonNegative(probe[k], `${at}.${id}.${k}`);
+        }
+        if (probe.ms_samples) {
+          assert.ok(probe.ms_samples.every(Number.isFinite), `${at}.${id}.ms_samples`);
+          assert.ok(probe.samples_ok <= probe.ms_samples.length,
+                    `${at}.${id}: more successes than attempts`);
+        }
+        if (probe.ok === false) assert.ok(probe.fail, `${at}.${id}: a failure with no reason`);
+      }
+    }
+
+    const sum = summarise(j.samples);
+    const walk = (v, where) => {
+      if (typeof v === 'number') return finite(v, where);
+      if (v && typeof v === 'object') for (const [k, x] of Object.entries(v)) walk(x, `${where}.${k}`);
+    };
+    walk(sum, `${name}.summary`);
+    assert.equal(sum.ran + sum.skipped, j.samples.length,
+                 `${name}: every round is either a measurement or a skip, never neither`);
+    assert.ok(sum.degraded <= sum.ran, `${name}: more degraded rounds than rounds`);
+  }
+});
+
+r.test('every impossible speed in the recordings comes from a fix the rules now reject', () => {
+  // 189 m/s is 681 km/h, recorded on a train that does 140. Both rules exist because of
+  // rows like these, and each one has to be able to account for every such row: a coarse
+  // fix, which cannot produce a speed at all now, or a rate no train reaches.
+  const MAX_PLAUSIBLE_MS = 111;   // 400 km/h, above a Thalys at full speed
+  const FINE_ACCURACY_M = 100;
+  let impossible = 0;
+  for (const [name, j] of Object.entries(journeys)) {
+    for (const s of j.samples) {
+      if (s.speed_derived == null || s.speed_derived <= MAX_PLAUSIBLE_MS) continue;
+      impossible++;
+      assert.ok(s.accuracy > FINE_ACCURACY_M,
+                `${name} seq ${s.seq}: ${s.speed_derived} m/s from a fix accurate to ` +
+                `${s.accuracy} m — neither rule would have caught this`);
+    }
+  }
+  assert.ok(impossible >= 3,
+            `the recordings still carry the rows the rules were written for: ${impossible}`);
+});
+
+r.test('the recordings cannot yet speak for the throughput probe', () => {
+  // Every committed journey predates the time-boxed download, so its rows carry the old
+  // whole-transfer figures and no `bps_steady`. The video capability is therefore graded
+  // only against synthetic streams in tests/edges.mjs. This asserts the gap rather than
+  // leaving it implied: recording one journey on 3.3.0 or later will fail this test, which
+  // is the point at which it should be replaced by a real assertion about the rate.
+  const rated = Object.values(journeys)
+    .flatMap(j => j.samples)
+    .filter(s => s.probes?.down?.bps_steady != null);
+  assert.equal(rated.length, 0,
+               `a journey now carries a steady rate (${rated.length} rounds): grade it here ` +
+               `instead of trusting the synthetic streams`);
 });
 
 r.test('a recording from an older build grades without a schema for it', () => {
