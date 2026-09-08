@@ -70,25 +70,20 @@
 
   <div id="readout" hidden>
     <div class="signals" id="signals">
-      <div class="signal" id="cap-realtime">
-        <div class="name">calls &amp; real-time</div>
-        <div><span class="value" id="val-realtime">—</span><span class="unit">ms</span></div>
-        <div class="explain" id="explain-realtime"></div>
+      <div class="signal" id="cap-voice">
+        <div class="name">calls &amp; live audio</div>
+        <div><span class="value" id="val-voice">—</span><span class="unit">ms</span></div>
+        <div class="explain" id="explain-voice"></div>
       </div>
-      <div class="signal" id="cap-tap">
-        <div class="name">tapping a link</div>
-        <div><span class="value" id="val-tap">—</span><span class="unit">ms</span></div>
-        <div class="explain" id="explain-tap"></div>
+      <div class="signal" id="cap-news">
+        <div class="name">opening an article</div>
+        <div><span class="value" id="val-news">—</span><span class="unit">ms</span></div>
+        <div class="explain" id="explain-news"></div>
       </div>
-      <div class="signal" id="cap-newsite">
-        <div class="name">opening a new site</div>
-        <div><span class="value" id="val-newsite">—</span><span class="unit">ms</span></div>
-        <div class="explain" id="explain-newsite"></div>
-      </div>
-      <div class="signal" id="cap-video">
+      <div class="signal wide" id="cap-streaming">
         <div class="name">video &amp; downloads</div>
-        <div><span class="value" id="val-video">—</span></div>
-        <div class="explain" id="explain-video"></div>
+        <div><span class="value" id="val-streaming">—</span></div>
+        <div class="explain" id="explain-streaming"></div>
       </div>
     </div>
 
@@ -97,8 +92,10 @@
       <span class="lamp" id="lamp-ip4">IPv4</span>
     </div>
 
-    <div>
-      <div class="strip" id="strip"></div>
+    <div class="strips">
+      <div class="strip-row"><span>calls</span><div class="strip" id="strip-voice"></div></div>
+      <div class="strip-row"><span>article</span><div class="strip" id="strip-news"></div></div>
+      <div class="strip-row"><span>video</span><div class="strip" id="strip-streaming"></div></div>
       <div class="strip-axis"><span id="strip-span">last 4 min</span><span>now</span></div>
     </div>
 

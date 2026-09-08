@@ -210,7 +210,7 @@ r.test('a recording from an older build grades without a schema for it', () => {
   assert.equal(old.source_app_version, '6.0.0');
   assert.ok(!old.samples[0].probes.udp, 'no UDP probe existed then');
   const grades = g.gradeRound(old.samples[0]);
-  assert.ok(g.GRADES.includes(grades.realtime), 'what can be graded is');
+  assert.ok(g.GRADES.includes(grades.voice), 'what can be graded is');
   assert.equal(grades.video, null, 'and what cannot is left empty');
 });
 
@@ -224,13 +224,13 @@ r.test('the run that looked broken was the grading, not the network', () => {
     return acc;
   }, {});
 
-  const newsite = tally('newsite');
-  assert.ok((newsite.green || 0) >= j.samples.length * 0.7,
-            `a fresh lookup at ~200 ms is a good result, not a warning: ${JSON.stringify(newsite)}`);
+  const news = tally('news');
+  assert.ok((news.green || 0) >= j.samples.length * 0.7,
+            `a fresh lookup at ~200 ms is a good result, not a warning: ${JSON.stringify(news)}`);
 
-  const realtime = tally('realtime');
-  assert.ok((realtime.green || 0) >= j.samples.length * 0.8,
-            `30-60 ms round trips are green: ${JSON.stringify(realtime)}`);
+  const voice = tally('voice');
+  assert.ok((voice.green || 0) >= j.samples.length * 0.8,
+            `30-60 ms round trips are green: ${JSON.stringify(voice)}`);
 
   // The rounds that a single shared latency scale would have marked down.
   const oneScale = j.samples.filter(s => s.probes.dns.ms >= 300).length;
@@ -244,9 +244,10 @@ r.test('a wedged probe is visible in the recording that showed it', () => {
   const tail = j.samples.slice(-20);
   assert.ok(tail.every(s => !s.probes.web.ok), 'the control never recovered');
   assert.ok(tail.filter(s => s.probes.ip6.ok).length >= 18, 'while the link was fine');
-  // One probe failing alone still grades the capability it feeds as red.
-  const grades = tail.map(s => g.gradeRound(s).tap);
-  assert.ok(grades.every(x => x === 'red'), 'and the capability it feeds says so');
+  // One probe failing alone still sinks the purpose that reads it: an article cannot open
+  // if a host the phone already knows will not answer.
+  const grades = tail.map(s => g.gradeRound(s).news);
+  assert.ok(grades.every(x => x === 'red'), 'and the purpose it feeds says so');
 });
 
 r.test('the rollup describes each recording without throwing', () => {

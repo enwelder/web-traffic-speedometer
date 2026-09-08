@@ -3,7 +3,7 @@
 
 import {PROBES} from './probe.js';
 import {APP_VERSION} from './session.js';
-import {CAPABILITIES, THRESHOLDS, quantile} from './grade.js';
+import {CAPABILITIES, SCALES, PURPOSES, quantile} from './grade.js';
 import * as store from './store.js';
 
 // What counts as a probe failure: a resting probe has not reached the network, and an IPv4
@@ -75,7 +75,8 @@ export function summarise(samples) {
 
   const fixed = ran.filter(s => s.accuracy_class === 'gps');
   return {
-    thresholds: THRESHOLDS,
+    scales: SCALES,
+    purposes: PURPOSES,
     grades: gradeTally(ran),
     generated_by: `wts ${APP_VERSION}`,
     rounds: samples.length,
@@ -97,10 +98,11 @@ export function summarise(samples) {
 export function sessionJson(session, samples, events) {
   return JSON.stringify({
     format: 'wts/session',
-    version: 2,
+    // 3: grades are keyed by purpose, and the download reports a bound.
+    version: 3,
     app_version: APP_VERSION,
     exported: new Date().toISOString(),
-    probes: PROBES.map(p => ({id: p.id, url: p.url, kind: p.kind})),
+    probes: PROBES.map(p => ({id: p.id, label: p.label, url: p.url, kind: p.kind})),
     summary: summarise(samples),
     session, samples, events
   }, null, 1);
@@ -145,9 +147,9 @@ export async function exportAll() {
   }
   const stamp = new Date().toISOString().slice(0, 16).replace(/[:T]/g, '');
   download(JSON.stringify({
-    format: 'wts/bundle', version: 2, app_version: APP_VERSION,
+    format: 'wts/bundle', version: 3, app_version: APP_VERSION,
     exported: new Date().toISOString(),
-    probes: PROBES.map(p => ({id: p.id, url: p.url, kind: p.kind})),
+    probes: PROBES.map(p => ({id: p.id, label: p.label, url: p.url, kind: p.kind})),
     sessions: bundles
   }, null, 1), `wts-all-${stamp}.json`);
   return sessions;

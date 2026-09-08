@@ -1,7 +1,7 @@
 // DOM rendering. Nothing here is persisted.
 
 import {PROBES} from './probe.js';
-import {CAPABILITIES, GRADES, gradeRound, worse, capabilityValue} from './grade.js';
+import {CAPABILITIES, PURPOSES, GRADES, gradeRound, worse, capabilityValue} from './grade.js';
 import {countsAsFailure} from './export.js';
 
 const STRIP_BARS = 48;
@@ -35,7 +35,14 @@ export function notice(text) { $('notice').textContent = text || ''; }
 // count in the file agree.
 export {countsAsFailure as counts} from './export.js';
 
-// A round's colour on the strip is its worst capability grade.
+// One purpose's colour for one round. A skipped round has no measurement to grade.
+export function gradeFor(cap, sample) {
+  if (sample.skipped) return 'skip';
+  return (sample.grades || gradeRound(sample))?.[cap] ?? 'none';
+}
+
+// The colour of a round taken as a whole: its worst purpose. Used for the log line, where
+// there is one line per round rather than one per purpose.
 export function classify(sample) {
   if (sample.skipped) return 'skip';
   const g = sample.grades || gradeRound(sample);
@@ -44,17 +51,17 @@ export function classify(sample) {
   return worstGrade || 'green';
 }
 
-// Shown in place of a tile's value while that tile is tapped.
+// Shown in place of a tile's value while that tile is tapped. Each names the measurements the
+// purpose is judged on, since no purpose reads a single probe any more.
 const EXPLAIN = {
-  realtime: 'Round trip to Cloudflare by IP address and over UDP, whichever is worse. Calls and live audio break on this before anything else does.',
-  tap:      'Round trip to Google, a host your phone already knows. What a tap on a link costs before the page starts arriving.',
-  newsite:  'Resolving a hostname never seen before, then reaching it. What visiting somewhere new costs, lookup included.',
-  video:    'Sustained rate after the connection has finished ramping up. The ramp is discarded, so this is what the link carries rather than how fast it accelerates.'
+  voice:     'Round trip to Cloudflare by IP address, the UDP path being open at all, and enough throughput to carry a call. Live audio breaks on any of the three.',
+  news:      'Resolving a hostname never seen before and reaching it, then the time an article of average weight would take over this link. Both have to hold.',
+  streaming: 'What the bytes that arrived prove the link carries. A floor, not a top speed: enough to answer whether video will play, which is the question.'
 };
 
 function displayValue(cap, value) {
   if (value == null) return '—';
-  return cap === 'video' ? rate(value) : String(Math.round(value));
+  return PURPOSES[cap].unit === 'bps' ? `≥${rate(value)}` : String(Math.round(value));
 }
 
 // Colour and number both come from the round passed in, so a tile describes one moment.
@@ -79,23 +86,40 @@ export function renderExplanations() {
   }
 }
 
-// The strip is always full width with empty slots dimmed; it scrolls right to left.
+// One strip per purpose, each always full width with empty slots dimmed, scrolling right to
+// left. Separate rows are what make a single failing purpose visible: one combined row shows
+// only the worst of them and never says which.
 export function clearStrip() {
-  const strip = $('strip');
-  strip.replaceChildren();
-  for (let i = 0; i < STRIP_BARS; i++) {
-    const bar = document.createElement('i');
-    bar.className = 'none';
-    strip.appendChild(bar);
+  for (const cap of CAPABILITIES) {
+    const strip = $(`strip-${cap}`);
+    strip.replaceChildren();
+    for (let i = 0; i < STRIP_BARS; i++) {
+      const bar = document.createElement('i');
+      bar.className = 'none';
+      strip.appendChild(bar);
+    }
   }
 }
 
-export function pushStrip(kind) {
-  const strip = $('strip');
-  const bar = document.createElement('i');
-  bar.className = kind;
-  strip.appendChild(bar);
-  while (strip.children.length > STRIP_BARS) strip.removeChild(strip.firstChild);
+export function pushStrip(sample) {
+  for (const cap of CAPABILITIES) {
+    const strip = $(`strip-${cap}`);
+    const bar = document.createElement('i');
+    bar.className = gradeFor(cap, sample);
+    strip.appendChild(bar);
+    while (strip.children.length > STRIP_BARS) strip.removeChild(strip.firstChild);
+  }
+}
+
+// A bridged gap belongs on every row: no purpose was measured while the page was frozen.
+export function pushStripPause() {
+  for (const cap of CAPABILITIES) {
+    const strip = $(`strip-${cap}`);
+    const bar = document.createElement('i');
+    bar.className = 'pause';
+    strip.appendChild(bar);
+    while (strip.children.length > STRIP_BARS) strip.removeChild(strip.firstChild);
+  }
 }
 
 export function setStripWindow(intervalMs) {

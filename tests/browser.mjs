@@ -95,9 +95,8 @@ b.test('the tiles are named for where they go', async () => {
   await page.goto(BASE, {waitUntil: 'networkidle'});
   // The tiles name capabilities; the probe ids appear only in the log and the file.
   const names = await page.$$eval('.signal .name', els => els.map(e => e.textContent.trim()));
-  assert.deepEqual(names, ['calls & real-time', 'tapping a link', 'opening a new site',
-                           'video & downloads'],
-                   `capabilities, not probes: ${names.join(' | ')}`);
+  assert.deepEqual(names, ['calls & live audio', 'opening an article', 'video & downloads'],
+                   `purposes, not probes: ${names.join(' | ')}`);
   assert.equal(await page.locator('#m-udp').count(), 0, 'no probe readings among the counters');
   await ctx.close();
 });
@@ -156,7 +155,7 @@ b.test('a session records, survives a reload, and exports losslessly', async () 
   await page.click('#btn-mark');
 
   // A tile's colour changes with the round it shows, within one round.
-  const red = () => page.$eval('#cap-realtime', e => e.classList.contains('red'));
+  const red = () => page.$eval('#cap-voice', e => e.classList.contains('red'));
   state.mode = 'fail';
   await page.waitForTimeout(3000);
   assert.equal(await red(), true, 'a failing round paints its own tile');
@@ -369,18 +368,18 @@ b.test('a tile explains itself on tap and gives the number back', async () => {
   await page.click('#btn-start');
   await page.waitForTimeout(5000);
 
-  const explain = () => page.textContent('#explain-tap');
-  const value = () => page.$eval('#val-tap', e => e.offsetParent !== null);
+  const explain = () => page.textContent('#explain-news');
+  const value = () => page.$eval('#val-news', e => e.offsetParent !== null);
   assert.equal(await explain(), '', 'a tile shows its measurement by default');
   assert.equal(await value(), true);
 
-  await page.click('#cap-tap');
-  assert.match(await explain(), /tap on a link costs/, 'tapping says what the tile measures');
+  await page.click('#cap-news');
+  assert.match(await explain(), /hostname never seen before/, 'tapping says what the tile measures');
   assert.equal(await value(), false, 'in place of the number, not beside it');
   await page.waitForTimeout(2500);
-  assert.match(await explain(), /tap on a link costs/, 'and the next round does not overwrite it');
+  assert.match(await explain(), /hostname never seen before/, 'and the next round does not overwrite it');
 
-  await page.click('#cap-tap');
+  await page.click('#cap-news');
   assert.equal(await explain(), '', 'tapping again returns the number');
   assert.equal(await value(), true);
 
@@ -388,7 +387,7 @@ b.test('a tile explains itself on tap and gives the number back', async () => {
   await page.click('#btn-help');
   await page.waitForTimeout(200);
   const shown = await page.$$eval('.signal .explain', els => els.filter(e => e.textContent.length > 40).length);
-  assert.equal(shown, 4, 'the help control explains every tile at once');
+  assert.equal(shown, 3, 'the help control explains every tile at once');
   await ctx.close();
 });
 
