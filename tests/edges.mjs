@@ -141,46 +141,82 @@ d.test('a stream cut mid-flight keeps what arrived', async () => {
   assert.equal(r.truncated, true);
 });
 
-d.test('a sample too short to rate reports no rate at all, not a slow one', async () => {
+d.test('a body too short to rate still bounds the link', async () => {
   for (const [name, chunks] of [['one tiny chunk', [{after: 2, bytes: 10}]],
                                 ['one buffered chunk', [{after: 2, bytes: 5e6}]],
                                 ['a stall after one chunk', [{after: 2, bytes: 1000}, {stall: true}]]]) {
     const r = await download(chunks);
-    assert.equal(r.insufficient_sample, true, `${name}: not enough to rate`);
-    assert.equal(r.bps_steady, null, `${name}: and no steady rate is invented`);
-    assert.equal(r.bps_peak, null, `${name}: nor a peak — 7.5 Gb/s from one buffered chunk is not a link`);
-    assert.equal(g.gradeRound({probes: {down: r}}).video, r.ok ? null : 'red',
-                 `${name}: a measurement that could not be taken is not a bad one`);
+    // A bound is defined wherever bytes arrived, so these produce a grade where the ramp
+    // rule produced none. The slack charged to a wall-clock duration is what stops a single
+    // buffered chunk from claiming 7.5 Gb/s.
+    if (r.bytes > 0) {
+      assert.ok(r.bps_min > 0, `${name}: bytes arrived, so a bound exists`);
+      assert.ok(r.bps_min <= (r.bytes * 8) / (r.duration_ms / 1000) * 1.01,
+                `${name}: the bound may not exceed what arrived over the time it took`);
+    }
+    assert.ok(g.gradeRound({probes: {down: r}}).video !== undefined, `${name}: graded either way`);
   }
 });
 
-d.test('whichever limit comes first stops the read, and says which', async () => {
-  const byBytes = await download(Array.from({length: 200}, () => ({after: 2, bytes: 100000})),
-                                 {budgetMs: 60000, maxBytes: 1e6});
-  assert.equal(byBytes.aborted_reason, 'bytes');
-  assert.ok(byBytes.bytes >= 1e6 && byBytes.bytes < 1.2e6, `stopped near the ceiling: ${byBytes.bytes}`);
+d.test('a refused download says which side refused it', async () => {
+  // The cliff looked identical from the outside whether Cloudflare turned us away or the
+  // connection never opened. An opaque repeat tells them apart, because a response this
+  // origin may not read still counts as one.
+  globalThis.fetch = async () => { throw netError(); };
+  const dead = await probe.runProbe(P.down, {timeoutMs: 3000});
+  assert.equal(dead.fail, 'network');
+  assert.equal(dead.refused_by, 'connection', 'nothing answered either request');
 
-  const byTime = await download(Array.from({length: 400}, () => ({after: 5, bytes: 20000})),
-                                {budgetMs: 300, maxBytes: 50e6});
-  assert.equal(byTime.aborted_reason, 'time');
-  assert.ok(byTime.duration_ms < 600, `stopped near the budget: ${byTime.duration_ms} ms`);
-  assert.equal(byTime.ok, true, 'a read stopped by its own budget is a measurement, not a failure');
+  let first = true;
+  globalThis.fetch = async () => {
+    if (first) { first = false; throw netError(); }
+    return {ok: true, status: 0, type: 'opaque', headers: {get: () => null}};
+  };
+  const blocked = await probe.runProbe(P.down, {timeoutMs: 3000});
+  assert.equal(blocked.refused_by, 'server', 'the server answered, just not readably');
+
+  // A working download must not pay for the extra request.
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls++;
+    return {ok: true, status: 200, body: bodyOf(1000), headers: {get: () => null}};
+  };
+  await probe.runProbe(P.down, {timeoutMs: 3000, download: {budgetMs: 500}});
+  assert.equal(calls, 1, 'one request when the download succeeds');
 });
 
-d.test('the rate is measured across four orders of magnitude of link', async () => {
-  // 20 ms chunks at the given rate. The ramp rule has to hold at both ends: on a fast link
-  // the byte ceiling arrives before a fixed warmup, on a slow one 128 kB never arrives.
-  for (const mbps of [200, 133, 50, 10, 1, 0.4]) {
+d.test('the body ends on its own, or the budget ends it', async () => {
+  // The request asks for exactly what will be read, so a link quick enough to deliver it
+  // reaches the end and nothing is aborted — which is what stops the connection being torn
+  // down every round.
+  const whole = await download([{after: 2, bytes: 200000}], {budgetMs: 2000});
+  assert.equal(whole.aborted_reason, 'eof');
+  assert.equal(whole.complete, true);
+
+  const cut = await download(Array.from({length: 400}, () => ({after: 5, bytes: 20000})),
+                             {budgetMs: 300});
+  assert.equal(cut.aborted_reason, 'time', 'the budget is the only early stop left');
+  assert.equal(cut.complete, false);
+  assert.ok(cut.duration_ms < 600, `stopped near the budget: ${cut.duration_ms} ms`);
+  assert.equal(cut.ok, true, 'a read stopped by its own budget is a measurement, not a failure');
+});
+
+d.test('the bound holds across four orders of magnitude of link', async () => {
+  // 20 ms chunks at the given rate, a body of what the probe asks for.
+  for (const mbps of [200, 133, 50, 10, 1.5, 0.4]) {
     const per = Math.max(1, Math.round((mbps * 1e6 / 8) * 0.02));
-    const r = await download(Array.from({length: 400}, () => ({after: 20, bytes: per})),
-                             {budgetMs: 1000, maxBytes: 5e6});
-    assert.equal(r.insufficient_sample, false,
-                 `${mbps} Mb/s must produce a rate: warmup ${r.warmup_ms} of ${r.duration_ms} ms`);
-    const err = Math.abs(r.bps_steady - mbps * 1e6) / (mbps * 1e6);
-    assert.ok(err < 0.35, `${mbps} Mb/s measured as ${(r.bps_steady / 1e6).toFixed(1)}`);
-    assert.ok(r.bps_peak >= r.bps_steady * 0.9,
-              `${mbps} Mb/s: a peak below the sustained rate is arithmetic, not a link ` +
-              `(${r.bps_peak} vs ${r.bps_steady})`);
+    const chunks = Math.ceil(probe.DOWNLOAD_REQUEST_BYTES / per);
+    const r = await download(Array.from({length: chunks}, () => ({after: 20, bytes: per})),
+                             {budgetMs: 1000});
+    assert.ok(r.bps_min > 0, `${mbps} Mb/s produces a bound`);
+    assert.ok(r.bps_min <= mbps * 1e6 * 1.15,
+              `${mbps} Mb/s: bound ${(r.bps_min / 1e6).toFixed(2)} claims more than the link`);
+    // The bound decides a band, so it has to land in the right one rather than merely be
+    // true: a bound of 1 kb/s is honest and useless.
+    const band = g.gradeValue('video', r.bps_min);
+    const truth = g.gradeValue('video', mbps * 1e6);
+    assert.ok(band === truth || g.GRADES.indexOf(band) === g.GRADES.indexOf(truth) + 1,
+              `${mbps} Mb/s graded ${band}, the link itself is ${truth}`);
   }
 });
 
@@ -688,12 +724,12 @@ h.test('a tile shows the grade of the round whose number it shows', () => {
   // while printing the current number paints a round measured at 35.5 Mb/s red because a
   // round three back was slow.
   const rows = [3.4e6, 3.2e6, 33.6e6, 1.1e6, 35.5e6, 12.0e6, 9.2e6, 48.5e6].map((bps, seq) => ({
-    seq, skipped: null, probes: {down: {ok: true, bps_steady: bps}}
+    seq, skipped: null, probes: {down: {ok: true, bps_min: bps}}
   }));
   for (const row of rows) {
     const grades = g.gradeRound(row);
     assert.equal(grades.video, g.gradeValue('video', g.capabilityValue('video', row)),
-                 `${(row.probes.down.bps_steady / 1e6).toFixed(1)} Mb/s: the colour is this ` +
+                 `${(row.probes.down.bps_min / 1e6).toFixed(1)} Mb/s: the colour is this ` +
                  `round's, taken from the number the tile shows`);
   }
   assert.equal(g.gradeRound(rows[4]).video, 'green', '35.5 Mb/s is green, whatever came before it');

@@ -11,19 +11,16 @@
 // hour, so dns failing while dns_ctl succeeds isolates resolution with the destination
 // held constant.
 
-// A 250 kB body completes inside TCP slow start, so its implied rate measures how fast the
-// congestion window ramps: 4 Mb/s on 5G. The download pulls for a fixed span instead,
-// discards the ramp and rates the remainder.
-export const DOWNLOAD_REQUEST_BYTES = 50000000;   // requested; the transfer is aborted long before this arrives
+// The download probe answers which band the link is in, not how fast it is, and reports a
+// bound: what the bytes that arrived prove the link can carry. The request asks for what
+// clears the top grading edge over a 500 ms window, and nothing beyond it is ever read, so a
+// fast link pays for the whole body and a slow one stops at the budget having transferred
+// whatever it managed — the same measurement from fewer bytes.
+export const DOWNLOAD_REQUEST_BYTES = 625000;   // 10 Mb/s sustained for 500 ms
 export const DEFAULT_DOWN_BUDGET_MS = 2000;
-export const DEFAULT_DOWN_MAX_BYTES = 5000000;
-// The ramp ends at whichever of these two thresholds is reached later.
-export const WARMUP_MS = 500;
-export const WARMUP_BYTES = 131072;
-// Lower bound on the rated span, set by clock resolution. It has to stay reachable when the
-// byte ceiling ends the transfer within a few hundred milliseconds.
-export const MIN_STEADY_MS = 100;
-export const PEAK_WINDOW_MS = 500;
+// Added to a duration taken from the wall clock, which brackets more than the body. Resource
+// timing reports the body's own span, and is charged nothing.
+export const DOWN_SLACK_MS = 50;
 // Applies to every TCP probe. Small probes have been observed succeeding at 3885 ms, so a
 // lower ceiling records slow-but-working rounds as failures.
 export const TIMEOUT_MS = 8000;
@@ -233,19 +230,18 @@ async function readWithin(reader, ms) {
   }
 }
 
-// Stops the rest of the 50 MB body from arriving unread. Not awaited: a cancel that never
+// Stops the rest of an unfinished body from arriving unread. Not awaited: a cancel that never
 // settles would hang the round.
 function cancelQuietly(reader) {
   if (!reader) return;
   try { reader.cancel(); } catch { /* already closed */ }
 }
 
-// Pulls the body for `budgetMs` or until `maxBytes`, whichever comes first, and reports the
-// byte series with the reason the read ended: eof | time | bytes | aborted | network.
-async function readStream(res, {budgetMs, maxBytes, controller}) {
+// Reads the body to its end, or until the budget runs out, and reports how much arrived and
+// why it stopped: eof | time | aborted | network. The response carries exactly the bytes that
+// were asked for, so a healthy link reaches eof and nothing is aborted.
+async function readStream(res, {budgetMs, controller}) {
   const t0 = performance.now();
-  // One mark per chunk; every rate is derived from this series.
-  const marks = [{t: 0, bytes: 0}];
   let bytes = 0;
   let reason = 'eof';
   let truncated = false;
@@ -262,8 +258,6 @@ async function readStream(res, {budgetMs, maxBytes, controller}) {
       if (next === EXPIRED) { reason = 'time'; break; }
       if (next.done) break;
       bytes += next.value.byteLength;
-      marks.push({t: performance.now() - t0, bytes});
-      if (bytes >= maxBytes) { reason = 'bytes'; break; }
     }
   } catch (e) {
     truncated = true;
@@ -276,50 +270,41 @@ async function readStream(res, {budgetMs, maxBytes, controller}) {
   cancelQuietly(reader);
   if (reason !== 'eof') controller.abort();
 
-  // Wall clock rather than the last chunk's timestamp, so time spent stalled is charged to
-  // the rate.
-  return {marks, bytes, reason, truncated, fail,
-          duration: Math.round(performance.now() - t0)};
+  // Wall clock: a stream that stalled spent that time, and charging it makes the bound
+  // smaller, which is the safe direction.
+  return {bytes, reason, truncated, fail, duration: Math.round(performance.now() - t0)};
 }
 
-// The rate over the part of the transfer that is not the ramp.
-function rateFrom({marks, bytes, duration, reason}) {
-  const warm = warmupMark(marks, duration, reason);
-  const steadyMs = warm ? duration - warm.t : 0;
-  // Needs enough wall clock to divide by, and enough of the transfer outside the ramp;
-  // below that there is nothing to rate but the ramp itself.
-  const insufficient = !warm || steadyMs < MIN_STEADY_MS || steadyMs < duration / 3;
-  return {
-    warmup_ms: warm ? Math.round(warm.t) : null,
-    warmup_bytes: warm ? warm.bytes : null,
-    bps_steady: insufficient ? null
-              : Math.round(((bytes - warm.bytes) * 8) / (steadyMs / 1000)),
-    insufficient_sample: insufficient,
-    // The peak window has to fit inside the steady portion, or it includes the ramp and
-    // reports a peak below the sustained rate. Under three marks the window spans one or two
-    // chunks, which yields anything from 14 kb/s on a 10-byte body to 7.5 Gb/s on a chunk
-    // the browser had already buffered.
-    bps_peak: insufficient || marks.length < 3 ? null
-            : bestWindow(marks, Math.min(PEAK_WINDOW_MS, Math.max(100, duration / 3)))
-  };
+// What the transfer proves the link carries, and never more. Every uncertainty is charged
+// against the figure, so slow start, the browser handing the body over in lumps and clock
+// jitter can only make it smaller — which is why none of them has to be corrected for.
+//
+// `bodyMs` is the body's own span from resource timing and is used as measured. Without it
+// the wall clock stands in, bracketing connection setup as well, with the slack added on top.
+function boundFrom(bytes, bodyMs, wallMs) {
+  const ms = bodyMs != null && bodyMs > 0 ? bodyMs : wallMs + DOWN_SLACK_MS;
+  return ms > 0 ? Math.round((bytes * 8) / (ms / 1000)) : null;
 }
 
 // The download probe's fields. `elapsed` is the caller's clock, so `ms` covers the whole
 // request rather than the read alone.
-async function readDownload(res, {url, elapsed, controller, budgetMs, maxBytes}) {
+async function readDownload(res, {url, elapsed, controller, budgetMs}) {
   const server = parseServerTiming(res.headers.get('server-timing'));
-  const stream = await readStream(res, {controller,
-                                        budgetMs: budgetMs ?? DEFAULT_DOWN_BUDGET_MS,
-                                        maxBytes: maxBytes ?? DEFAULT_DOWN_MAX_BYTES});
+  const stream = await readStream(res, {controller, budgetMs: budgetMs ?? DEFAULT_DOWN_BUDGET_MS});
+  // Present only for a body read to its end: WebKit files no entry for an aborted fetch.
+  const timing = await readTiming(url) || {};
   const out = {
     ms: elapsed(),
     bytes: stream.bytes,
     duration_ms: stream.duration,
     aborted_reason: stream.reason,
     truncated: stream.truncated,
+    // Whether the body arrived whole. A bound from a partial body is still true, but it is a
+    // floor rather than close to the rate.
+    complete: stream.reason === 'eof',
+    bps_min: boundFrom(stream.bytes, timing.transfer_ms, stream.duration),
     server,
-    ...await readTiming(url) || {},
-    ...rateFrom(stream),
+    ...timing,
     ok: stream.bytes > 0 && !stream.truncated,
     fail: stream.fail,
     colo: res.headers.get('cf-meta-colo') || null,
@@ -335,48 +320,31 @@ async function readDownload(res, {url, elapsed, controller, budgetMs, maxBytes})
   return out;
 }
 
-// Where the ramp ends. A fixed 500 ms gate fails at both extremes: on a fast link the byte
-// ceiling arrives first (5 MB in 300 ms at 133 Mb/s), and on a very slow one 128 kB never
-// arrives inside the budget.
-function warmupMark(marks, duration, reason) {
-  // The time requirement is capped at a third of the transfer, so a rated span always remains.
-  const gate = Math.min(WARMUP_MS, duration / 3);
-  const found = marks.find(m => m.t >= gate && m.bytes >= WARMUP_BYTES);
-  if (found) return found;
-
-  // Under 128 kB in the whole budget: the link rather than the congestion window is the
-  // limit, so only the first quarter of the transfer is discarded.
-  if (reason === 'time' && marks[marks.length - 1].bytes > 0) {
-    return marks.find(m => m.t >= duration * 0.25) || null;
-  }
-  return null;
-}
-
-// The highest sustained rate over any window of the given width.
-function bestWindow(marks, widthMs) {
-  let best = null;
-  for (let i = 0, j = 1; j < marks.length; j++) {
-    // At least one interval always stays inside the window: closing it whenever two chunks
-    // are further apart than the width reports no peak, or one below the sustained rate, for
-    // the bursty delivery iOS produces on a fast link.
-    while (j - i > 1 && marks[j].t - marks[i].t > widthMs) i++;
-    const span = marks[j].t - marks[i].t;
-    if (span <= 0) continue;
-    const bps = ((marks[j].bytes - marks[i].bytes) * 8) / (span / 1000);
-    if (best == null || bps > best) best = bps;
-  }
-  return best == null ? null : Math.round(best);
-}
-
 const median = xs => {
   const v = [...xs].sort((a, b) => a - b);
   return v.length % 2 ? v[(v.length - 1) / 2] : Math.round((v[v.length / 2 - 1] + v[v.length / 2]) / 2);
 };
 
+// A download rejecting before any response says nothing about which side refused. Repeating
+// it as an opaque request separates them, because a response this origin is not allowed to
+// read still counts as a success: opaque success means the server answered without the
+// headers that let us read it, opaque failure means the connection never opened. The repeat
+// carries no `bytes`, so the endpoint sends an empty body.
+async function whoRefused(probe, opts) {
+  const r = await runOnce({...probe, id: 'down_probe_check', kind: 'opaque'},
+                          {...opts, timeoutMs: MIN_TIMEOUT_MS});
+  return r.ok ? 'server' : 'connection';
+}
+
 // A probe that asks for samples is run repeatedly inside one deadline; `ms` becomes the
 // median and every sample is kept alongside. Repetition stops at the first failure, which
 // leaves the remaining budget to the rest of the round.
 export async function runProbe(probe, opts = {}) {
+  if (probe.kind === 'download') {
+    const r = await runOnce(probe, opts);
+    if (r.fail === 'network') r.refused_by = await whoRefused(probe, opts);
+    return r;
+  }
   if (!probe.samples || probe.samples < 2) return runOnce(probe, opts);
 
   const budget = opts.timeoutMs ?? TIMEOUT_MS;

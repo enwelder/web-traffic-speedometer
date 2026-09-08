@@ -32,16 +32,18 @@ function probeSummary(rs) {
   };
 }
 
-// The download probe alone reports a rate, over the rounds that produced one.
+// The download probe alone reports a throughput bound.
 function rateSummary(rs) {
   const ok = rs.filter(r => r.ok);
-  const rate = ok.filter(r => !r.insufficient_sample)
-                 .map(r => r.bps_steady).filter(v => v != null).sort((a, b) => a - b);
+  const bound = ok.map(r => r.bps_min).filter(v => v != null).sort((a, b) => a - b);
   return {
-    bps_steady_p10: quantile(rate, 0.1),
-    bps_steady_p50: quantile(rate, 0.5),
-    rated: rate.length,
-    insufficient: ok.filter(r => r.insufficient_sample).length,
+    // Bounds, not rates: each is what that round's bytes proved, so a percentile over them
+    // is a percentile of proven floors.
+    bps_min_p10: quantile(bound, 0.1),
+    bps_min_p50: quantile(bound, 0.5),
+    rated: bound.length,
+    // Rounds whose body arrived whole, where the bound sits close to the rate.
+    complete: ok.filter(r => r.complete).length,
     bytes_total: ok.reduce((n, r) => n + (r.bytes || 0), 0)
   };
 }
