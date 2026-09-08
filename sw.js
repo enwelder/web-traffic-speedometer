@@ -17,7 +17,8 @@ const SHELL = [
   'js/session.js',
   'js/export.js',
   'js/grade.js',
-  'js/stuck.js'
+  'js/stuck.js',
+  'js/wakelock.js'
 ];
 
 self.addEventListener('install', e => {

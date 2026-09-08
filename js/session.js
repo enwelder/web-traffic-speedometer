@@ -5,6 +5,7 @@ import {PROBES, runRound, checkIpv4, clearTimings, timeoutFor,
         DEFAULT_DOWN_BUDGET_MS, DEFAULT_DOWN_MAX_BYTES} from './probe.js';
 import {gradeRound} from './grade.js';
 import {createStuckTracker} from './stuck.js';
+import {createWakeLock} from './wakelock.js';
 import * as realStore from './store.js';
 
 // Byte estimates for the data-used figure. Safari opens a fresh connection per request, so
@@ -119,7 +120,6 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
   let bytes = 0;
   let marks = 0;
   let watchId = null;
-  let wakeLock = null;
   let lastPos = null;
   let posError = null;
   let prevFix = null;
@@ -127,8 +127,6 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
   let lastRoundMs = null;
   let lastSpeed = null;
   let lastSpeedSource = null;
-  let wakeLockLost = false;
-  let wakeLockPending = false;
   let egressIp = null;
   let fineFix = null;
   let throughput = null;
@@ -143,6 +141,8 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
   const pendingSamples = [];
   const pendingEvents = [];
   const stuck = createStuckTracker({onNotice});
+  // The event carries the position and the session id, so it is the recorder's to write.
+  const wake = createWakeLock({onNotice, onEvent: text => running && noteEvent(text)});
 
   const mono = () => performance.now() - t0;
   const interval = () => session.intervalMs;
@@ -269,7 +269,7 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
       // matching timestamps against the event list.
       in_pause: inPause,
       // Whether the screen was held awake for this round, which accounts for gaps.
-      wake_lock: holdingWakeLock(),
+      wake_lock: wake.held(),
       // Wall time the previous round took. A frozen tab suspends the abort timer, so a round
       // can outlast every deadline in it; this separates an overlap from a stalled app.
       prev_round_ms: lastRoundMs,
@@ -314,7 +314,7 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
       lastRoundMs = Math.round(mono() - startedAt);
     }
 
-    if (!holdingWakeLock()) acquireWakeLock();
+    if (!wake.held()) wake.acquire();
     downloadBytesUsed += row.probes.down?.bytes || 0;
 
     // The quickest first response in the round, which approximates the cost of waking the
@@ -377,47 +377,6 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
       return;
     }
     current = measure(late);
-  }
-
-  // The system reclaims the wake lock without the page becoming hidden (Low Power Mode, an
-  // incoming call, the screen locking). The sentinel stays non-null with `released` set, so
-  // the flag is checked as well as the release event.
-  const holdingWakeLock = () => !!wakeLock && !wakeLock.released;
-
-  async function acquireWakeLock() {
-    if (!navigator.wakeLock || holdingWakeLock() || wakeLockPending) return;
-    if (document.visibilityState !== 'visible') return;
-    // Called from the round loop, visibilitychange and the release handler; two concurrent
-    // requests orphan a sentinel whose later release logs a loss that did not happen.
-    wakeLockPending = true;
-    try {
-      const sentinel = await navigator.wakeLock.request('screen');
-      wakeLock = sentinel;
-      sentinel.addEventListener('release', () => onWakeLockRelease(sentinel), {once: true});
-      if (wakeLockLost) {
-        wakeLockLost = false;
-        onNotice?.('');
-        if (running) noteEvent('screen stays awake again');
-      }
-    } catch (e) {
-      wakeLock = null;
-      if (!wakeLockLost) {
-        wakeLockLost = true;
-        onNotice?.('The screen will not stay awake. Set auto-lock longer, or turn off Low Power Mode.');
-        if (running) noteEvent(`screen wake lock refused (${e && e.name || 'unknown'})`);
-      }
-    } finally {
-      wakeLockPending = false;
-    }
-  }
-
-  function onWakeLockRelease(sentinel) {
-    if (wakeLock === sentinel) wakeLock = null;
-    if (!running) return;
-    wakeLockLost = true;
-    onNotice?.('The screen lock was released. Reacquiring — if it keeps happening, check Low Power Mode.');
-    noteEvent('screen wake lock released');
-    acquireWakeLock();
   }
 
   function event(type, text) {
@@ -485,14 +444,14 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
     udpMs = null;
     downloadBytesUsed = spent?.downloadBytes || 0;
     lastGrades = null;
-    wakeLockLost = false;
     inFlight = false;
     contacted.clear();
     abort = new AbortController();
     store.setActive(session.id);
     clearTimings();
     startGeolocation();
-    await acquireWakeLock();
+    wake.reset();
+    await wake.acquire();
 
     // Established once per session: on an IPv6-only network every round would otherwise
     // report the same absent path.
@@ -530,7 +489,7 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
     // The aborted round still resolves into a row, so it is awaited before the drain.
     if (current) { try { await current; } catch { /* recorded as round_error */ } }
     if (watchId != null) { navigator.geolocation.clearWatch(watchId); watchId = null; }
-    if (wakeLock) { try { await wakeLock.release(); } catch { /* already gone */ } wakeLock = null; }
+    await wake.release();
 
     session.stopped = Date.now();
     // Each pass awaits any flush already running, so a row written during one is picked up
@@ -559,7 +518,7 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
   }
 
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible' && running) acquireWakeLock();
+    if (document.visibilityState === 'visible' && running) wake.acquire();
   });
 
   return {start, stop, mark, note, status, flush};
