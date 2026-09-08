@@ -161,7 +161,7 @@ async function runOnce(probe, {timeoutMs = TIMEOUT_MS, signal, download = {}} = 
   const url = probeUrl(probe);
   if (probe.id === 'dns' || probe.id === 'dns_ctl') r.host = new URL(url).hostname;
   const t0 = performance.now();
-  const since = () => Math.round(performance.now() - t0);
+  const elapsed = () => Math.round(performance.now() - t0);
 
   try {
     const res = await fetch(url, {
@@ -175,28 +175,23 @@ async function runOnce(probe, {timeoutMs = TIMEOUT_MS, signal, download = {}} = 
 
     if (probe.kind === 'opaque') {
       // An opaque response has no readable status, so success means the request completed.
+      markElapsed(r, probe, elapsed());
       r.ok = true;
-      r.ms = since();
-      if (probe.id === 'dns' && looksLikeRetry(r.ms)) r.retry_suspected = true;
       return r;
     }
 
     r.status = res.status;
-    if (!res.ok) { r.ms = since(); r.fail = 'http'; return r; }
+    if (!res.ok) { r.ms = elapsed(); r.fail = 'http'; return r; }
 
-    if (probe.kind === 'download') return await readDownload(res, r, url, since, timedOut, ctl, download);
+    if (probe.kind === 'download') {
+      return {...r, ...await readDownload(res, {url, elapsed, controller: ctl, ...download})};
+    }
 
     const trace = parseTrace(await res.text());
-    r.ms = since();
-    if (probe.id === 'dns' && looksLikeRetry(r.ms)) r.retry_suspected = true;
-    const bad = validateTrace(trace, url);
-    if (bad) { r.fail = 'parse'; r.parse_reason = bad; return r; }
-    r.ok = true;
-    r.egress_ip = trace.ip;
-    r.colo = trace.colo;
-    return r;
+    markElapsed(r, probe, elapsed());
+    return finishTrace(r, trace, url);
   } catch (e) {
-    r.ms = since();
+    r.ms = elapsed();
     r.fail = e && e.name === 'AbortError' ? (timedOut ? 'timeout' : 'abort') : 'network';
     return r;
   } finally {
@@ -205,19 +200,33 @@ async function runOnce(probe, {timeoutMs = TIMEOUT_MS, signal, download = {}} = 
   }
 }
 
-// Reads for `budgetMs` or until `maxBytes`, discards the ramp and rates the remainder. The
-// request asks for far more than will be read, so the transfer is aborted when the read
-// ends.
-async function readDownload(res, r, url, since, timedOut, ctl, opts) {
-  const budgetMs = opts.budgetMs ?? DEFAULT_DOWN_BUDGET_MS;
-  const maxBytes = opts.maxBytes ?? DEFAULT_DOWN_MAX_BYTES;
-  const server = parseServerTiming(res.headers.get('server-timing'));
+// The dns probe is the only one whose duration can be a resolver's retry timer, so the flag
+// is set wherever its duration is taken.
+function markElapsed(r, probe, ms) {
+  r.ms = ms;
+  if (probe.id === 'dns' && looksLikeRetry(ms)) r.retry_suspected = true;
+  return r;
+}
+
+function finishTrace(r, trace, url) {
+  const bad = validateTrace(trace, url);
+  if (bad) { r.fail = 'parse'; r.parse_reason = bad; return r; }
+  r.ok = true;
+  r.egress_ip = trace.ip;
+  r.colo = trace.colo;
+  return r;
+}
+
+// Pulls the body for `budgetMs` or until `maxBytes`, whichever comes first, and reports the
+// byte series with the reason the read ended: eof | time | bytes | aborted | network.
+async function readStream(res, {budgetMs, maxBytes, controller}) {
   const t0 = performance.now();
-  // One mark per chunk; every figure below is derived from this series.
+  // One mark per chunk; every rate is derived from this series.
   const marks = [{t: 0, bytes: 0}];
   let bytes = 0;
   let reason = 'eof';
   let truncated = false;
+  let fail = null;
 
   let reader = null;
   try {
@@ -231,7 +240,7 @@ async function readDownload(res, r, url, since, timedOut, ctl, opts) {
       if (left <= 0) { reason = 'time'; break; }
       let timer;
       const expired = Symbol('expired');
-      const budget = new Promise(r => { timer = setTimeout(() => r(expired), left); });
+      const budget = new Promise(resolve => { timer = setTimeout(() => resolve(expired), left); });
       const next = await Promise.race([reader.read(), budget]);
       clearTimeout(timer);
       if (next === expired) { reason = 'time'; break; }
@@ -242,57 +251,73 @@ async function readDownload(res, r, url, since, timedOut, ctl, opts) {
     }
   } catch (e) {
     truncated = true;
-    // The reason comes from the error; the timeout flag was captured before the read began.
+    // The reason comes from the error rather than from the caller's timeout flag, which was
+    // captured before the read began.
     reason = e && e.name === 'AbortError' ? 'aborted' : 'network';
-    r.fail = e && e.name === 'AbortError' ? 'abort' : 'network';
+    fail = e && e.name === 'AbortError' ? 'abort' : 'network';
   }
   // Stops the rest of the 50 MB body from arriving unread. Not awaited: a cancel that never
   // settles would hang the round.
   if (reader) { try { reader.cancel(); } catch { /* already closed */ } }
-  if (reason !== 'eof') ctl.abort();
+  if (reason !== 'eof') controller.abort();
 
   // Wall clock rather than the last chunk's timestamp, so time spent stalled is charged to
   // the rate.
-  const duration = Math.round(performance.now() - t0);
-  r.ms = since();
-  r.bytes = bytes;
-  r.duration_ms = duration;
-  r.aborted_reason = reason;
-  r.truncated = truncated;
-  r.server = server;
-  Object.assign(r, await readTiming(url) || {});
+  return {marks, bytes, reason, truncated, fail,
+          duration: Math.round(performance.now() - t0)};
+}
 
+// The rate over the part of the transfer that is not the ramp.
+function rateFrom({marks, bytes, duration, reason}) {
   const warm = warmupMark(marks, duration, reason);
-  r.warmup_ms = warm ? Math.round(warm.t) : null;
-  r.warmup_bytes = warm ? warm.bytes : null;
-
   const steadyMs = warm ? duration - warm.t : 0;
-  // Needs enough wall clock to divide by, and enough of the transfer outside the ramp.
-  if (!warm || steadyMs < MIN_STEADY_MS || steadyMs < duration / 3) {
-    // Nothing outside the ramp to rate.
-    r.bps_steady = null;
-    r.insufficient_sample = true;
-  } else {
-    r.bps_steady = Math.round(((bytes - warm.bytes) * 8) / (steadyMs / 1000));
-    r.insufficient_sample = false;
-  }
-  // The peak window has to fit inside the steady portion, or it includes the ramp and
-  // reports a peak below the sustained rate. Under three marks the window spans one or two
-  // chunks, which yields anything from 14 kb/s on a 10-byte body to 7.5 Gb/s on a chunk the
-  // browser had already buffered.
-  r.bps_peak = r.insufficient_sample || marks.length < 3 ? null
-             : bestWindow(marks, Math.min(PEAK_WINDOW_MS, Math.max(100, duration / 3)));
+  // Needs enough wall clock to divide by, and enough of the transfer outside the ramp;
+  // below that there is nothing to rate but the ramp itself.
+  const insufficient = !warm || steadyMs < MIN_STEADY_MS || steadyMs < duration / 3;
+  return {
+    warmup_ms: warm ? Math.round(warm.t) : null,
+    warmup_bytes: warm ? warm.bytes : null,
+    bps_steady: insufficient ? null
+              : Math.round(((bytes - warm.bytes) * 8) / (steadyMs / 1000)),
+    insufficient_sample: insufficient,
+    // The peak window has to fit inside the steady portion, or it includes the ramp and
+    // reports a peak below the sustained rate. Under three marks the window spans one or two
+    // chunks, which yields anything from 14 kb/s on a 10-byte body to 7.5 Gb/s on a chunk
+    // the browser had already buffered.
+    bps_peak: insufficient || marks.length < 3 ? null
+            : bestWindow(marks, Math.min(PEAK_WINDOW_MS, Math.max(100, duration / 3)))
+  };
+}
 
-  r.ok = bytes > 0 && !truncated;
-  if (!r.ok && !r.fail) {
+// The download probe's fields. `elapsed` is the caller's clock, so `ms` covers the whole
+// request rather than the read alone.
+async function readDownload(res, {url, elapsed, controller, budgetMs, maxBytes}) {
+  const server = parseServerTiming(res.headers.get('server-timing'));
+  const stream = await readStream(res, {controller,
+                                        budgetMs: budgetMs ?? DEFAULT_DOWN_BUDGET_MS,
+                                        maxBytes: maxBytes ?? DEFAULT_DOWN_MAX_BYTES});
+  const out = {
+    ms: elapsed(),
+    bytes: stream.bytes,
+    duration_ms: stream.duration,
+    aborted_reason: stream.reason,
+    truncated: stream.truncated,
+    server,
+    ...await readTiming(url) || {},
+    ...rateFrom(stream),
+    ok: stream.bytes > 0 && !stream.truncated,
+    fail: stream.fail,
+    colo: res.headers.get('cf-meta-colo') || null,
+    egress_ip: res.headers.get('cf-meta-ip') || null
+  };
+  if (!out.ok && !out.fail) {
     // 'stalled': headers came back and the budget ran out with no payload, which is a
     // congested cell. 'empty': the body ended with no bytes, so something answered for the
     // endpoint with nothing to send.
-    r.fail = reason === 'time' ? 'stalled' : reason === 'eof' ? 'empty' : 'network';
+    out.fail = stream.reason === 'time' ? 'stalled'
+             : stream.reason === 'eof' ? 'empty' : 'network';
   }
-  r.colo = res.headers.get('cf-meta-colo') || null;
-  r.egress_ip = res.headers.get('cf-meta-ip') || null;
-  return r;
+  return out;
 }
 
 // Where the ramp ends. A fixed 500 ms gate fails at both extremes: on a fast link the byte
