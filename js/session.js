@@ -2,9 +2,9 @@
 // rounds that could not run: a failed attempt is a measurement, so it is never left out.
 
 import {PROBES, runRound, checkIpv4, clearTimings, timeoutFor,
-        STUCK_AFTER, STUCK_COOLDOWN, DEFAULT_DOWN_BUDGET_MS,
-        DEFAULT_DOWN_MAX_BYTES} from './probe.js';
+        DEFAULT_DOWN_BUDGET_MS, DEFAULT_DOWN_MAX_BYTES} from './probe.js';
 import {gradeRound} from './grade.js';
+import {createStuckTracker} from './stuck.js';
 import * as realStore from './store.js';
 
 // Byte estimates for the data-used figure. Safari opens a fresh connection per request, so
@@ -37,8 +37,6 @@ const EARTH_M = 6371000;
 const FINE_ACCURACY_M = 100;
 // 400 km/h, above the top speed of any train on the routes measured.
 const MAX_PLAUSIBLE_MS = 111;
-// The failures a fresh connection can fix.
-const WEDGE_FAILS = new Set(['timeout', 'network', 'stalled']);
 // Haversine distance. iOS fills coords.speed only sporadically (0, 2 and 51 of 158, 75 and
 // 243 rounds across three journeys), so speed is derived from consecutive fixes and the
 // measured value is kept whenever the platform supplies one.
@@ -133,8 +131,6 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
   let wakeLockPending = false;
   let egressIp = null;
   let fineFix = null;
-  const consecutiveFails = {};
-  const restingUntil = {};
   let throughput = null;
   let udpMs = null;
   let downloadBytesUsed = 0;
@@ -146,6 +142,7 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
   const contacted = new Set();
   const pendingSamples = [];
   const pendingEvents = [];
+  const stuck = createStuckTracker({onNotice});
 
   const mono = () => performance.now() - t0;
   const interval = () => session.intervalMs;
@@ -294,41 +291,6 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
     egressIp = seen;
   }
 
-  function updateStuck(row) {
-    // A probe is only stood down while most of the others answer. Below that threshold the
-    // network is down, and resting on it would stand every probe down at once.
-    const healthy = PROBES.filter(p => row.probes[p.id]?.ok).length;
-    const isolated = healthy > PROBES.length / 2;
-    for (const p of PROBES) {
-      const r = row.probes[p.id];
-      if (!r || r.fail === 'resting') continue;
-      if (r.ok) { consecutiveFails[p.id] = 0; delete restingUntil[p.id]; continue; }
-      if (r.expected) continue;
-      // Only failures a fresh connection can fix. A parse failure means the connection
-      // delivered a body (a captive portal answering for Cloudflare) and an HTTP status
-      // means the server replied; resting hides both and repairs neither.
-      if (!WEDGE_FAILS.has(r.fail)) { consecutiveFails[p.id] = 0; continue; }
-      const n = consecutiveFails[p.id] = (consecutiveFails[p.id] || 0) + 1;
-      if (isolated && n >= STUCK_AFTER && restingUntil[p.id] == null) {
-        r.stuck = true;
-        // baseRow has already advanced seq, so this row's number is seq - 1.
-        restingUntil[p.id] = (seq - 1) + STUCK_COOLDOWN + 1;
-        consecutiveFails[p.id] = 0;
-        onNotice?.(`${p.id} has failed ${n} rounds while the others answer; ` +
-                   `resting it for ${STUCK_COOLDOWN} rounds to clear the connection.`);
-      }
-    }
-  }
-
-  function resting() {
-    const out = new Set();
-    for (const [id, until] of Object.entries(restingUntil)) {
-      if (seq < until) out.add(id);
-      else delete restingUntil[id];
-    }
-    return out;
-  }
-
   async function measure(late) {
     inFlight = true;
     const startedAt = mono();
@@ -340,7 +302,7 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
         download: session.download || DOWNLOAD_DEFAULTS,
         intervalMs: interval(),
         ipv4Available: session.ipv4_available,
-        resting: resting()
+        resting: stuck.resting(seq)
       });
     } catch (e) {
       row.round_error = String(e && e.message || e);
@@ -376,7 +338,7 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
     }
 
     noteEgressChange(row);
-    updateStuck(row);
+    stuck.note(row, seq);
     charge(row);
     clearTimings();
     if (row.probes.down?.ok) throughput = row.probes.down.bps_steady;
@@ -502,11 +464,9 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
     seq = resumeSeq;
     running = true;
     // One recorder lives for the page, so session-scoped state is cleared when a new session
-    // starts. Rests are scheduled by seq, so a stale one silences a probe for the whole of
-    // the next session.
+    // starts.
     if (!resumeSeq) {
-      for (const k of Object.keys(consecutiveFails)) delete consecutiveFails[k];
-      for (const k of Object.keys(restingUntil)) delete restingUntil[k];
+      stuck.reset();
       marks = 0;
       lastRoundMs = null;
       inPause = false;

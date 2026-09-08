@@ -23,7 +23,7 @@ jobs:
       - name: coding standards
         run: npx eslint .
       - name: unit and integration
-        run: node tests/run.mjs unit
+        run: node tests/run.mjs unit stuck
       - name: grading, and replay against real recordings
         run: node tests/run.mjs grading replay regressions
       - name: install browser

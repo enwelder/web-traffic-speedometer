@@ -16,7 +16,8 @@ const SHELL = [
   'js/probe.js',
   'js/session.js',
   'js/export.js',
-  'js/grade.js'
+  'js/grade.js',
+  'js/stuck.js'
 ];
 
 self.addEventListener('install', e => {
