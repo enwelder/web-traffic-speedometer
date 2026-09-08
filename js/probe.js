@@ -235,7 +235,7 @@ async function readDownload(res, r, url, since, timedOut, ctl, opts) {
       const next = await Promise.race([reader.read(), budget]);
       clearTimeout(timer);
       if (next === expired) { reason = 'time'; break; }
-      if (next.done) { reason = 'eof'; break; }
+      if (next.done) break;
       bytes += next.value.byteLength;
       marks.push({t: performance.now() - t0, bytes});
       if (bytes >= maxBytes) { reason = 'bytes'; break; }

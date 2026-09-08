@@ -20,6 +20,8 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - name: coding standards
+        run: npx eslint .
       - name: unit and integration
         run: node tests/run.mjs unit
       - name: grading, and replay against real recordings

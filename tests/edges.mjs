@@ -2,7 +2,7 @@
 // where an off-by-one changes a colour, or an event recorded on a train: a handover, a
 // captive portal, a tunnel, a saturated cell, a carrier blocking UDP.
 import assert from 'node:assert';
-import {stubBrowser, fakeStore, TRACE, bodyOf, netError, sleep, suite} from './helpers.mjs';
+import {stubBrowser, fakeStore, bodyOf, netError, sleep, suite} from './helpers.mjs';
 
 stubBrowser();
 const probe = await import('../js/probe.js');

@@ -246,7 +246,7 @@ s.test('the download stops at whichever limit comes first', async () => {
 // The warmup rule has to hold at both extremes: the byte ceiling binds on a fast link and
 // the byte threshold is unreachable on a slow one.
 s.test('the ramp is identified across the whole range of real links', async () => {
-  const paced = (mbps, budgetMs, maxBytes) => {
+  const paced = mbps => {
     // 20 ms chunks at the given rate, until one of the limits stops it.
     const per = Math.max(1, Math.round((mbps * 1e6 / 8) * 0.02));
     return pacedBody(Array.from({length: 400}, () => ({after: 20, bytes: per})));
