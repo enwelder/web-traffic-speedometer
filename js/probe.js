@@ -17,6 +17,11 @@
 // fast link pays for the whole body and a slow one stops at the budget having transferred
 // whatever it managed — the same measurement from fewer bytes.
 export const DOWNLOAD_REQUEST_BYTES = 625000;   // 10 Mb/s sustained for 500 ms
+// iOS opens a fresh connection for the download every round, and a fresh connection delivers
+// its first bytes at the congestion window's pace rather than the link's. This request is
+// spent opening that window so that the measured one sees the link. Without it a 5G cell a
+// reference test clocked at 350 Mb/s measured 7 Mb/s here, which is the ramp, not the link.
+export const WARMUP_REQUEST_BYTES = 96000;
 export const DEFAULT_DOWN_BUDGET_MS = 2000;
 // Added to a duration taken from the wall clock, which brackets more than the body. Resource
 // timing reports the body's own span, and is charged nothing.
@@ -47,7 +52,7 @@ export const PROBES = [
   // Sampled like the other latency probes, so their medians cover the same thing.
   {id: 'dns_ctl', label: 'HEAD to that host under a cached name', kind: 'opaque', url: 'https://wts-dns-control.github.io/', method: 'HEAD', samples: 3},
   {id: 'web',     label: 'HEAD to a host the phone knows',       kind: 'opaque', url: 'https://www.gstatic.com/generate_204', samples: 3},
-  {id: 'down',    label: 'timed body read, reported as a bound', kind: 'download', url: 'https://speed.cloudflare.com/__down'},
+  {id: 'down',    label: 'timed body read, reported as a bound', kind: 'download', url: 'https://speed.cloudflare.com/__down', bytes: DOWNLOAD_REQUEST_BYTES},
   // The only probe over UDP, which is what streaming and calls use. A carrier can treat UDP
   // differently from TCP, and the address reported is the NAT mapping for that transport.
   {id: 'udp',     label: 'STUN binding request over UDP',       kind: 'stun',   url: STUN_SERVER, samples: 3}
@@ -131,7 +136,7 @@ async function readTiming(url) {
 
 function probeUrl(probe) {
   const base = probe.id === 'dns' ? probe.url.replace('%RANDOM%', rand())
-             : probe.id === 'down' ? `${probe.url}?bytes=${DOWNLOAD_REQUEST_BYTES}`
+             : probe.bytes ? `${probe.url}?bytes=${probe.bytes}`
              : probe.url;
   return base + (base.includes('?') ? '&' : '?') + '_=' + Date.now() + rand().slice(0, 4);
 }
@@ -334,9 +339,26 @@ const median = xs => {
 // headers that let us read it, opaque failure means the connection never opened. The repeat
 // carries no `bytes`, so the endpoint sends an empty body.
 async function whoRefused(probe, opts) {
-  const r = await runOnce({...probe, id: 'down_probe_check', kind: 'opaque'},
+  const r = await runOnce({...probe, id: 'down_probe_check', kind: 'opaque', bytes: 0},
                           {...opts, timeoutMs: MIN_TIMEOUT_MS});
   return r.ok ? 'server' : 'connection';
+}
+
+// Two requests: the first opens the congestion window, the second is measured over it. A link
+// too slow to finish the first one quickly has no window to escape, because the link itself is
+// the limit from the first packet — so there the first request is the measurement and the
+// second is skipped, which is also what keeps a slow round cheap.
+async function measureDownload(probe, opts) {
+  const budgetMs = opts.download?.budgetMs ?? DEFAULT_DOWN_BUDGET_MS;
+  const started = performance.now();
+  const warm = await runOnce({...probe, id: 'down_warmup', bytes: WARMUP_REQUEST_BYTES},
+                             {...opts, download: {...opts.download, budgetMs}});
+  const spent = performance.now() - started;
+  if (!warm.ok || spent > budgetMs * 0.4) {
+    warm.warmup_only = true;
+    return warm;
+  }
+  return runOnce(probe, {...opts, download: {...opts.download, budgetMs: budgetMs - spent}});
 }
 
 // A probe that asks for samples is run repeatedly inside one deadline; `ms` becomes the
@@ -344,7 +366,7 @@ async function whoRefused(probe, opts) {
 // leaves the remaining budget to the rest of the round.
 export async function runProbe(probe, opts = {}) {
   if (probe.kind === 'download') {
-    const r = await runOnce(probe, opts);
+    const r = await measureDownload(probe, opts);
     if (r.fail === 'network') r.refused_by = await whoRefused(probe, opts);
     return r;
   }

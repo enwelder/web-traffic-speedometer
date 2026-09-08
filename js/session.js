@@ -2,7 +2,8 @@
 // rounds that could not run: a failed attempt is a measurement, so it is never left out.
 
 import {PROBES, runRound, checkIpv4, clearTimings, timeoutFor,
-        DEFAULT_DOWN_BUDGET_MS, DOWNLOAD_REQUEST_BYTES} from './probe.js';
+        DEFAULT_DOWN_BUDGET_MS, DOWNLOAD_REQUEST_BYTES,
+        WARMUP_REQUEST_BYTES} from './probe.js';
 import {gradeRound} from './grade.js';
 import {createStuckTracker} from './stuck.js';
 import {createWakeLock} from './wakelock.js';
@@ -19,7 +20,7 @@ const REFUSED_BYTES = 100;      // an IPv4 literal with no path never gets a con
 // STUN is UDP: no handshake to charge and no connection to resume.
 const cost = p => (WARM_BYTES[p.kind] * (p.samples || 1)) + (p.kind === 'stun' ? 0 : RESUMED_BYTES);
 
-export const APP_VERSION = '3.5.0';
+export const APP_VERSION = '3.5.1';
 
 // The download runs every round, so the interval is what controls data use.
 export const PROFILES = {
@@ -39,7 +40,8 @@ export const DOWNLOAD_DEFAULTS = {
 export function projectedBytes(intervalMs, settings = DOWNLOAD_DEFAULTS, minutes = 40) {
   const rounds = Math.round((minutes * 60000) / intervalMs);
   const small = PROBES.reduce((n, p) => n + cost(p), 0);
-  return rounds * (small + settings.bytes);
+  // Both download requests: the one that opens the connection and the one measured over it.
+  return rounds * (small + WARMUP_REQUEST_BYTES + settings.bytes);
 }
 
 export function environment(intervalMs, downloadSettings = DOWNLOAD_DEFAULTS) {

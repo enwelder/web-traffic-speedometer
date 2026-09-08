@@ -158,6 +158,34 @@ d.test('a body too short to rate still bounds the link', async () => {
   }
 });
 
+d.test('the connection is opened before the measured request, unless the link is slow', async () => {
+  // A fresh connection delivers its first bytes at the congestion window's pace. A 5G cell a
+  // reference test clocked at 350 Mb/s measured 7 Mb/s through one request, because the whole
+  // transfer fitted inside the ramp.
+  const sizes = [];
+  globalThis.fetch = async url => {
+    sizes.push(Number(new URL(url).searchParams.get('bytes')));
+    return {ok: true, status: 200, body: bodyOf(200), headers: {get: () => null}};
+  };
+  await probe.runProbe(P.down, {timeoutMs: 8000, download: {budgetMs: 2000}});
+  assert.equal(sizes.length, 2, 'one request to open the window, one to measure over it');
+  assert.equal(sizes[0], probe.WARMUP_REQUEST_BYTES, 'the small one first');
+  assert.equal(sizes[1], probe.DOWNLOAD_REQUEST_BYTES, 'then the measured one');
+
+  // On a link too slow to finish the first request quickly there is no window to escape, so
+  // the second is skipped and the round stays cheap.
+  sizes.length = 0;
+  globalThis.fetch = async url => {
+    sizes.push(Number(new URL(url).searchParams.get('bytes')));
+    return {ok: true, status: 200, headers: {get: () => null},
+            body: stream(Array.from({length: 40}, () => ({after: 50, bytes: 2000})))};
+  };
+  const slow = await probe.runProbe(P.down, {timeoutMs: 8000, download: {budgetMs: 600}});
+  assert.equal(sizes.length, 1, `a slow link is measured by the first request alone: ${sizes}`);
+  assert.equal(slow.warmup_only, true, 'and the row says so');
+  assert.ok(slow.bps_min > 0, 'it is still a measurement');
+});
+
 d.test('a refused download says which side refused it', async () => {
   // The cliff looked identical from the outside whether Cloudflare turned us away or the
   // connection never opened. An opaque repeat tells them apart, because a response this
@@ -182,7 +210,7 @@ d.test('a refused download says which side refused it', async () => {
     return {ok: true, status: 200, body: bodyOf(1000), headers: {get: () => null}};
   };
   await probe.runProbe(P.down, {timeoutMs: 3000, download: {budgetMs: 500}});
-  assert.equal(calls, 1, 'one request when the download succeeds');
+  assert.equal(calls, 2, 'a working download costs its two requests and no more');
 });
 
 d.test('the body ends on its own, or the budget ends it', async () => {
