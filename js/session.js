@@ -19,7 +19,7 @@ const REFUSED_BYTES = 100;      // an IPv4 literal with no path never gets a con
 // STUN is UDP: no handshake to charge and no connection to resume.
 const cost = p => (WARM_BYTES[p.kind] * (p.samples || 1)) + (p.kind === 'stun' ? 0 : RESUMED_BYTES);
 
-export const APP_VERSION = '3.4.0';
+export const APP_VERSION = '3.5.0';
 
 // The download runs every round, so the interval is what controls data use.
 export const PROFILES = {
@@ -53,7 +53,7 @@ export function environment(intervalMs, downloadSettings = DOWNLOAD_DEFAULTS) {
     interval_ms: intervalMs,
     download: {...DOWNLOAD_DEFAULTS, ...downloadSettings},
     timeouts_ms: Object.fromEntries(PROBES.map(p => [p.id, timeoutFor(p, intervalMs)])),
-    probes: PROBES.map(p => ({id: p.id, url: p.url, kind: p.kind,
+    probes: PROBES.map(p => ({id: p.id, label: p.label, url: p.url, kind: p.kind,
                               mode: p.kind === 'opaque' ? 'no-cors' : 'cors',
                               method: p.method || 'GET', samples: p.samples || 1})),
     // Absent in Safari on every platform; recorded for browsers that have it.

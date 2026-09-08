@@ -43,8 +43,8 @@ const t = suite('thresholds');
 
 t.test('a value on an edge belongs to the worse side, and only just', () => {
   // Every edge is checked from both sides.
-  for (const [cap, edges] of Object.entries(g.THRESHOLDS).map(([k, v]) => [k, v.edges])) {
-    const low = g.THRESHOLDS[cap].dir === 'low';
+  for (const [cap, edges] of Object.entries(g.SCALES).map(([k, v]) => [k, v.edges])) {
+    const low = g.SCALES[cap].dir === 'low';
     edges.forEach((edge, i) => {
       const better = low ? edge - 0.001 : edge + 0.001;
       const worse = low ? edge : edge;    // the edge itself is already the worse side
@@ -57,15 +57,15 @@ t.test('a value on an edge belongs to the worse side, and only just', () => {
 });
 
 t.test('nothing and nonsense are not grades', () => {
-  for (const cap of g.CAPABILITIES) {
+  for (const cap of Object.keys(g.SCALES)) {
     for (const v of [null, undefined, NaN, Infinity, -Infinity, -1, '30']) {
       assert.equal(g.gradeValue(cap, v), null,
                    `${cap} must grade ${String(v)} as nothing rather than a colour`);
     }
   }
   // Zero is a valid reading in both directions: instant, and stopped.
-  assert.equal(g.gradeValue('realtime', 0), 'green');
-  assert.equal(g.gradeValue('video', 0), 'red');
+  assert.equal(g.gradeValue('round_trip', 0), 'green');
+  assert.equal(g.gradeValue('rate', 0), 'red');
 });
 
 t.test('a percentile of a short series is not the maximum', () => {
@@ -154,7 +154,7 @@ d.test('a body too short to rate still bounds the link', async () => {
       assert.ok(r.bps_min <= (r.bytes * 8) / (r.duration_ms / 1000) * 1.01,
                 `${name}: the bound may not exceed what arrived over the time it took`);
     }
-    assert.ok(g.gradeRound({probes: {down: r}}).video !== undefined, `${name}: graded either way`);
+    assert.ok(g.gradeRound({probes: {down: r}}).streaming !== undefined, `${name}: graded either way`);
   }
 });
 
@@ -213,8 +213,8 @@ d.test('the bound holds across four orders of magnitude of link', async () => {
               `${mbps} Mb/s: bound ${(r.bps_min / 1e6).toFixed(2)} claims more than the link`);
     // The bound decides a band, so it has to land in the right one rather than merely be
     // true: a bound of 1 kb/s is honest and useless.
-    const band = g.gradeValue('video', r.bps_min);
-    const truth = g.gradeValue('video', mbps * 1e6);
+    const band = g.gradeValue('rate', r.bps_min);
+    const truth = g.gradeValue('rate', mbps * 1e6);
     assert.ok(band === truth || g.GRADES.indexOf(band) === g.GRADES.indexOf(truth) + 1,
               `${mbps} Mb/s graded ${band}, the link itself is ${truth}`);
   }
@@ -265,7 +265,7 @@ n.test('a carrier that drops UDP shows up on the real-time capability alone', as
   const settled = rows.filter(x => x.probes.udp);
   assert.ok(settled.length > 0);
   assert.ok(settled.every(x => x.probes.udp.ok === false), 'STUN never completes');
-  assert.ok(settled.every(x => x.grades.realtime === 'red'), 'real-time is red');
+  assert.ok(settled.every(x => x.grades.voice === 'red'), 'calls are red');
   assert.ok(settled.some(x => x.grades.tap !== 'red'), 'while everything over TCP is fine');
 });
 
@@ -277,7 +277,7 @@ n.test('a resolver answering on its retry timer is loss, not slowness', () => {
     assert.equal(probe.looksLikeRetry(ms), false, `${ms} ms does not`);
   }
   const row = {probes: {dns: {ok: true, ms: 2000, retry_suspected: true}}};
-  assert.equal(g.gradeRound(row).newsite, 'red', 'and a lost first query is red however fast the retry');
+  assert.equal(g.gradeRound(row).news, 'red', 'and a lost first query is red however fast the retry');
 });
 
 n.test('a tunnel is a total outage and comes back whole', async () => {
@@ -728,12 +728,12 @@ h.test('a tile shows the grade of the round whose number it shows', () => {
   }));
   for (const row of rows) {
     const grades = g.gradeRound(row);
-    assert.equal(grades.video, g.gradeValue('video', g.capabilityValue('video', row)),
+    assert.equal(grades.streaming, g.gradeValue('rate', g.capabilityValue('streaming', row)),
                  `${(row.probes.down.bps_min / 1e6).toFixed(1)} Mb/s: the colour is this ` +
                  `round's, taken from the number the tile shows`);
   }
-  assert.equal(g.gradeRound(rows[4]).video, 'green', '35.5 Mb/s is green, whatever came before it');
-  assert.equal(g.gradeRound(rows[3]).video, 'red', 'and 1.1 Mb/s is red, whatever came after');
+  assert.equal(g.gradeRound(rows[4]).streaming, 'green', '35.5 Mb/s is green, whatever came before it');
+  assert.equal(g.gradeRound(rows[3]).streaming, 'red', 'and 1.1 Mb/s is red, whatever came after');
 });
 
 h.test('the strip and the tiles cannot disagree', async () => {

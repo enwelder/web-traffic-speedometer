@@ -47,13 +47,13 @@ const recorder = createRecorder({
     ui.setSignals(sample);
     ui.setLamps(sample);
     const kind = ui.classify(sample);
-    ui.pushStrip(kind);
+    ui.pushStrip(sample);
     if (sample.first_packet_ms != null) lastFirstPacket = sample.first_packet_ms;
     ui.pushLog(ui.sampleLine(sample),
                sample.skipped ? 'warn' : kind === 'green' || kind === 'yellow' ? '' : 'bad');
   },
   onEvent(event) {
-    if (event.type === 'pause') ui.pushStrip('pause');
+    if (event.type === 'pause') ui.pushStripPause();
     ui.pushLog(`${ui.clock(event.t)}  ← ${event.type}${event.text ? ': ' + event.text : ''}`,
                event.type === 'pause' ? 'warn' : 'mark');
   },

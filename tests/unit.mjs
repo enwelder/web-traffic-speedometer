@@ -514,16 +514,25 @@ c.test('an expected failure colours nothing and counts as nothing', () => {
   assert.equal(ui.classify({probes: healthy()}), 'green', 'a missing IPv4 path is not degraded');
 });
 
-c.test('the strip takes the worst capability in the round', () => {
+c.test('a round taken as a whole is its worst purpose', () => {
   assert.equal(ui.classify({probes: {...healthy(), dns: OK(2500)}}), 'orange');
-  assert.equal(ui.classify({probes: {...healthy(), udp: BAD()}}), 'red', 'loss on real-time');
-  assert.equal(ui.classify({probes: {...healthy(), web: OK(500)}}), 'yellow');
+  assert.equal(ui.classify({probes: {...healthy(), udp: BAD()}}), 'red', 'no UDP path sinks voice');
   assert.equal(ui.classify({probes: healthy(), skipped: 'overlap'}), 'skip');
+});
+
+c.test('each purpose keeps its own colour, which is what the strips show', () => {
+  // The failure that started this: one probe down painted a whole tile red while the rest of
+  // the connection was fine. A per-purpose grade is what makes that legible.
+  const oneBadLookup = {probes: {...healthy(), dns: OK(2500)}};
+  assert.equal(ui.gradeFor('news', oneBadLookup), 'orange');
+  assert.equal(ui.gradeFor('voice', oneBadLookup), 'green', 'calls are unaffected by a lookup');
+  assert.equal(ui.gradeFor('streaming', oneBadLookup), 'green');
+  assert.equal(ui.gradeFor('voice', {probes: healthy(), skipped: 'overlap'}), 'skip');
 });
 
 c.test('the readout shows the grade the file recorded, not a second opinion', () => {
   // A row's stored grades are used in preference to regrading it.
-  const sample = {probes: healthy(), grades: {realtime: 'red', tap: 'green', newsite: 'green', video: 'green'}};
+  const sample = {probes: healthy(), grades: {voice: 'red', news: 'green', streaming: 'green'}};
   assert.equal(ui.classify(sample), 'red', 'the stored grade wins');
 });
 
@@ -598,7 +607,8 @@ e.test('the rollup describes the session without judging it', () => {
   samples.push(row(11, {probes: {...row(11).probes, web: probe(false, 8000)}}));
 
   const sum = summarise(samples);
-  assert.ok(sum.thresholds.realtime, 'the thresholds in force travel with the numbers');
+  assert.ok(sum.scales.round_trip && sum.purposes.voice,
+            'the scales and the purposes they compose travel with the numbers');
   assert.ok(sum.grades, 'and the grades they produced');
   assert.equal(sum.rounds, 12);
   assert.equal(sum.ran, 11, 'a skipped round did not run');
