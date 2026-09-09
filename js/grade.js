@@ -8,8 +8,7 @@ export const SCALES = {
   ttfb:       {unit: 'ms',  dir: 'low',  edges: [800, 1800, 3000]},
   article:    {unit: 'ms',  dir: 'low',  edges: [2500, 4000, 8000]},
   rate:       {unit: 'bps', dir: 'high', edges: [10e6, 5e6, 1.5e6]},
-  call_rate:  {unit: 'bps', dir: 'high', edges: [0.3e6, 0.1e6, 0.03e6]},
-  dns_delta:  {unit: 'ms',  dir: 'low',  edges: [250, 500, 1000]}
+  call_rate:  {unit: 'bps', dir: 'high', edges: [0.3e6, 0.1e6, 0.03e6]}
 };
 
 export const ACTIVITIES = {
@@ -124,6 +123,17 @@ export function activityReading(activity, sample) {
   const graded = terms(activity, sample?.probes || {})
     .map(t => ({...t, grade: t.grade ?? gradeValue(t.scale, t.value)}));
   const grade = graded.reduce((a, t) => worse(a, t.grade), null);
+
+  // A term that measures something and got no measurement is not a term that passed. Letting
+  // it fall out of the worst-of graded a call green on UDP and throughput alone while the
+  // round trip had no instrument at all — every probe that could have supplied one blocked.
+  // A failure already seen outranks it: red is known, unrated is not knowing.
+  const missing = graded.filter(t => t.scale && t.grade == null).map(t => t.scale);
+  if (missing.length && grade !== 'red') {
+    return {grade: null, value: null, unit: null, note: 'unrated', scale: null,
+            saturated: false, missing};
+  }
+
   const decided = grade == null ? null : graded.find(t => t.grade === grade);
   return {
     grade,
@@ -132,7 +142,8 @@ export function activityReading(activity, sample) {
     note: decided?.note ?? null,
     scale: decided?.scale ?? null,
     // The download is the only term that can saturate, and only it prints a ≥.
-    saturated: decided?.scale === 'rate' && sample?.probes?.down?.saturated === true
+    saturated: decided?.scale === 'rate' && sample?.probes?.down?.saturated === true,
+    missing: []
   };
 }
 
@@ -140,7 +151,7 @@ export function activityReading(activity, sample) {
 // contradicts.
 export const PROBE_SCALES = {
   ip6: 'round_trip', ip4: 'round_trip', dns_ctl: 'round_trip', web: 'round_trip',
-  udp: 'round_trip', down: 'rate', dns: 'dns_delta'
+  udp: 'round_trip', down: 'rate', dns: 'ttfb'
 };
 
 function probeState(r) {
@@ -154,11 +165,17 @@ function probeState(r) {
   return r.ok ? 'ok' : 'none';
 }
 
+// What it costs to reach a host never contacted before: resolution, the connection and the
+// handshake together. Measured, not decomposed — a page cannot separate them, because the
+// resource-timing phases come back zeroed cross-origin without Timing-Allow-Origin.
+//
+// It was graded against the cached-name control on a scale of its own. The control answers in
+// about 15 ms on a warm connection, so subtracting it removed nothing, and the bespoke scale
+// then had to be tuned to a corpus. The absolute time is what a person waits for when they
+// open a link to somewhere new, and `ttfb` was written for exactly that wait.
 function dnsMeasure(p) {
   if (p.dns?.retry_suspected) return {grade: 'red', note: 'lost'};
-  const ctl = p.dns_ctl?.ok ? p.dns_ctl.ms : null;
-  if (ctl == null) return {grade: 'green', note: 'resolved'};
-  return {scale: 'dns_delta', value: Math.max(0, p.dns.ms - ctl)};
+  return {scale: 'ttfb', value: p.dns.ms};
 }
 
 // What a probe measured this round, and the colour that measurement grades to.

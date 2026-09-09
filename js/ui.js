@@ -4,7 +4,6 @@ import {PROBES} from './probe.js';
 import {ACTIVITY_IDS, GRADES, ACTIVITIES, gradeActivities, worse, probeReading,
         activeRoute} from './grade.js';
 import {DOWN_CEILING_BPS} from './probe.js';
-import {countsAsFailure} from './export.js';
 
 const STRIP_BARS = 48;
 
@@ -60,7 +59,7 @@ const ROWS = ['route', 'dns', 'dns_ctl', 'web', 'udp', 'down'];
 // Each row names the request it sent, not the layer it stands for: a reader can match a row
 // to a line of the probe table without guessing. PROBES carries the full sentence.
 const PROBE_LABELS = {
-  ip6: 'GET IPv6', ip4: 'GET IPv4', dns: 'DNS uncached', dns_ctl: 'DNS cached',
+  ip6: 'GET IPv6', ip4: 'GET IPv4', dns: 'HEAD new host', dns_ctl: 'HEAD same host',
   web: 'GET gstatic', down: 'GET download', udp: 'STUN'
 };
 // The row id a reading comes from, and the label it carries, both depend on the round.
@@ -71,7 +70,7 @@ const ROUTE_EXPLAIN = 'GET to an address literal, no lookup. Whichever family is
 
 // Where a row's number would be read as something it is not. Both are argued in the README.
 const PROBE_CAVEATS = {
-  dns: 'Graded against the cached-name control, not on its own: most of this gap is the far end handling a hostname it has not seen.',
+  dns: 'The whole cost of reaching a host never contacted before: resolution, connection and handshake together. A page cannot separate them.',
   down: `Three connections read together for a fixed window. Reads up to ${Math.round(DOWN_CEILING_BPS / 1e6)} Mb/s and says ≥ at that point, which is all a window this size can prove.`,
   udp: 'ICE gathering rides on top of the round trip, so this reads slower than the link is.'
 };
@@ -84,15 +83,14 @@ function displayReading(r) {
   // A rate reads as itself unless the round saturated, where all that was proved is the
   // ceiling and the ≥ says so.
   if (r.unit === 'bps') return (r.saturated ? '≥' : '') + rate(r.value);
-  // A difference prints as one, so nobody reads it as a latency.
-  return (r.scale === 'dns_delta' ? '+' : '') + Math.round(r.value);
+  return String(Math.round(r.value));
 }
 
 // `rate` writes its own unit, and a term reporting a gone path has none. The DNS delta says
 // what its number is, since every other row prints a plain latency in the same column.
 function displayUnit(r) {
   if (!r || r.note || r.value == null || r.unit !== 'ms') return '';
-  return r.scale === 'dns_delta' ? 'ms extra' : 'ms';
+  return 'ms';
 }
 
 // Rows are generated from ROWS and named from PROBES; the strips are named from ACTIVITIES.
@@ -218,22 +216,40 @@ export function clearLog(placeholder) {
   if (placeholder) pushLog(placeholder);
 }
 
-export function sampleLine(sample) {
-  const time = clock(sample.t);
-  if (sample.skipped) return `${time}  skipped: ${sample.skipped} (${sample.late_ms} ms late)`;
-  if (sample.round_error) return `${time}  round error: ${sample.round_error}`;
-  const failed = PROBES.filter(p => countsAsFailure(sample.probes[p.id]));
-  if (failed.length) return `${time}  ` + failed.map(p => `${p.id} ${sample.probes[p.id].fail}`).join('  ');
-  const num = v => (v == null ? '–' : v);
-  const d = sample.probes.down;
-  const dns = num(sample.probes.dns?.ms);
-  const ctl = sample.probes.dns_ctl?.ms;
-  const speed = !d ? ''
-    : d.ok && d.bps_min ? `  ≥${rate(d.bps_min)}`
-    : d.ok ? '  unrated'
-    : `  ${d.fail}`;
-  return `${time}  v6 ${num(sample.probes.ip6?.ms)}  dns ${dns}${ctl != null ? '/' + ctl : ''}${speed}`;
+
+// What changed since the round before. Thirty rounds of an unremarkable connection produced
+// thirty near-identical lines, and the one fact that mattered — a family that had stopped
+// answering — was invisible among them. A line now marks a transition.
+
+// One line per thing that moved. With no round before it, only what is not already fine is
+// worth saying.
+function transitions(ids, {label, now, then, fine}) {
+  const out = [];
+  for (const id of ids) {
+    const to = now(id);
+    const from = then(id);
+    if (from === null) { if (to !== fine) out.push(`${label(id)} ${to}`); continue; }
+    if (from !== to) out.push(`${label(id)} ${from} → ${to}`);
+  }
+  return out;
 }
+
+export function changes(sample, prev) {
+  const time = clock(sample.t);
+  if (sample.skipped) return [`${time}  skipped: ${sample.skipped} (${sample.late_ms} ms late)`];
+  if (sample.round_error) return [`${time}  round error: ${sample.round_error}`];
+
+  // Only what a strip cannot already show. An activity changing colour is on screen as a bar;
+  // which probe moved, and to what, is not anywhere else.
+  const before = prev && !prev.skipped ? prev : null;
+  return transitions(PROBES.map(p => p.id), {
+    label: id => id,
+    now: id => probeReading(id, sample).state,
+    then: id => (before ? probeReading(id, before).state : null),
+    fine: 'ok'
+  }).map(line => `${time}  ${line}`);
+}
+
 
 export function setStats({rounds, elapsed, pos, speed, data, marks}) {
   $('m-rounds').textContent = rounds;

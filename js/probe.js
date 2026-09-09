@@ -351,9 +351,15 @@ const downUrl = (probe, i, cfg) =>
 // first proves only that the link carries at least the ceiling, and says so.
 function downloadResult(meter) {
   const m = meter.read();
-  const rate = m.window_ms > 0 && m.window_bytes > 0
-    ? Math.round((m.window_bytes * 8) / (m.window_ms / 1000)) : null;
-  return {...m, bps: m.saturated ? DOWN_CEILING_BPS : rate, ceiling_bps: DOWN_CEILING_BPS};
+  // A body handed over in one piece leaves no window to measure across — WebKit does this
+  // whenever the whole response is already buffered. The transfer still happened, so it is
+  // measured over its own span instead, and anything past the ceiling saturates as usual.
+  const span = m.window_ms > 0 ? m.window_ms : m.ramp_ms + m.window_ms;
+  const bytes = m.window_ms > 0 ? m.window_bytes : m.bytes;
+  const rate = span > 0 && bytes > 0 ? Math.round((bytes * 8) / (span / 1000)) : null;
+  const saturated = m.saturated || (rate != null && rate >= DOWN_CEILING_BPS);
+  return {...m, saturated, ceiling_bps: DOWN_CEILING_BPS,
+          bps: saturated ? DOWN_CEILING_BPS : rate};
 }
 
 // The worst thing that happened to any stream, since one stream stalling is the round's story

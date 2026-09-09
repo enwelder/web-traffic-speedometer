@@ -169,21 +169,6 @@ s.test('a download the server refused does not grade the link', () => {
   assert.notEqual(g.gradeActivities(refused).streaming, 'red');
 });
 
-s.test('the fresh lookup is graded against the cached-name control', () => {
-  // Same host, same path: the difference is what the delta is for. The absolute number is
-  // mostly the far end handling a name it has not seen, so it is never graded on its own.
-  const delta = (dns, ctl) => g.probeReading('dns', round({dns: ok(dns), dns_ctl: ok(ctl)}));
-  assert.equal(delta(200, 60).grade, 'green', '140 ms sits at the floor every journey shows');
-  assert.equal(delta(700, 60).grade, 'orange');
-  assert.equal(delta(1200, 60).grade, 'red');
-  assert.equal(delta(200, 60).value, 140, 'the row prints the difference it graded');
-
-  // One sample against a median of three goes negative on noise. Three of 259 recorded rounds
-  // do; a negative delta is not a faster-than-instant lookup.
-  assert.equal(delta(40, 160).value, 0);
-  assert.equal(delta(40, 160).grade, 'green');
-});
-
 s.test('a lookup on a retry timer is red however small the delta', () => {
   // The first query was lost. Loss, not slowness, and the delta cannot see it.
   const lost = round({dns: ok(80, {retry_suspected: true}), dns_ctl: ok(60)});
@@ -191,14 +176,6 @@ s.test('a lookup on a retry timer is red however small the delta', () => {
   assert.equal(r.grade, 'red');
   assert.equal(r.value, null, 'there is no number that would explain the colour');
   assert.equal(r.note, 'lost');
-});
-
-s.test('a fresh lookup with no control still reports', () => {
-  // Nothing to subtract, but the name did resolve, and that is worth saying.
-  const r = g.probeReading('dns', round({dns: ok(190), dns_ctl: bad()}));
-  assert.equal(r.grade, 'green');
-  assert.equal(r.value, null);
-  assert.equal(r.note, 'resolved');
 });
 
 s.test('calling reads whichever address family the network carries', () => {

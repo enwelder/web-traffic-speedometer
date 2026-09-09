@@ -1,6 +1,6 @@
 # Exported session format
 
-`format: "wts/session"`, `version: 8`. One button per session writes one JSON file: session
+`format: "wts/session"`, `version: 9`. One button per session writes one JSON file: session
 metadata, environment, a rollup, every sample, every event. CSV, GPX or GeoJSON are a few
 lines to derive from it.
 
@@ -12,6 +12,7 @@ lines to derive from it.
 | 6 | throughput is graded on the largest of `bps`, `bps_server` and `bps_min`, rather than on the whole-transfer floor alone |
 | 7 | throughput is streamed on several connections for a fixed window and saturates at a stated ceiling; `bps_min`, `bps_server` and `warmup_only` are gone |
 | 8 | a failing address-family literal is judged on its own round: `unused` replaces `expected` on `ip6`/`ip4`, which no longer carry a session-long verdict |
+| 9 | an activity whose term could not be measured is unrated rather than graded on the rest; the fresh-name probe is graded on `ttfb` and the `dns_delta` scale is gone |
 
 Version 5 matters to a reader counting failures: before it, `expected` appeared only on `ip4`,
 so an `ip6` failure was always a real one. On a network carrying no IPv6 it now marks a path
@@ -94,7 +95,7 @@ screen. Silent data loss is the one failure this tool cannot have.
 | `prev_round_ms` | how long the previous round took. A frozen tab suspends the abort timers, so a round can outlast every deadline in it; without this an overlap cannot be told from the app stalling |
 | `speed_derived` `speed_source` | speed computed from consecutive fixes, and whether the reported value is `gps` or `derived` |
 | `loaded_rtt_ms` `loaded_rtt_from` | a round trip taken while the download was running, and which probe took it — the same one that answered idle, so the pair is one measurement made twice. The gap between them is what this link queues under load |
-| `grades` | the three activity grades this round produced, as shown |
+| `grades` | the three activity grades this round produced, as shown. `null` means unrated: some term it needs had no measurement, and a grade may not rest on one that was never taken |
 | `pgrades` | the seven per-probe grades |
 | `first_packet_ms` | quickest first response in the round: the closest thing to the cost of waking the radio. Reported, never graded |
 

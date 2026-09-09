@@ -123,11 +123,10 @@ takes the worse side.
 | scale | what is measured on it | green | yellow | orange | red | source |
 |---|---|---|---|---|---|---|
 | `round_trip` | the latency of `ip6` `ip4` `dns_ctl` `web` `udp` | <100 ms | <200 ms | <400 ms | ≥400 ms | [ITU-T G.114](https://www.itu.int/rec/T-REC-G.114) |
-| `ttfb` | `dns` latency, for reading articles | <800 ms | <1800 ms | <3000 ms | ≥3000 ms | [web.dev](https://web.dev/articles/ttfb) |
+| `ttfb` | the time to reach a host never contacted before, on the `new host` row and for reading articles | <800 ms | <1800 ms | <3000 ms | ≥3000 ms | [web.dev](https://web.dev/articles/ttfb) |
 | `article` | the modelled article time below | <2.5 s | <4 s | <8 s | ≥8 s | [Core Web Vitals LCP](https://web.dev/articles/lcp) |
 | `rate` | `down`'s throughput bound | >10 Mb/s | >5 Mb/s | >1.5 Mb/s | ≤1.5 Mb/s | [Netflix tiers](https://help.netflix.com/en/node/306) |
 | `call_rate` | the same bound, asked what a call needs | >300 kb/s | >100 kb/s | >30 kb/s | ≤30 kb/s | [Opus, RFC 6716](https://www.rfc-editor.org/info/rfc6716) |
-| `dns_delta` | `dns` latency minus `dns_ctl` latency | <250 ms | <500 ms | <1000 ms | ≥1000 ms | derived — see below |
 
 The same measurement can be read on two scales: `down`'s bound decides streaming on `rate`
 and calling on `call_rate`, because a call needs a thousandth of what video does.
@@ -229,24 +228,22 @@ the 9 kB 404 body off the wire.
 | a wildcard on Cloudflare, matching the IP probes' destination | none exists: `pages.dev`, `workers.dev` and `cloudflare-dns.com` have no wildcard DNS |
 | DNS-over-HTTPS | bypasses the OS resolver, so it measures Cloudflare's recursive resolver instead of the carrier's |
 
-**The DNS delta.** `dns` is graded on `dns.ms − dns_ctl.ms`, never on its own latency: both
-requests go to the same host over the same path, so the difference removes what they share.
-No standard covers this, so the edges are fitted to the 259 rounds in the committed journeys
-where both answered. Two later live runs agree:
+**Reaching a host for the first time.** The `new host` probe asks for a hostname never used
+before, so nothing about it is cached anywhere. What that costs is resolution, the connection
+and the handshake together, and a page cannot separate them: `github.io` sends no
+`Timing-Allow-Origin`, so the resource-timing phases come back zeroed cross-origin.
 
-| corpus | n | min | p50 | p90 | max |
-|---|---|---|---|---|---|
-| three recorded journeys | 259 | −112 ms | 150 ms | 460 ms | 4164 ms |
-| dual-stack Wi-Fi | 7 | 113 ms | 126 ms | — | 138 ms |
-| 5G hotspot, different egress | 11 | 124 ms | 143 ms | — | 268 ms |
+Measured on one machine, one moment: a warm control answers in 14 ms, a brand-new hostname
+takes 139 ms, and **the same hostname a second time takes 13 ms**. The cost is first contact,
+and it is gone the instant the connection exists.
 
-The ~120 ms floor appears on all three, which places it at the destination rather than at any
-carrier. A green here therefore means "no worse than the floor", not "DNS is fast" — most of
-the gap is GitHub handling a hostname it has not seen. The delta goes negative on noise
-(`dns` is one sample, `dns_ctl` a median of three) and is clamped at zero. `retry_suspected`
-forces red whatever the delta says, since a lost first query is loss rather than slowness; no
-recording exercises that path. `tests/replay.mjs` pins the corpus split, so moving an edge
-without re-deriving it fails.
+It is therefore graded on `ttfb`, the scale written for exactly that wait, and not against the
+control. Subtracting a 14 ms warm connection removed nothing and left a bespoke scale to be
+tuned. A mobile figure four to eight times the desktop one is not a fault in the measurement:
+first contact is several round trips, and mobile round trips are longer.
+
+`retry_suspected` still forces red whatever the time says, since a lost first query is loss
+rather than slowness.
 
 **A wedged probe is not the network.** A connection can reach a state the browser will not
 retire: after an outage every other probe recovers within a round while one keeps timing out

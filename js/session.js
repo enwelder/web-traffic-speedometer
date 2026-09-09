@@ -11,6 +11,7 @@ import {createPositionTracker} from './position.js';
 import * as realStore from './store.js';
 
 const PATHS = [['ip6', 'ipv6_available', 'IPv6'], ['ip4', 'ipv4_available', 'IPv4']];
+const LITERAL_IPS = {ip6: '2606:4700:4700::1111', ip4: '1.1.1.1'};
 
 // Byte estimates for the data-used figure. Safari opens a fresh connection per request, so
 // every repeat contact is charged a resumed TLS handshake and only the first contact with an
@@ -22,7 +23,7 @@ const REFUSED_BYTES = 100;      // an IPv4 literal with no path never gets a con
 // STUN is UDP: no handshake to charge and no connection to resume.
 const cost = p => (WARM_BYTES[p.kind] * (p.samples || 1)) + (p.kind === 'stun' ? 0 : RESUMED_BYTES);
 
-export const APP_VERSION = '3.11.0';
+export const APP_VERSION = '3.12.0';
 
 // The download runs every round, so the interval is what controls data use.
 export const PROFILES = {
@@ -121,6 +122,8 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
   let throughput = null;
   let udpMs = null;
   let downloadBytesUsed = 0;
+  let lastElapsed = 0;
+  const said = new Set();
   let lastGrades = null;
   let flushing = null;
   let writeFailed = false;
@@ -147,7 +150,8 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
       speedSource: lastSpeedSource,
       pending: pendingSamples.length + pendingEvents.length,
       writeFailed, pos: fix.pos, posError: fix.error,
-      elapsed: running ? Math.floor(mono() / 1000) : 0
+      // Frozen when the session stops: a finished run still took the time it took.
+      elapsed: running ? (lastElapsed = Math.floor(mono() / 1000)) : lastElapsed
     };
   }
 
@@ -253,6 +257,30 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
   // Cloudflare over it. They disagree where a literal is blocked but the path is fine —
   // 1.1.1.1 is a public resolver and relays and filters intercept it — and reading only the
   // literal then calls a working path absent and excuses every failure on it.
+  // Said once per session, not once per round: the cause does not change between rounds and
+  // thirty copies of it bury the rest of the log.
+  function noteOnce(key, text) {
+    if (said.has(key)) return;
+    said.add(key);
+    noteEvent(text);
+  }
+
+  // A literal refused while its own family carries traffic is not the network. Naming what
+  // does that is the difference between a puzzling row and a fixable one.
+  function noteInterference(row) {
+    for (const [id, , label] of PATHS) {
+      if (!row.probes[id]?.blocked) continue;
+      noteOnce(`blocked-${id}`,
+        `${label} literal refused while ${label} carries traffic. ${LITERAL_IPS[id]} is a ` +
+        `public resolver address; a VPN, filter or captive portal commonly intercepts it`);
+    }
+    if (!row.probes.ip6?.ok && !row.probes.ip4?.ok) {
+      noteOnce('no-round-trip',
+        'no address literal answered, so the round trip has no instrument and calls cannot ' +
+        'be graded');
+    }
+  }
+
   // The preflight is recorded, not obeyed: what a literal did at session start explains a log
   // line, and every round decides for itself. A family that answers is still worth settling,
   // because a session that never sees one again should say so in the file.
@@ -311,6 +339,7 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
     lastGrades = row.grades;
 
     revisePaths(row);
+    noteInterference(row);
 
     noteEgressChange(row);
     stuck.note(row, seq);
@@ -403,6 +432,8 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
     throughput = null;
     udpMs = null;
     downloadBytesUsed = spent?.downloadBytes || 0;
+    lastElapsed = 0;
+    said.clear();
     lastGrades = null;
     inFlight = false;
     contacted.clear();

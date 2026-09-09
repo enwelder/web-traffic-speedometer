@@ -8,6 +8,7 @@ const PREFS_KEY = 'wts.prefs';
 const $ = ui.$;
 
 let listDirty = true;
+let lastSample = null;
 
 // Test seam: on localhost only, ?interval=<ms> shortens the round for the browser suite.
 function testInterval() {
@@ -37,8 +38,11 @@ const recorder = createRecorder({
     ui.setProbes(sample);
     const kind = ui.classify(sample);
     ui.pushStrip(sample);
-    ui.pushLog(ui.sampleLine(sample),
-               sample.skipped ? 'warn' : kind === 'green' || kind === 'yellow' ? '' : 'bad');
+    // Only what changed. The first round states anything that is not already fine.
+    for (const line of ui.changes(sample, lastSample)) {
+      ui.pushLog(line, sample.skipped ? 'warn' : kind === 'green' || kind === 'yellow' ? '' : 'bad');
+    }
+    lastSample = sample;
   },
   onEvent(event) {
     if (event.type === 'pause') ui.pushStripPause();
@@ -148,6 +152,7 @@ function newSession() {
 // Everything on screen that belongs to one session. Both ways into a session reset the
 // same set, so state added here cannot carry from one session into the next.
 function resetReadout(intervalMs) {
+  lastSample = null;
   ui.clearLog();
   ui.clearStrip();
   ui.setStripWindow(intervalMs);

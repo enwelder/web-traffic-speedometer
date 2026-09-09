@@ -190,18 +190,24 @@ r.test('every impossible speed in the recordings comes from a fix the rules now 
             `the recordings still carry the rows the rules were written for: ${impossible}`);
 });
 
-r.test('the recordings cannot yet speak for the throughput probe', () => {
-  // Every committed recording predates the windowed measurement, so its rows carry
-  // whole-transfer figures and no `bps`; streaming is graded only against the synthetic
-  // streams in tests/edges.mjs. Adding a recording that carries one fails this test, which is
-  // when it should become an assertion about the rate itself.
-  const rated = Object.values(journeys)
-    .flatMap(j => j.samples)
-    .filter(s => s.probes?.down?.bps != null);
-  assert.equal(rated.length, 0,
-               `a journey now carries a measured rate (${rated.length} rounds): grade it ` +
-               `here instead of trusting the synthetic streams`);
+r.test('a recorded journey grades its own throughput', () => {
+  // This replaces a guard that asserted no committed recording could supply a rate. One now
+  // does, so the rate is graded against a real journey rather than against synthetic streams.
+  const j = journeys['vpn-blocked-literal'];
+  const down = j.samples.map(s => s.probes.down).filter(d => d?.ok);
+  assert.equal(down.length, j.samples.length, 'every round measured throughput');
+
+  assert.ok(down.every(d => d.streams === 3), 'on three connections, as RMBT does');
+  assert.ok(down.every(d => d.saturated === true), 'a fibre link reaches the cap every round');
+  assert.ok(down.every(d => d.bps === d.ceiling_bps),
+            'so the reading is the ceiling, which is all a window this size can prove');
+  assert.ok(down.every(d => d.window_ms > 0 && d.window_bytes > 0), 'over a real window');
+
+  // And the cost of a round is what the ceiling implies, not whatever the link would give.
+  const mb = down.reduce((n, d) => n + d.bytes, 0) / down.length / 1e6;
+  assert.ok(mb < 8, `a round costs what it was told to: ${mb.toFixed(1)} MB`);
 });
+
 
 r.test('a recording from an older build grades without a schema for it', () => {
   // The oldest fixture predates the UDP probe, the steady rate and the grades field. Missing
@@ -214,29 +220,48 @@ r.test('a recording from an older build grades without a schema for it', () => {
   assert.equal(grades.video, null, 'and what cannot is left empty');
 });
 
-r.test('the run that looked broken was the grading, not the network', () => {
-  // Forty rounds of 5G at 30-60 ms round trips and ~200 ms fresh lookups grade green under
-  // per-activity thresholds.
-  const j = journeys['good-5g'];
-  const tally = activity => j.samples.reduce((acc, s) => {
-    const v = g.gradeActivities(s)?.[activity];
-    if (v) acc[v] = (acc[v] || 0) + 1;
-    return acc;
-  }, {});
+r.test('a recording that cannot supply a measurement is not graded on the rest', () => {
+  // The committed journeys predate throughput measurement, so nothing in them can fill the
+  // rate terms. Before, those terms fell out of the worst-of and the activity graded green on
+  // what remained. An activity is now unrated instead: a grade may not rest on a measurement
+  // that was never taken.
+  const old = journeys['good-5g'];
+  assert.ok(old.samples.every(s => s.probes.down.bps == null), 'these rows carry no rate');
+  for (const s of old.samples) {
+    const a = g.gradeActivities(s);
+    assert.equal(a.streaming, null, 'streaming is only throughput, so it cannot be graded');
+  }
 
-  const news = tally('news');
-  assert.ok((news.green || 0) >= j.samples.length * 0.7,
-            `a fresh lookup at ~200 ms is a good result, not a warning: ${JSON.stringify(news)}`);
-
-  const voice = tally('voice');
-  assert.ok((voice.green || 0) >= j.samples.length * 0.8,
-            `30-60 ms round trips are green: ${JSON.stringify(voice)}`);
-
-  // The rounds that a single shared latency scale would have marked down.
-  const oneScale = j.samples.filter(s => s.probes.dns.ms >= 300).length;
-  assert.ok(oneScale >= 5,
-            `${oneScale} rounds would have been marked down by a shared 300 ms threshold`);
+  // Latency still grades: a fresh lookup at ~200 ms and 30-60 ms round trips are good results,
+  // and the reason articles stay unrated here is the missing rate, not the lookup.
+  const news = old.samples.map(s => g.activityReading('news', s));
+  assert.ok(news.every(r => r.grade !== 'red'), 'nothing here is a failure');
+  assert.ok(news.every(r => r.grade !== null || r.missing.includes('article')),
+            'and where it is unrated, it says which measurement is missing');
 });
+
+r.test('a blocked literal leaves calls unrated rather than green', () => {
+  // Recorded on a desktop behind a corporate VPN: 1.1.1.1 refused every round while IPv4
+  // carried the traffic, and IPv6 had no route. Calls had no round trip to grade, and used to
+  // report green on UDP and throughput alone.
+  const j = journeys['vpn-blocked-literal'];
+  assert.ok(j, 'the recording is committed');
+
+  for (const s of j.samples) {
+    assert.equal(g.probeReading('ip4', s).state, 'blocked', 'the literal is refused');
+    assert.equal(g.probeReading('ip6', s).state, 'unused', 'and the other family carried');
+
+    const voice = g.activityReading('voice', s);
+    assert.equal(voice.grade, null, 'so calls are unrated');
+    assert.deepEqual(voice.missing, ['round_trip'], 'and say what is missing');
+  }
+
+  // What the connection could still do is still graded: nothing about it was broken.
+  const tally = a => j.samples.reduce((n, s) => n + (g.gradeActivities(s)[a] === 'green' ? 1 : 0), 0);
+  assert.equal(tally('news'), j.samples.length, 'reading articles was fine');
+  assert.equal(tally('streaming'), j.samples.length, 'so was video');
+});
+
 
 r.test('a wedged probe is visible in the recording that showed it', () => {
   const j = journeys['stuck-probe'];
@@ -285,7 +310,7 @@ r.test('the recordings agree with what the scheduler promises', () => {
 
 
 r.test('every probe reading holds up against recorded rounds', () => {
-  const states = ['none', 'resting', 'absent', 'refused', 'failed', 'ok'];
+  const states = ['none', 'resting', 'absent', 'blocked', 'unused', 'refused', 'failed', 'ok'];
   let readings = 0;
   for (const [name, j] of Object.entries(journeys)) {
     for (const s of j.samples) {
@@ -301,24 +326,6 @@ r.test('every probe reading holds up against recorded rounds', () => {
     }
   }
   assert.ok(readings > 1000, `enough rounds to be worth asserting on: ${readings}`);
-});
-
-r.test('the dns delta grades the corpus it was derived from', () => {
-  // The only scale here with no external source: its edges were fitted to these journeys.
-  // Pinning the split means retuning them fails a test rather than passing silently.
-  const seen = {green: 0, yellow: 0, orange: 0, red: 0};
-  let paired = 0;
-  for (const j of Object.values(journeys)) {
-    for (const s of j.samples) {
-      const p = s.probes || {};
-      if (p.dns?.ok && p.dns_ctl?.ok) paired++;
-      const grade = g.probeReading('dns', s).grade;
-      if (grade) seen[grade]++;
-    }
-  }
-  assert.equal(paired, 259, 'rounds where both the fresh lookup and its control answered');
-  assert.deepEqual(seen, {green: 206, yellow: 31, orange: 12, red: 23},
-                   `edges 250/500/1000 split the corpus: ${JSON.stringify(seen)}`);
 });
 
 await r.run();

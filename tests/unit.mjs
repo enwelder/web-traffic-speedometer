@@ -578,6 +578,94 @@ await l.run();
 
 /* ---------------- classification and export ---------------- */
 
+const grade = await import('../js/grade.js');
+const r = suite('readout');
+
+// Every bug reported from a real device this month was in what the screen says, not in what
+// the model computed, and no test asserted a single character of it. These do.
+const shown = ms => ({ok: true, ms, fail: null});
+const gone = over => ({ok: false, ms: 12, fail: 'network', ...over});
+const round = over => ({t: Date.parse('2026-09-09T12:00:00Z'), probes: {
+  ip6: shown(30), ip4: gone({unused: true}), dns: shown(180), dns_ctl: shown(20),
+  web: shown(25), udp: shown(20),
+  down: {ok: true, bps: 25066667, saturated: true, ceiling_bps: 25066667, streams: 3},
+  ...over
+}});
+
+r.test('a healthy round prints a number and a unit on every row', () => {
+  const s = round();
+  for (const id of ['ip6', 'dns', 'dns_ctl', 'web', 'udp']) {
+    const rd = grade.probeReading(id, s);
+    assert.ok(rd.value != null || rd.note, `${id} shows something`);
+  }
+  const down = grade.probeReading('down', s);
+  assert.equal(down.saturated, true, 'a saturated download is flagged for the ≥');
+  assert.equal(down.unit, 'bps');
+});
+
+r.test('the new-host row is a time, not a difference', () => {
+  // It was printed as "+190 ms extra" against a warm control that answers in 15 ms, on a scale
+  // tuned to a corpus. The absolute time is what a person waits for, and ttfb grades it.
+  const rd = grade.probeReading('dns', round({dns: shown(190)}));
+  assert.equal(rd.scale, 'ttfb');
+  assert.equal(rd.value, 190);
+  assert.equal(rd.grade, 'green', '190 ms to a host never contacted is a good result');
+  assert.equal(grade.probeReading('dns', round({dns: shown(2500)})).grade, 'orange');
+});
+
+r.test('a state word is not a measurement and carries no colour', () => {
+  for (const [over, state] of [[{unused: true}, 'unused'], [{blocked: true}, 'blocked'],
+                               [{expected: true}, 'absent'], [{fail: 'resting'}, 'resting']]) {
+    const rd = grade.probeReading('ip4', round({ip4: gone(over)}));
+    assert.equal(rd.state, state);
+    assert.equal(rd.grade, null, `${state} takes no colour`);
+    assert.equal(rd.value, null, `${state} prints no number`);
+  }
+});
+
+r.test('the log speaks only when something moved', () => {
+  const a = round();
+  const b = round();
+  const c = round({udp: gone()});
+
+  const first = ui.changes(a, null);
+  assert.ok(first.every(l => !l.includes('→')), 'the first round states, it does not compare');
+  assert.ok(first.some(l => l.includes('ip4 unused')), 'and names what is not already fine');
+
+  assert.deepEqual(ui.changes(b, a), [], 'an unchanged round says nothing');
+
+  const moved = ui.changes(c, b);
+  assert.equal(moved.length, 1, `one line for one change: ${JSON.stringify(moved)}`);
+  assert.match(moved[0], /udp ok → failed/);
+  assert.match(moved[0], /^\d\d:\d\d:\d\d/, 'stamped with the time it happened');
+
+  // An activity changing colour is a bar on the strip and is not repeated here.
+  assert.ok(!moved.some(l => /calling|articles|streaming/.test(l)));
+});
+
+r.test('a skipped round says so instead of comparing', () => {
+  const skipped = {...round(), skipped: 'overlap', late_ms: 900};
+  const lines = ui.changes(skipped, round());
+  assert.equal(lines.length, 1);
+  assert.match(lines[0], /skipped: overlap \(900 ms late\)/);
+});
+
+r.test('the elapsed clock stops rather than resetting', async () => {
+  const store = fakeStore();
+  const {rec} = recorder(store);
+  const sess = session();
+  await rec.start(sess);
+  await sleep(300);
+  const running = rec.status().elapsed;
+  await rec.stop();
+  assert.ok(running >= 0, 'a running session reports its elapsed time');
+  assert.equal(rec.status().elapsed, running,
+               'and a finished one still reports it rather than zero');
+});
+
+await r.run();
+
+
 const c = suite('classification');
 const OK = (ms = 20, extra = {}) => ({ok: true, ms, fail: null, ...extra});
 const BAD = (extra = {}) => ({ok: false, ms: 20, fail: 'network', ...extra});
@@ -630,7 +718,7 @@ c.test('every ui function main.js calls exists', async () => {
 
 c.test('every grade function the modules call exists', async () => {
   const {readFileSync} = await import('node:fs');
-  const g = await import('../js/grade.js');
+  const g = grade;
   for (const file of ['../js/main.js', '../js/ui.js', '../js/session.js']) {
     const src = readFileSync(new URL(file, import.meta.url), 'utf8');
     const imported = /import\s*\{([^}]+)\}\s*from\s*'\.\/grade\.js'/.exec(src);

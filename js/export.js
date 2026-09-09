@@ -77,9 +77,9 @@ function gradeTally(ran, keys, field) {
   return grades;
 }
 
-// 8: a failing address-family literal is judged on its own round rather than against a
-// session-long verdict about the family.
-const FORMAT_VERSION = 8;
+// 9: an activity with an unmeasured term is unrated rather than graded on the rest, and the
+// fresh-name probe is graded on ttfb.
+const FORMAT_VERSION = 9;
 
 export function summarise(samples) {
   const ran = samples.filter(s => !s.skipped && !s.round_error);
