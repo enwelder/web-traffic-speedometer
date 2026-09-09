@@ -157,7 +157,7 @@ b.test('a session records, survives a reload, and exports losslessly', async () 
   await page.waitForTimeout(3000);
   // The route row reports whichever family carries traffic, so an absent IPv4 path is simply
   // not what is shown.
-  assert.equal(await page.textContent('#pname-route'), 'IPv6');
+  assert.equal(await page.textContent('#pname-route'), 'GET IPv6');
   assert.match(await page.$eval('#probe-route', e => e.className), /green|yellow|orange/,
                'and the family that works is graded');
   await page.click('#btn-mark');
@@ -362,7 +362,7 @@ b.test('the probe rows report each path without a sentence to read', async () =>
   const shown = id => page.textContent(`#pval-${id}`);
   const family = () => page.textContent('#pname-route');
   assert.match(await row('route'), /green|yellow|orange/, 'the working path is graded');
-  assert.equal(await family(), 'IPv6', 'and the row names the family it is reporting');
+  assert.equal(await family(), 'GET IPv6', 'and the row names the family it is reporting');
 
   state.mode = 'fail';
   await page.waitForTimeout(4000);

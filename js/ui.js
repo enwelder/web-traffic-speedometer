@@ -37,9 +37,9 @@ export function notice(text) { $('notice').textContent = text || ''; }
 export {countsAsFailure as counts} from './export.js';
 
 // One activity's colour for one round. A skipped round has no measurement to grade.
-export function gradeFor(cap, sample) {
+export function gradeFor(activity, sample) {
   if (sample.skipped) return 'skip';
-  return (sample.grades || gradeActivities(sample))?.[cap] ?? 'none';
+  return (sample.grades || gradeActivities(sample))?.[activity] ?? 'none';
 }
 
 // The colour of a round taken as a whole: its worst activity. Used for the log line, where
@@ -48,33 +48,34 @@ export function classify(sample) {
   if (sample.skipped) return 'skip';
   const g = sample.grades || gradeActivities(sample);
   let worstGrade = null;
-  for (const cap of ACTIVITY_IDS) worstGrade = worse(worstGrade, g?.[cap] ?? null);
+  for (const activity of ACTIVITY_IDS) worstGrade = worse(worstGrade, g?.[activity] ?? null);
   return worstGrade || 'green';
 }
 
-// What each row is called on screen. Short enough for a 320px column, and named for what the
-// probe touches rather than what it is for; PROBES carries the full sentence.
 // One row per reading, not one per probe: the two address families share a row, because only
-// the family carrying traffic tells you anything and a network rarely has both to report.
+// the family carrying traffic tells you anything.
 const ROWS = ['route', 'dns', 'dns_ctl', 'web', 'udp', 'down'];
+
+// Each row names the request it sent, not the layer it stands for: a reader can match a row
+// to a line of the probe table without guessing. PROBES carries the full sentence.
 const PROBE_LABELS = {
-  ip6: 'IPv6', ip4: 'IPv4', dns: 'new name', dns_ctl: 'cached name',
-  web: 'known host', down: 'throughput', udp: 'UDP'
+  ip6: 'GET IPv6', ip4: 'GET IPv4', dns: 'DNS uncached', dns_ctl: 'DNS cached',
+  web: 'GET gstatic', down: 'GET download', udp: 'STUN'
 };
 // The row id a reading comes from, and the label it carries, both depend on the round.
 const rowProbe = (row, sample) =>
   (row === 'route' ? activeRoute(sample && !sample.skipped ? sample.probes : {}) : row);
 
-// Where a row's number would be read as something it is not. Both are argued in the README.
 const ROUTE_EXPLAIN = 'GET to an address literal, no lookup. Whichever family is carrying traffic: a network with only one of them is ordinary.';
 
+// Where a row's number would be read as something it is not. Both are argued in the README.
 const PROBE_CAVEATS = {
   dns: 'Graded against the cached-name control, not on its own: most of this gap is the far end handling a hostname it has not seen.',
   udp: 'ICE gathering rides on top of the round trip, so this reads slower than the link is.'
 };
 
-// The measurement that decided the grade, so the tile's number and its colour describe the
-// same thing. A term with no number — a path that is gone — says so in place of one.
+// A row shows the measurement its colour graded, so the two always describe the same thing.
+// A reading with no number — a path that is gone — says so in place of one.
 function displayReading(r) {
   if (!r || (r.note == null && r.value == null)) return '—';
   if (r.note) return r.note;
@@ -83,11 +84,15 @@ function displayReading(r) {
   return (r.scale === 'dns_delta' ? '+' : '') + Math.round(r.value);
 }
 
-// `rate` writes its own unit, and a term reporting a gone path has none.
-const displayUnit = r => (r && !r.note && r.value != null && r.unit === 'ms' ? 'ms' : '');
+// `rate` writes its own unit, and a term reporting a gone path has none. The DNS delta says
+// what its number is, since every other row prints a plain latency in the same column.
+function displayUnit(r) {
+  if (!r || r.note || r.value == null || r.unit !== 'ms') return '';
+  return r.scale === 'dns_delta' ? 'ms extra' : 'ms';
+}
 
-// One row per probe, generated from PROBES so the order and the set cannot drift from the
-// table that defines them. Tile names come from ACTIVITIES for the same reason.
+// Rows are generated from ROWS and named from PROBES; the strips are named from ACTIVITIES.
+// Nothing on screen carries a name this file invents.
 export function buildProbeRows() {
   const host = $('probes');
   host.textContent = '';
@@ -109,8 +114,8 @@ export function buildProbeRows() {
     add('explain', `explain-probe-${id}`, '');
     host.appendChild(row);
   }
-  for (const cap of ACTIVITY_IDS) {
-    $(`strip-name-${cap}`).textContent = ACTIVITIES[cap].label;
+  for (const activity of ACTIVITY_IDS) {
+    $(`strip-name-${activity}`).textContent = ACTIVITIES[activity].label;
   }
 }
 
@@ -154,8 +159,8 @@ export function renderExplanations() {
 // left. Separate rows are what make a single failing activity visible: one combined row shows
 // only the worst of them and never says which.
 export function clearStrip() {
-  for (const cap of ACTIVITY_IDS) {
-    const strip = $(`strip-${cap}`);
+  for (const activity of ACTIVITY_IDS) {
+    const strip = $(`strip-${activity}`);
     strip.replaceChildren();
     for (let i = 0; i < STRIP_BARS; i++) {
       const bar = document.createElement('i');
@@ -166,10 +171,10 @@ export function clearStrip() {
 }
 
 export function pushStrip(sample) {
-  for (const cap of ACTIVITY_IDS) {
-    const strip = $(`strip-${cap}`);
+  for (const activity of ACTIVITY_IDS) {
+    const strip = $(`strip-${activity}`);
     const bar = document.createElement('i');
-    bar.className = gradeFor(cap, sample);
+    bar.className = gradeFor(activity, sample);
     strip.appendChild(bar);
     while (strip.children.length > STRIP_BARS) strip.removeChild(strip.firstChild);
   }
@@ -177,8 +182,8 @@ export function pushStrip(sample) {
 
 // A bridged gap belongs on every row: no activity was measured while the page was frozen.
 export function pushStripPause() {
-  for (const cap of ACTIVITY_IDS) {
-    const strip = $(`strip-${cap}`);
+  for (const activity of ACTIVITY_IDS) {
+    const strip = $(`strip-${activity}`);
     const bar = document.createElement('i');
     bar.className = 'pause';
     strip.appendChild(bar);
@@ -247,7 +252,7 @@ export function setRunning(running) {
   $('setup').hidden = running;
 }
 
-// Tap a tile to see what it measures; tap again for the number.
+// Tap a row to see what it measures; tap again for the number.
 export function bindExplanations() {
   for (const id of cells()) {
     const cell = $(id);
