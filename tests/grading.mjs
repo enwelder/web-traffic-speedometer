@@ -241,19 +241,15 @@ s.test('no route means every family is gone, not merely one', () => {
                   'no route');
 });
 
-s.test('throughput takes the best of the measurements of one transfer', () => {
-  // Three floors, from two independent clocks. This page can only time what it was handed,
-  // and it is handed the ramp too; Cloudflare times the same transfer at its own end. Whether
-  // they agree is worth seeing, and the largest of them is the least wrong.
+s.test('throughput is what the transfer carried, and nothing else is voted in', () => {
+  // Cloudflare's own rate for the connection looks like a second opinion and is not one:
+  // headers precede the payload, so the figure stapled to a transfer describes the socket as
+  // the previous one ended. A window-limited flow is never flagged app-limited either, so it
+  // reports the same W/RTT number for the same reason and agreeing proves nothing.
   const down = over => ({ok: true, ms: 300, ...over});
-  assert.equal(g.throughput(down({bps: 30e6, bps_server: 78e6, bps_min: 22e6})), 78e6);
-  assert.equal(g.throughput(down({bps: 41e6, bps_server: 12e6, bps_min: 29e6})), 41e6);
-
-  // Any of them may be missing: a transfer too short to hold a window has no `bps`, and only
-  // the download endpoint sends timing a cross-origin reader may look at.
-  assert.equal(g.throughput(down({bps: null, bps_server: null, bps_min: 22e6})), 22e6);
-  assert.equal(g.throughput(down({bps: 30e6})), 30e6);
-  assert.equal(g.throughput({ok: false, bps: 30e6}), null, 'a failed download measured nothing');
+  assert.equal(g.throughput(down({bps: 30e6, bps_server: 78e6, bps_min: 22e6})), 22e6);
+  assert.equal(g.throughput(down({bps_min: 29e6})), 29e6);
+  assert.equal(g.throughput({ok: false, bps_min: 30e6}), null, 'a failed download measured nothing');
   assert.equal(g.throughput(down({})), null);
 });
 

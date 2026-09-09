@@ -260,35 +260,45 @@ or a completed negotiation, and none is ever created. Its milliseconds are grade
 row but ignored by the calling activity, which reads only whether the path exists: gathering
 rides on top of the round trip, so the number overstates the link.
 
-**Throughput is measured three ways, and the best is taken.** Every one of them is a floor,
-so the largest is the least wrong:
+**The download measures one TCP flow, which is not the link.** A flow carries its window
+divided by its round trip, and one `fetch` gets one window. On a recorded KPN 5G session
+Cloudflare reported a congestion window of 106-126 segments — about 180 kB — against an
+app-level round trip near 39 ms:
 
-| field | measured by | blind to |
-|---|---|---|
-| `bps` | this page, over the last half of the bytes | nothing before that half arrived |
-| `bps_server` | Cloudflare, over the same transfer (`tcpi_delivery_rate`) | nothing — it owes this page's clock nothing |
-| `bps_min` | this page, over the whole transfer | it includes the ramp, so it always understates |
+```
+180 kB / 39 ms  =  37 Mb/s        this probe read 41
+320 Mb/s x 39 ms = 1.56 MB        what one flow would need in flight
+1.56 MB / 180 kB =  8.7x          the gap to a multi-stream reference test
+```
 
-Two independent clocks measuring one transfer is also a check: on a recorded KPN session the
-page read 41.3 Mb/s and Cloudflare read 50.9 Mb/s for the same rounds, and on a Vodafone one
-28.9 against 78.0. Where they disagree, the file says so.
+The same code on a desktop over Wi-Fi reads 230-560 Mb/s from the identical 4 MB request,
+because the round trip there is ~5 ms and 180 kB / 5 ms is ~290 Mb/s. **Same window, eight
+times the round trip, eight times the answer.** The number this probe reports therefore tracks
+latency as much as capacity, and it is a floor on the link, never a measurement of it.
 
-A transfer opens at the congestion window's pace rather than the link's, and how long that
-lasts is a property of the connection, not of the clock. So the ramp is cut by share of the
-bytes — the rate is taken over the last half of what arrived. A fixed 300 ms cut, tried first,
-never opened at all on a link delivering 4 MB in 80 ms: 124 rounds of a real session reported
-no rate whatsoever.
+The measured rate also rises with the size of the request — 10.6, 18.4 and 44.9 Mb/s for
+1-2 MB, 2-3.5 MB and ≥3.5 MB transfers in one KPN session — which is the signature of a
+transfer that ends before its window opens.
 
-The request is sized from the rate the last round measured, targeting about 400 ms of
-transfer, between 256 kB and 4 MB. Sizing it from a 96 kB warm-up instead — the design before
-that — made the measurement choose its own size: 96 kB is spent entirely inside the ramp, so
-it always read low, and a low read asked for less next round. One session shrank
-623 → 533 → 490 → 466 → 462 kB over five rounds and reported 6 Mb/s. A rate taken after the
-ramp cannot do that, because a small request still reports the link's rate.
+What the reference tests do instead, and what it costs on a 320 Mb/s link:
 
-4 MB is the ceiling because accuracy stopped improving there: against a 350 Mb/s reference,
-4 MB read 293 Mb/s and 8 MB read 291. Per-round rates on a mobile link vary 5.4× across
-passes, so a journey has to be aggregated; the variance is between rounds, not within them.
+| test | streams | duration | reports | data per test |
+|---|---|---|---|---|
+| Open-RMBT (RTR) | 3 | 7 s, after a 2 s pre-test | mean over the window | ~280 MB |
+| Cloudflare | 1, sequential, escalating to 250 MB | until a request exceeds 1 s | 90th percentile | ~470 MB |
+| NDT7 | 1, with BBR | up to 10 s | mean | — |
+| librespeed | 6 | 15 s, first 1.5 s discarded | mean | — |
+
+Cloudflare say it plainly: "transfers smaller than 10 MB can't utilize the full bandwidth of
+this connection". Every one of them also runs its phases one at a time; this tool runs seven
+probes together, which additionally makes its latency figures *loaded* latency rather than
+idle.
+
+`bps_server` — Cloudflare's `tcpi_delivery_rate` — is recorded but grades nothing. It is not
+a second opinion: headers are written ahead of the payload, so the figure stapled to a
+transfer describes the socket as the previous one ended, and a receive-window-limited flow is
+never flagged app-limited, so it reports the same window-over-round-trip number for the same
+reason. Two measurements of one capped flow agreeing says nothing about the link.
 
 **Deadlines and scheduling.** Every TCP probe gets 8 s, capped at the interval minus half a
 second; `udp` gets 3 s, since a STUN binding answers within a round trip or not at all. Eight

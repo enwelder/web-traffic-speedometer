@@ -325,11 +325,12 @@ async function readDownload(res, {url, elapsed, controller, budgetMs}) {
     bps_min: boundFrom(stream.bytes, timing.transfer_ms, stream.duration),
     // What the link carried once it was up to speed. Null when the transfer was too short to
     // hold a window, and then the whole-transfer floor is all there is.
+    // Kept for comparison, graded by nothing: discarding the opening of a transfer cannot
+    // recover a rate the flow never reached, and this flow is capped by its window throughout.
     bps: stream.window_ms >= MIN_WINDOW_MS && stream.window_bytes > 0
       ? Math.round((stream.window_bytes * 8) / (stream.window_ms / 1000)) : null,
-    // Cloudflare's own view of the same transfer, from tcpi_delivery_rate in bytes per second.
-    // Measured at the far end, so it owes nothing to this page's clock, its scheduler or how
-    // the body was handed over.
+    // Cloudflare's tcpi_delivery_rate for the connection, in bytes per second. A diagnostic
+    // about this flow, not a second measurement of the link.
     bps_server: server?.delivery_rate ? server.delivery_rate * 8 : null,
     window_bytes: stream.window_bytes,
     window_ms: stream.window_ms,

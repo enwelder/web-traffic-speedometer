@@ -93,15 +93,13 @@ const TERMS = {
   ]
 };
 
-// What the link carried. Three figures are recorded and every one of them is a floor: what
-// this page timed after the ramp, what Cloudflare measured at its end of the same transfer,
-// and the whole transfer including its ramp. The largest is the least wrong, and the two
-// independent ones disagreeing is itself worth seeing in the file.
-export function throughput(down) {
-  if (!down?.ok) return null;
-  const seen = [down.bps, down.bps_server, down.bps_min].filter(Number.isFinite);
-  return seen.length ? Math.max(...seen) : null;
-}
+// What one TCP flow carried, which is the window in flight divided by the round trip, not the
+// capacity of the link. `bps_server` is not a second opinion on that: response headers are
+// written ahead of the payload, so the rate Cloudflare stamps on a transfer describes the socket
+// as the previous one ended, and a receive-window-limited flow is never flagged app-limited,
+// so it reports the same W/RTT figure for the same reason. It stays in the file as a
+// diagnostic and grades nothing.
+export const throughput = down => (down?.ok && Number.isFinite(down.bps_min) ? down.bps_min : null);
 
 function terms(activity, p) {
   const rate = throughput(p.down);
