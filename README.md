@@ -191,10 +191,18 @@ The verdict is kept for the whole session, so it must not be taken from a radio 
 waking: when both families fail the preflight it is retried, and if both fail again neither is
 recorded as absent. Unknown, not absent — and the first later success settles it.
 
-**A blocked literal is not a dead link.** All three of the operators tested fail the IPv4
-literal every round, and one failed both, while DNS, the web probe and the download answered
-throughout. Calling therefore reports `no route` only when no family is carrying traffic *and*
-nothing else in the round reached the network either.
+**A blocked literal is not a dead link.** All three operators tested failed the IPv4 literal
+every round, and one failed both, while DNS, the web probe and the download answered
+throughout. `1.1.1.1` is a public resolver, and relays and filters intercept it — on two of
+those sessions the download's own egress address was IPv4 while the IPv4 literal was failing.
+
+So availability is settled by two kinds of evidence. The literal answering is direct; an
+egress address of that family is indirect and just as conclusive, because the round reached
+Cloudflare over it. Either one marks the family available, and its failures then stay real
+rather than being excused for the session.
+
+And calling reports `no route` only when no family is carrying traffic *and* nothing else in
+the round reached the network either.
 
 **Latency is a median of three.** One round trip moves by an order of magnitude on a cold
 connection, a retransmission or a scheduling delay. RMBT takes 10-200 samples for the same

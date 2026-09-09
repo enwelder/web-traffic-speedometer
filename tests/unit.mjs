@@ -360,6 +360,32 @@ const session = () => ({id: 's1', name: 't', operator: 'KPN', connection: 'cellu
                         download: {budgetMs: 60},
                         ipv4_available: null, ipv4_check: null});
 
+l.test('a blocked literal does not make its path absent', async () => {
+  // Recorded on two operators: the download egressed over IPv4 every round while the IPv4
+  // literal failed every round, because 1.1.1.1 is a public resolver that relays and filters
+  // intercept. Believing the literal alone marks a working path absent and then excuses every
+  // failure on it for the rest of the session.
+  globalThis.fetch = async (url, o) => {
+    if (String(url).includes('1.1.1.1')) throw netError();
+    return {ok: true, status: 200, type: 'opaque',
+            headers: {get: h => (h === 'cf-meta-ip' ? '109.36.152.49' : null)},
+            body: bodyOf(25000), text: async () => TRACE,
+            signal: o?.signal};
+  };
+  const store = fakeStore();
+  const {rec} = recorder(store);
+  const sess = session();
+  await rec.start(sess);
+  assert.equal(sess.ipv4_available, false, 'the literal failed, so the preflight says absent');
+
+  await sleep(400);
+  await rec.stop();
+  assert.equal(sess.ipv4_available, true,
+               'but a round egressed over IPv4, which settles it whatever the literal did');
+  assert.ok(store.written.samples.some(x => x.probes.ip4?.ok === false && !x.probes.ip4.expected),
+            'and its failures stay real rather than being excused');
+});
+
 l.test('every scheduled round produces a row, healthy or not', async () => {
   let mode = 'ok';
   globalThis.fetch = (url, o) => new Promise((res, rej) => {

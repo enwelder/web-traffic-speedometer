@@ -235,13 +235,27 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
 
   // A radio still waking at session start can refuse the preflight, so one success overturns
   // the result rather than leaving the probe exempt for the whole journey.
+  function settle(key, label, why) {
+    if (session[key] === true) return;
+    session[key] = true;
+    noteEvent(`${label} ${why}`);
+    store.putSession(session);
+  }
+
+  // Two kinds of evidence that a family carries traffic. The literal answering is direct. An
+  // egress address of that family is indirect and just as conclusive: the round reached
+  // Cloudflare over it. They disagree where a literal is blocked but the path is fine —
+  // 1.1.1.1 is a public resolver and relays and filters intercept it — and reading only the
+  // literal then calls a working path absent and excuses every failure on it.
   function revisePaths(row) {
     for (const [id, key, label] of PATHS) {
-      if (session[key] !== true && row.probes[id]?.ok) {
-        session[key] = true;
-        noteEvent(`${label} available after all; the preflight caught a sleeping radio`);
-        store.putSession(session);
-      }
+      if (row.probes[id]?.ok) settle(key, label, 'available after all; the preflight was early');
+    }
+    for (const r of Object.values(row.probes || {})) {
+      if (!r?.egress_ip) continue;
+      const v6 = r.egress_ip.includes(':');
+      settle(v6 ? 'ipv6_available' : 'ipv4_available', v6 ? 'IPv6' : 'IPv4',
+             'carries traffic; its literal is blocked, not its path');
     }
   }
 
