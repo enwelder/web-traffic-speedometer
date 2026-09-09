@@ -1,11 +1,32 @@
 # Exported session format
 
-`format: "wts/session"`, `version: 4`. One button per session writes one JSON file: session
+`format: "wts/session"`, `version: 5`. One button per session writes one JSON file: session
 metadata, environment, a rollup, every sample, every event. CSV, GPX or GeoJSON are a few
 lines to derive from it.
 
-Version 3 keyed grades by activity and reported a rate rather than a bound. Version 4 adds
-per-probe grades to every round.
+| version | what changed |
+|---|---|
+| 3 | grades keyed by activity; the download reports a bound rather than a rate |
+| 4 | every round carries its per-probe grades beside its activity grades |
+| 5 | either address family can be flagged `expected`; the session records both |
+
+Version 5 matters to a reader counting failures: before it, `expected` appeared only on `ip4`,
+so an `ip6` failure was always a real one. On a network carrying no IPv6 it now marks a path
+that was never there.
+
+## Per session, under `session`
+
+Everything the run was told or settled once, rather than measured per round.
+
+| Field | Meaning |
+|---|---|
+| `id` `name` `started` `stopped` | identity and span |
+| `operator` `connection` | what the operator answered before the run; no browser API exposes either |
+| `profile` `intervalMs` `download` | the settings in force |
+| `ipv6_available` `ipv4_available` | whether each address family answered the preflight. A network carrying only one is ordinary; failures of the absent family are flagged `expected` and stay out of every tally |
+| `ipv6_check` `ipv4_check` | the evidence behind each verdict: time to answer, and the failure reason if it did not |
+| `environment` | app version, user agent, language, timezone, screen, and the deadlines in force |
+| `exportedAt` | null until the session has been written out; never-exported sessions are flagged on screen |
 
 ## Rollup
 

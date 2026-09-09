@@ -69,8 +69,8 @@ function gradeTally(ran, keys, field) {
   return grades;
 }
 
-// 4: every round carries its per-probe grades beside its activity grades.
-const FORMAT_VERSION = 4;
+// 5: either address family can be flagged expected, not only ip4.
+const FORMAT_VERSION = 5;
 
 export function summarise(samples) {
   const ran = samples.filter(s => !s.skipped && !s.round_error);
