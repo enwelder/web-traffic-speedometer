@@ -436,7 +436,7 @@ l.test('the interval decides what a session costs', async () => {
   // The cost is rounds times the byte ceiling, so halving the interval doubles it.
   assert.ok(Math.abs(fine - coarse * 2) < coarse * 0.02,
             `twice the rounds costs twice as much: ${(fine / 1e6) | 0} vs ${(coarse / 1e6) | 0} MB`);
-  assert.ok(fine > 40 * DOWNLOAD_DEFAULTS.bytes,
+  assert.ok(fine > 40 * DOWNLOAD_DEFAULTS.maxBytes,
             'and a 40-minute run is priced in hundreds of megabytes, not tens');
 
   const ten = projectedBytes(PROFILES.fine.intervalMs, DOWNLOAD_DEFAULTS, 10);
@@ -485,7 +485,7 @@ l.test('a resumed session keeps counting from what it has already spent', async 
 
 l.test('the environment block makes a session self-describing', () => {
   const env = environment(10000);
-  assert.ok(env.download.budgetMs > 0 && env.download.bytes > 0,
+  assert.ok(env.download.budgetMs > 0 && env.download.maxBytes > 0,
             'the download settings travel with the session');
   assert.equal(env.probes.length, probe.PROBES.length);
   assert.ok(Object.values(env.timeouts_ms).every(t => t < 10000), 'every deadline fits inside a round');

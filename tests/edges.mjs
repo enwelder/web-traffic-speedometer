@@ -170,7 +170,9 @@ d.test('the connection is opened before the measured request, unless the link is
   await probe.runProbe(P.down, {timeoutMs: 8000, download: {budgetMs: 2000}});
   assert.equal(sizes.length, 2, 'one request to open the window, one to measure over it');
   assert.equal(sizes[0], probe.WARMUP_REQUEST_BYTES, 'the small one first');
-  assert.equal(sizes[1], probe.DOWNLOAD_REQUEST_BYTES, 'then the measured one');
+  // The measured request is sized from what the warm-up saw, within the floor and ceiling.
+  assert.ok(sizes[1] >= probe.DOWN_MIN_BYTES && sizes[1] <= probe.DOWN_MAX_BYTES,
+            `then one sized for the link: ${sizes[1]}`);
 
   // On a link too slow to finish the first request quickly there is no window to escape, so
   // the second is skipped and the round stays cheap.
@@ -184,6 +186,27 @@ d.test('the connection is opened before the measured request, unless the link is
   assert.equal(sizes.length, 1, `a slow link is measured by the first request alone: ${sizes}`);
   assert.equal(slow.warmup_only, true, 'and the row says so');
   assert.ok(slow.bps_min > 0, 'it is still a measurement');
+});
+
+d.test('the measured request is sized for the link, so a slow one is not cut off', async () => {
+  // A fixed 4 MB body would take 32 s on a 1 Mb/s cell and be cut off every round; a fixed
+  // small one cannot see past a fast link's ramp. The size comes from what the warm-up saw.
+  for (const [mbps, floor, ceiling] of [[0.5, probe.DOWN_MIN_BYTES, 400000],
+                                        [10, 300000, 1500000],
+                                        [300, 2000000, probe.DOWN_MAX_BYTES]]) {
+    const sizes = [];
+    const per = Math.max(1, Math.round((mbps * 1e6 / 8) * 0.02));
+    globalThis.fetch = async url => {
+      const want = Number(new URL(url).searchParams.get('bytes'));
+      sizes.push(want);
+      return {ok: true, status: 200, headers: {get: () => null},
+              body: stream(Array.from({length: Math.ceil(want / per)}, () => ({after: 20, bytes: per})))};
+    };
+    await probe.runProbe(P.down, {timeoutMs: 20000, download: {budgetMs: 20000}});
+    const measured = sizes[1];
+    assert.ok(measured >= floor && measured <= ceiling,
+              `${mbps} Mb/s asked for ${measured} bytes, wanted ${floor}-${ceiling}`);
+  }
 });
 
 d.test('a refused download says which side refused it', async () => {
