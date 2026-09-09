@@ -98,9 +98,10 @@ const KEYS = {
   probe: ['ok', 'ms', 'status', 'fail', 'egress_ip', 'colo', 'ms_samples', 'samples_ok',
           'ms_min', 'ms_max', 'expected', 'stuck', 'host', 'bytes', 'truncated', 'server',
           'ttfb_ms', 'transfer_ms', 'handshake', 'reused', 'protocol', 'lookup_ms',
-          'connect_ms', 'tls_ms', 'retry_suspected', 'parse_reason', 'bps_transfer',
-          'bps_end_to_end', 'bps_steady', 'bps_peak', 'warmup_ms', 'warmup_bytes',
-          'insufficient_sample', 'duration_ms', 'aborted_reason', 'public_ips', 'candidates'],
+          'connect_ms', 'tls_ms', 'retry_suspected', 'parse_reason', 'bps_min', 'complete',
+          'warmup_only', 'refused_by', 'bps_transfer', 'bps_end_to_end', 'bps_steady',
+          'bps_peak', 'warmup_ms', 'warmup_bytes', 'insufficient_sample', 'duration_ms',
+          'aborted_reason', 'public_ips', 'candidates'],
   event: ['sessionId', 'id', 't', 'mono', 'type', 'lat', 'lon', 'text']
 };
 
