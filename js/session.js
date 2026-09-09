@@ -4,7 +4,7 @@
 import {PROBES, runRound, checkIpv4, clearTimings, timeoutFor,
         DEFAULT_DOWN_BUDGET_MS, DOWN_MAX_BYTES,
         WARMUP_REQUEST_BYTES} from './probe.js';
-import {gradeRound} from './grade.js';
+import {gradeRound, gradeProbes} from './grade.js';
 import {createStuckTracker} from './stuck.js';
 import {createWakeLock} from './wakelock.js';
 import {createPositionTracker} from './position.js';
@@ -267,6 +267,7 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
 
     // Resolved once and stored on the row, so the file and the screen carry the same grade.
     row.grades = gradeRound(row);
+    row.pgrades = gradeProbes(row);
     lastGrades = row.grades;
 
     // A radio still waking at session start can refuse the preflight, so one success

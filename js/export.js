@@ -3,7 +3,7 @@
 
 import {PROBES} from './probe.js';
 import {APP_VERSION} from './session.js';
-import {CAPABILITIES, SCALES, PURPOSES, quantile} from './grade.js';
+import {CAPABILITIES, SCALES, PURPOSES, PROBE_SCALES, quantile} from './grade.js';
 import * as store from './store.js';
 
 // What counts as a probe failure: a resting probe has not reached the network, and an IPv4
@@ -48,20 +48,23 @@ function rateSummary(rs) {
   };
 }
 
-// Per capability, the grades resolved during the run, so thresholds can be checked against
-// what was felt without recomputing anything.
-function gradeTally(ran) {
+// The grades resolved during the run, so thresholds can be checked against what was felt
+// without recomputing anything.
+function gradeTally(ran, keys, field) {
   const grades = {};
-  for (const cap of CAPABILITIES) {
+  for (const key of keys) {
     const seen = {};
     for (const s of ran) {
-      const g = s.grades?.[cap];
+      const g = s[field]?.[key];
       if (g) seen[g] = (seen[g] || 0) + 1;
     }
-    grades[cap] = seen;
+    grades[key] = seen;
   }
   return grades;
 }
+
+// 4: every round carries its per-probe grades beside its purpose grades.
+const FORMAT_VERSION = 4;
 
 export function summarise(samples) {
   const ran = samples.filter(s => !s.skipped && !s.round_error);
@@ -77,7 +80,9 @@ export function summarise(samples) {
   return {
     scales: SCALES,
     purposes: PURPOSES,
-    grades: gradeTally(ran),
+    probe_scales: PROBE_SCALES,
+    grades: gradeTally(ran, CAPABILITIES, 'grades'),
+    grades_by_probe: gradeTally(ran, Object.keys(PROBE_SCALES), 'pgrades'),
     generated_by: `wts ${APP_VERSION}`,
     rounds: samples.length,
     ran: ran.length,
@@ -98,8 +103,7 @@ export function summarise(samples) {
 export function sessionJson(session, samples, events) {
   return JSON.stringify({
     format: 'wts/session',
-    // 3: grades are keyed by purpose, and the download reports a bound.
-    version: 3,
+    version: FORMAT_VERSION,
     app_version: APP_VERSION,
     exported: new Date().toISOString(),
     probes: PROBES.map(p => ({id: p.id, label: p.label, url: p.url, kind: p.kind})),
@@ -147,7 +151,7 @@ export async function exportAll() {
   }
   const stamp = new Date().toISOString().slice(0, 16).replace(/[:T]/g, '');
   download(JSON.stringify({
-    format: 'wts/bundle', version: 3, app_version: APP_VERSION,
+    format: 'wts/bundle', version: FORMAT_VERSION, app_version: APP_VERSION,
     exported: new Date().toISOString(),
     probes: PROBES.map(p => ({id: p.id, label: p.label, url: p.url, kind: p.kind})),
     sessions: bundles

@@ -45,7 +45,7 @@ const recorder = createRecorder({
       if (PROBES.some(p => ui.counts(sample.probes[p.id]))) degradedRounds++;
     }
     ui.setSignals(sample);
-    ui.setLamps(sample);
+    ui.setProbes(sample);
     const kind = ui.classify(sample);
     ui.pushStrip(sample);
     if (sample.first_packet_ms != null) lastFirstPacket = sample.first_packet_ms;
@@ -177,7 +177,7 @@ async function begin() {
   // Blanked before the first round lands, or the previous session's colours stay for a whole
   // interval: 30 s on the coarse profile.
   ui.setSignals(null);
-  ui.setLamps(null);
+  ui.setProbes(null);
 
   const session = newSession();
   await store.putSession(session);
@@ -316,6 +316,7 @@ $('btn-start').onclick = async () => {
 };
 $('btn-mark').onclick = () => recorder.mark();
 for (const id of ['f-connection', 'f-operator', 'f-profile']) $(id).onchange = syncSetup;
+ui.buildProbeRows();
 ui.bindExplanations();
 
 let helpOn = false;

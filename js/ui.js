@@ -1,7 +1,8 @@
 // DOM rendering. Nothing here is persisted.
 
 import {PROBES} from './probe.js';
-import {CAPABILITIES, GRADES, gradeRound, worse, capabilityReading} from './grade.js';
+import {CAPABILITIES, GRADES, PURPOSES, gradeRound, worse, capabilityReading,
+        probeReading} from './grade.js';
 import {countsAsFailure} from './export.js';
 
 const STRIP_BARS = 48;
@@ -51,6 +52,19 @@ export function classify(sample) {
   return worstGrade || 'green';
 }
 
+// What each row is called on screen. Short enough for a 320px column, and named for what the
+// probe touches rather than what it is for; PROBES carries the full sentence.
+const PROBE_LABELS = {
+  ip6: 'IPv6', ip4: 'IPv4', dns: 'new name', dns_ctl: 'cached name',
+  web: 'known host', down: 'throughput', udp: 'UDP'
+};
+
+// Where a row's number would be read as something it is not. Both are argued in docs/design.md.
+const PROBE_CAVEATS = {
+  dns: 'Graded against the cached-name control, not on its own: most of this gap is the far end handling a hostname it has not seen.',
+  udp: 'ICE gathering rides on top of the round trip, so this reads slower than the link is.'
+};
+
 // Shown in place of a tile's value while that tile is tapped. Each names the measurements the
 // purpose is judged on, since no purpose reads a single probe any more.
 const EXPLAIN = {
@@ -64,7 +78,9 @@ const EXPLAIN = {
 function displayReading(r) {
   if (!r || (r.note == null && r.value == null)) return '—';
   if (r.note) return r.note;
-  return r.unit === 'bps' ? `≥${rate(r.value)}` : String(Math.round(r.value));
+  if (r.unit === 'bps') return `≥${rate(r.value)}`;
+  // A difference prints as one, so nobody reads it as a latency.
+  return (r.scale === 'dns_delta' ? '+' : '') + Math.round(r.value);
 }
 
 // `rate` writes its own unit, and a term reporting a gone path has none.
@@ -79,17 +95,72 @@ export function setSignals(sample) {
     cell.classList.remove(...GRADES);
     const reading = live ? capabilityReading(cap, sample) : null;
     if (reading?.grade) cell.classList.add(reading.grade);
+    // A word in place of a number is a reason, not a measurement, and must not read like one.
+    cell.classList.toggle('words', !!reading?.note);
     $(`val-${cap}`).textContent = sample && sample.skipped ? '–' : displayReading(reading);
     $(`unit-${cap}`).textContent = displayUnit(reading);
   }
   renderExplanations();
 }
 
-export function renderExplanations() {
+// One row per probe, generated from PROBES so the order and the set cannot drift from the
+// table that defines them. Tile names come from PURPOSES for the same reason.
+export function buildProbeRows() {
+  const host = $('probes');
+  host.textContent = '';
+  for (const p of PROBES) {
+    const row = document.createElement('div');
+    row.className = 'probe';
+    row.id = `probe-${p.id}`;
+    const add = (cls, id, text) => {
+      const el = document.createElement('span');
+      el.className = cls;
+      if (id) el.id = id;
+      el.textContent = text || '';
+      row.appendChild(el);
+      return el;
+    };
+    add('name', null, PROBE_LABELS[p.id] ?? p.id);
+    add('value', `pval-${p.id}`, '—');
+    add('unit', `punit-${p.id}`, '');
+    add('explain', `explain-probe-${p.id}`, '');
+    host.appendChild(row);
+  }
   for (const cap of CAPABILITIES) {
-    const on = $(`cap-${cap}`).dataset.explain === 'on';
-    $(`cap-${cap}`).classList.toggle('explaining', on);
-    $(`explain-${cap}`).textContent = on ? EXPLAIN[cap] : '';
+    $(`cap-${cap}`).querySelector('.name').textContent = PURPOSES[cap].label;
+  }
+}
+
+// Every cell that can explain itself, in the order they appear.
+const cells = () => [...PROBES.map(p => `probe-${p.id}`), ...CAPABILITIES.map(c => `cap-${c}`)];
+
+const explainText = id => (id.startsWith('probe-')
+  ? [PROBES.find(p => `probe-${p.id}` === id)?.label, PROBE_CAVEATS[id.slice(6)]]
+    .filter(Boolean).join(' ')
+  : EXPLAIN[id.slice(4)]);
+
+// Each probe's own measurement and the colour it grades to, from the round passed in.
+export function setProbes(sample) {
+  for (const p of PROBES) {
+    const cell = $(`probe-${p.id}`);
+    if (!cell) continue;
+    cell.classList.remove(...GRADES);
+    const reading = sample && !sample.skipped ? probeReading(p.id, sample) : null;
+    if (reading?.grade) cell.classList.add(reading.grade);
+    // A word in place of a number is a reason, not a measurement, and must not read like one.
+    cell.classList.toggle('words', !!reading?.note);
+    $(`pval-${p.id}`).textContent = sample?.skipped ? '–' : displayReading(reading);
+    $(`punit-${p.id}`).textContent = displayUnit(reading);
+  }
+}
+
+export function renderExplanations() {
+  for (const id of cells()) {
+    const cell = $(id);
+    if (!cell) continue;
+    const on = cell.dataset.explain === 'on';
+    cell.classList.toggle('explaining', on);
+    $(`explain-${id}`).textContent = on ? explainText(id) : '';
   }
 }
 
@@ -134,20 +205,6 @@ export function setStripWindow(intervalMs) {
   $('strip-span').textContent = minutes >= 1
     ? `${minutes} min ago`
     : `${Math.round(STRIP_BARS * intervalMs / 1000)}s ago`;
-}
-
-// Lit, dim or unlit: which paths carried traffic in this round.
-export function setLamps(sample) {
-  const set = (id, state) => {
-    const el = $(`lamp-${id}`);
-    if (!el) return;
-    el.classList.remove('on', 'off', 'na');
-    el.classList.add(state);
-  };
-  const p = sample && !sample.skipped ? sample.probes : null;
-  if (!p) { for (const id of ['ip6', 'ip4']) set(id, 'na'); return; }
-  set('ip6', p.ip6.ok ? 'on' : 'off');
-  set('ip4', p.ip4.expected ? 'na' : p.ip4.ok ? 'on' : 'off');
 }
 
 // Newest first: the controls sit over the bottom of the log.
@@ -206,8 +263,9 @@ export function setRunning(running) {
 
 // Tap a tile to see what it measures; tap again for the number.
 export function bindExplanations() {
-  for (const cap of CAPABILITIES) {
-    const cell = $(`cap-${cap}`);
+  for (const id of cells()) {
+    const cell = $(id);
+    if (!cell) continue;
     cell.onclick = () => {
       cell.dataset.explain = cell.dataset.explain === 'on' ? 'off' : 'on';
       renderExplanations();
@@ -216,7 +274,7 @@ export function bindExplanations() {
 }
 
 export function setExplainAll(on) {
-  for (const cap of CAPABILITIES) $(`cap-${cap}`).dataset.explain = on ? 'on' : 'off';
+  for (const id of cells()) { const c = $(id); if (c) c.dataset.explain = on ? 'on' : 'off'; }
   renderExplanations();
 }
 

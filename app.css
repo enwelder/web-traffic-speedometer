@@ -40,6 +40,30 @@ main{flex:1;overflow-y:auto;overscroll-behavior:contain;-webkit-overflow-scrolli
 .view{min-height:100%}
 [hidden]{display:none!important}
 
+/* One row per probe. The rail carries the grade the same way a tile's does, so the two
+   sections read as one system. A row with no grade keeps the neutral rail. */
+.probes{display:grid;grid-template-columns:repeat(2,1fr);gap:4px 8px}
+.probe{display:grid;grid-template-columns:1fr auto auto;align-items:baseline;gap:0 5px;
+       position:relative;padding:5px 7px 5px 10px;border-radius:7px;background:var(--panel);
+       border:1px solid var(--line);cursor:pointer}
+.probe::before{content:"";position:absolute;inset:0 auto 0 0;width:3px;
+               border-radius:7px 0 0 7px;background:var(--grade,var(--line));
+               transition:background .18s}
+.probe[data-explain="on"]{border-color:var(--rail)}
+.probe.explaining .value,.probe.explaining .unit{display:none}
+.probe .name{font-size:11px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;
+             white-space:nowrap}
+.probe .value{font-family:var(--num);font-size:13px;font-variant-numeric:tabular-nums;
+              white-space:nowrap}
+.probe .unit{font-size:10px;color:var(--muted)}
+.probe.words .value{font-family:var(--ui);font-size:11px;color:var(--muted)}
+.probe.red .value{color:var(--bad)}
+.probe.orange .value{color:var(--poor)}
+.probe .explain{grid-column:1/-1;font-size:11.5px;color:var(--text);line-height:1.35;
+                margin-top:4px}
+/* The download prints the longest value, so it takes the full width and sits last. */
+#probe-down{order:1;grid-column:1/-1}
+
 /* signals */
 .signals{display:grid;grid-template-columns:repeat(2,1fr);gap:8px}
 .signal.wide{grid-column:1/-1}
@@ -49,11 +73,11 @@ main{flex:1;overflow-y:auto;overscroll-behavior:contain;-webkit-overflow-scrolli
 /* The explanation replaces the value inside the tile. */
 .signal.explaining .value,.signal.explaining .unit{display:none}
 .signal::before{content:"";position:absolute;inset:0 auto 0 0;width:3px;
-                background:var(--line);transition:background .18s}
-.signal.green::before{background:var(--good)}
-.signal.yellow::before{background:var(--ok)}
-.signal.orange::before{background:var(--poor)}
-.signal.red::before{background:var(--bad)}
+                background:var(--grade,var(--line));transition:background .18s}
+.signal.green,.probe.green,.strip i.green{--grade:var(--good)}
+.signal.yellow,.probe.yellow,.strip i.yellow{--grade:var(--ok)}
+.signal.orange,.probe.orange,.strip i.orange{--grade:var(--poor)}
+.signal.red,.probe.red,.strip i.red{--grade:var(--bad)}
 .signal .name{font-size:11px;color:var(--muted);margin-bottom:5px;line-height:1.3;
               min-height:1.3em}
 /* The qualifier within a tile name, dimmed so the metric reads first. */
@@ -78,12 +102,8 @@ main{flex:1;overflow-y:auto;overscroll-behavior:contain;-webkit-overflow-scrolli
 .strip-row>span{font-size:10.5px;color:var(--muted);text-align:right}
 .strip{display:grid;grid-template-columns:repeat(48,1fr);gap:2px;height:16px;
        background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:3px;overflow:hidden}
-.strip i{min-width:0;border-radius:1px;background:var(--line)}
+.strip i{min-width:0;border-radius:1px;background:var(--grade,var(--line))}
 .strip i.none{opacity:.3}
-.strip i.green{background:var(--good)}
-.strip i.yellow{background:var(--ok)}
-.strip i.orange{background:var(--poor)}
-.strip i.red{background:var(--bad)}
 .strip i.skip{background:var(--muted);opacity:.5}
 .strip i.pause{background:repeating-linear-gradient(45deg,var(--muted),var(--muted) 2px,transparent 2px,transparent 4px)}
 .strip-axis{display:flex;justify-content:space-between;font-size:10.5px;color:var(--muted);
@@ -175,17 +195,10 @@ nav button{background:none;border:none;border-radius:0;padding:13px 0 12px;
 nav button.on{color:var(--text);box-shadow:inset 0 2px 0 var(--rail)}
 
 @media (max-width:399px){.stats{font-size:11.5px;gap:9px 12px}}
-/* lit when the path works, dim when it does not */
-.lamps{display:flex;gap:6px}
-.lamp{flex:1;text-align:center;font-family:var(--num);font-size:11px;letter-spacing:.04em;
-      padding:6px 0;border-radius:7px;border:1px solid var(--line);background:var(--panel);
-      color:var(--muted);opacity:.45;transition:opacity .18s,color .18s,border-color .18s}
-.lamp.on{opacity:1;color:var(--green);border-color:var(--green)}
-.lamp.off{opacity:1;color:var(--red);border-color:var(--red)}
-.lamp.na{opacity:.35}
 
 /* narrow phones: stack the labels instead of squeezing the controls */
 @media (max-width:359px){
+  .probes{grid-template-columns:1fr}
   .field{gap:4px}
   .field label{flex:0 0 100%}
   .stats{grid-template-columns:1fr}
@@ -196,5 +209,6 @@ nav button.on{color:var(--text);box-shadow:inset 0 2px 0 var(--rail)}
   .log{height:80px}
   .signal{padding:9px 9px 8px}
   .signal .value{font-size:19px}
+  .probe{padding:3px 6px 3px 9px}
 }
 @media (prefers-reduced-motion:reduce){*{transition:none!important}}

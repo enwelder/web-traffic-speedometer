@@ -284,4 +284,41 @@ r.test('the recordings agree with what the scheduler promises', () => {
 });
 
 
+r.test('every probe reading holds up against recorded rounds', () => {
+  const states = ['none', 'resting', 'absent', 'refused', 'failed', 'ok'];
+  let readings = 0;
+  for (const [name, j] of Object.entries(journeys)) {
+    for (const s of j.samples) {
+      for (const id of Object.keys(g.PROBE_SCALES)) {
+        const r0 = g.probeReading(id, s);
+        readings++;
+        assert.ok(states.includes(r0.state), `${name} ${id}: state ${r0.state}`);
+        assert.ok(r0.grade === null || g.GRADES.includes(r0.grade),
+                  `${name} ${id}: grade ${r0.grade}`);
+        assert.ok(r0.value === null || Number.isFinite(r0.value),
+                  `${name} ${id}: a row never prints a value that is not a number`);
+      }
+    }
+  }
+  assert.ok(readings > 1000, `enough rounds to be worth asserting on: ${readings}`);
+});
+
+r.test('the dns delta grades the corpus it was derived from', () => {
+  // The only scale here with no external source: its edges were fitted to these journeys.
+  // Pinning the split means retuning them fails a test rather than passing silently.
+  const seen = {green: 0, yellow: 0, orange: 0, red: 0};
+  let paired = 0;
+  for (const j of Object.values(journeys)) {
+    for (const s of j.samples) {
+      const p = s.probes || {};
+      if (p.dns?.ok && p.dns_ctl?.ok) paired++;
+      const grade = g.probeReading('dns', s).grade;
+      if (grade) seen[grade]++;
+    }
+  }
+  assert.equal(paired, 259, 'rounds where both the fresh lookup and its control answered');
+  assert.deepEqual(seen, {green: 206, yellow: 31, orange: 12, red: 23},
+                   `edges 250/500/1000 split the corpus: ${JSON.stringify(seen)}`);
+});
+
 await r.run();

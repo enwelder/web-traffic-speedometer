@@ -5,6 +5,8 @@ import {readFileSync} from 'node:fs';
 import {spawn} from 'node:child_process';
 import {chromium} from 'playwright';
 import {suite} from './helpers.mjs';
+import {CAPABILITIES, PURPOSES} from '../js/grade.js';
+import {PROBES} from '../js/probe.js';
 
 const PORT = 8799;
 // ?interval shortens the round; the app honours it on localhost only.
@@ -93,10 +95,13 @@ b.test('the tiles are named for where they go', async () => {
   const {ctx} = await context();
   const page = await ctx.newPage();
   await page.goto(BASE, {waitUntil: 'networkidle'});
-  // The tiles name capabilities; the probe ids appear only in the log and the file.
+  // The tiles name capabilities and the rows above them name probes. Both sets are read from
+  // the modules that define them, so neither can drift from a rename.
   const names = await page.$$eval('.signal .name', els => els.map(e => e.textContent.trim()));
-  assert.deepEqual(names, ['calls & live audio', 'opening an article', 'video & downloads'],
+  assert.deepEqual(names, CAPABILITIES.map(c => PURPOSES[c].label),
                    `purposes, not probes: ${names.join(' | ')}`);
+  const rows = await page.$$eval('.probe', els => els.map(e => e.id));
+  assert.deepEqual(rows, PROBES.map(p => `probe-${p.id}`), 'every probe has a row, in order');
   assert.equal(await page.locator('#m-udp').count(), 0, 'no probe readings among the counters');
   await ctx.close();
 });
@@ -148,10 +153,11 @@ b.test('a session records, survives a reload, and exports losslessly', async () 
   await page.selectOption('#f-operator', 'Odido');
   await page.click('#btn-start');
   await page.waitForTimeout(3000);
-  assert.match(await page.$eval('#lamp-ip4', e => e.className), /\bna\b/,
-               'an absent IPv4 path dims its lamp rather than failing a tile');
-  assert.match(await page.$eval('#lamp-ip6', e => e.className), /\bon\b/,
-               'while the path that works is lit');
+  assert.equal(await page.$eval('#probe-ip4', e =>
+    ['green', 'yellow', 'orange', 'red'].filter(g => e.classList.contains(g)).join('')), '',
+               'an absent IPv4 path takes no colour rather than failing a tile');
+  assert.match(await page.$eval('#probe-ip6', e => e.className), /green|yellow|orange/,
+               'while the path that works is graded');
   await page.click('#btn-mark');
 
   // A tile's colour changes with the round it shows, within one round.
@@ -302,23 +308,24 @@ b.test('the newest log line is on top and nothing hides behind the controls', as
 });
 
 
-b.test('the lamps report each path without a sentence to read', async () => {
+b.test('the probe rows report each path without a sentence to read', async () => {
   const {ctx, state} = await context();
   const page = await ctx.newPage();
   await page.goto(BASE, {waitUntil: 'networkidle'});
   await page.click('#btn-start');
   await page.waitForTimeout(5000);
 
-  const lamps = () => page.$$eval('.lamp', els =>
-    Object.fromEntries(els.map(e => [e.textContent, e.className.replace('lamp ', '')])));
-  let l = await lamps();
-  assert.equal(l.IPv6, 'on', 'the working path is lit');
-  assert.equal(l.IPv4, 'na', 'an absent path is dim, not alarming');
+  const row = id => page.$eval(`#probe-${id}`, e =>
+    ['green', 'yellow', 'orange', 'red'].filter(g => e.classList.contains(g)).join(''));
+  const shown = id => page.textContent(`#pval-${id}`);
+  assert.match(await row('ip6'), /green|yellow|orange/, 'the working path is graded');
+  assert.equal(await row('ip4'), '', 'an absent path takes no colour, which is not alarming');
+  assert.equal(await shown('ip4'), 'absent', 'and says why it has no number');
 
   state.mode = 'fail';
   await page.waitForTimeout(4000);
-  l = await lamps();
-  assert.equal(l.IPv6, 'off', 'and a failing path is unmistakable');
+  assert.equal(await row('ip6'), 'red', 'and a failing path is unmistakable');
+  assert.match(await shown('ip6'), /timeout|network/, 'with the reason, not just the fact');
 
   // The IPv4 result goes to the log and the file; the notice area stays clear.
   assert.match(await page.textContent('#log'), /IPv4 absent/, 'the IPv4 verdict is logged once');
@@ -368,7 +375,7 @@ b.test('a tile explains itself on tap and gives the number back', async () => {
   await page.click('#btn-start');
   await page.waitForTimeout(5000);
 
-  const explain = () => page.textContent('#explain-news');
+  const explain = () => page.textContent('#explain-cap-news');
   const value = () => page.$eval('#val-news', e => e.offsetParent !== null);
   assert.equal(await explain(), '', 'a tile shows its measurement by default');
   assert.equal(await value(), true);

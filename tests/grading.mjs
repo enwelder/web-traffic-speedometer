@@ -5,11 +5,13 @@ import {stubBrowser, suite} from './helpers.mjs';
 
 stubBrowser();
 const g = await import('../js/grade.js');
+const {PROBES} = await import('../js/probe.js');
 
 const s = suite('grading');
 
 const ok = (ms, extra = {}) => ({ok: true, ms, fail: null, ...extra});
 const bad = (extra = {}) => ({ok: false, ms: null, fail: 'timeout', ...extra});
+const pick = r => ({state: r.state, grade: r.grade});
 const round = (over = {}) => ({probes: {
   ip6: ok(30), ip4: bad({expected: true}), dns: ok(190), dns_ctl: ok(60),
   web: ok(65), udp: ok(50),
@@ -119,6 +121,83 @@ s.test('every purpose names the scales it is judged on', () => {
       assert.ok(g.SCALES[scale], `${name} reads ${scale}, which must exist`);
     }
   }
+});
+
+
+s.test('every probe names a scale that exists', () => {
+  for (const p of PROBES) {
+    const scale = g.PROBE_SCALES[p.id];
+    assert.ok(scale, `${p.id} names a scale, or its row shows a number no colour contradicts`);
+    assert.ok(g.SCALES[scale], `${p.id} reads ${scale}, which must exist`);
+  }
+});
+
+s.test('a probe reports its own measurement', () => {
+  const r = g.probeReading('ip6', round({ip6: ok(30)}));
+  assert.equal(r.state, 'ok');
+  assert.equal(r.grade, 'green');
+  assert.equal(r.value, 30);
+  assert.equal(r.unit, 'ms');
+
+  assert.equal(g.probeReading('ip6', round({ip6: ok(250)})).grade, 'orange');
+  assert.equal(g.probeReading('ip6', round({ip6: ok(500)})).grade, 'red');
+  // The download grades on the bound it publishes, not on how long the read took.
+  assert.equal(g.probeReading('down', round()).value, 40e6);
+  assert.equal(g.probeReading('down', round()).grade, 'green');
+});
+
+s.test('a probe that measured nothing carries no colour', () => {
+  // An absent IPv4 path, a rested probe and a probe the round never ran are all reasons for
+  // there to be no measurement, and none of them is the link being bad.
+  assert.deepEqual(pick(g.probeReading('ip4', round())), {state: 'absent', grade: null});
+  assert.deepEqual(pick(g.probeReading('web', round({web: bad({fail: 'resting'})}))),
+                   {state: 'resting', grade: null});
+  assert.deepEqual(pick(g.probeReading('udp', round({udp: undefined}))),
+                   {state: 'none', grade: null});
+
+  const failing = g.probeReading('web', round({web: bad()}));
+  assert.deepEqual(pick(failing), {state: 'failed', grade: 'red'});
+  assert.equal(failing.note, 'timeout', 'the row says why, not just that');
+});
+
+s.test('a download the server refused does not grade the link', () => {
+  // The same fact the streaming purpose already ignores: the row and the tile below it must
+  // not disagree about whose fault it was.
+  const refused = round({down: {ok: false, fail: 'network', refused_by: 'server'}});
+  assert.deepEqual(pick(g.probeReading('down', refused)), {state: 'refused', grade: null});
+  assert.notEqual(g.gradeRound(refused).streaming, 'red');
+});
+
+s.test('the fresh lookup is graded against the cached-name control', () => {
+  // Same host, same path: the difference is what the delta is for. The absolute number is
+  // mostly the far end handling a name it has not seen, so it is never graded on its own.
+  const delta = (dns, ctl) => g.probeReading('dns', round({dns: ok(dns), dns_ctl: ok(ctl)}));
+  assert.equal(delta(200, 60).grade, 'green', '140 ms sits at the floor every journey shows');
+  assert.equal(delta(700, 60).grade, 'orange');
+  assert.equal(delta(1200, 60).grade, 'red');
+  assert.equal(delta(200, 60).value, 140, 'the row prints the difference it graded');
+
+  // One sample against a median of three goes negative on noise. Three of 259 recorded rounds
+  // do; a negative delta is not a faster-than-instant lookup.
+  assert.equal(delta(40, 160).value, 0);
+  assert.equal(delta(40, 160).grade, 'green');
+});
+
+s.test('a lookup on a retry timer is red however small the delta', () => {
+  // The first query was lost. Loss, not slowness, and the delta cannot see it.
+  const lost = round({dns: ok(80, {retry_suspected: true}), dns_ctl: ok(60)});
+  const r = g.probeReading('dns', lost);
+  assert.equal(r.grade, 'red');
+  assert.equal(r.value, null, 'there is no number that would explain the colour');
+  assert.equal(r.note, 'lost');
+});
+
+s.test('a fresh lookup with no control still reports', () => {
+  // Nothing to subtract, but the name did resolve, and that is worth saying.
+  const r = g.probeReading('dns', round({dns: ok(190), dns_ctl: bad()}));
+  assert.equal(r.grade, 'green');
+  assert.equal(r.value, null);
+  assert.equal(r.note, 'resolved');
 });
 
 await s.run();

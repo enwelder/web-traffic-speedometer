@@ -31,7 +31,8 @@ export const SCALES = {
   ttfb:       {unit: 'ms',  dir: 'low',  edges: [800, 1800, 3000]},
   article:    {unit: 'ms',  dir: 'low',  edges: [2500, 4000, 8000]},
   rate:       {unit: 'bps', dir: 'high', edges: [10e6, 5e6, 1.5e6]},
-  call_rate:  {unit: 'bps', dir: 'high', edges: [0.3e6, 0.1e6, 0.03e6]}
+  call_rate:  {unit: 'bps', dir: 'high', edges: [0.3e6, 0.1e6, 0.03e6]},
+  dns_delta:  {unit: 'ms',  dir: 'low',  edges: [250, 500, 1000]}
 };
 
 // What each purpose is judged on. A purpose is the worst of its terms, so one requirement
@@ -45,9 +46,9 @@ export const SCALES = {
 //              · ttfb · article
 //   streaming  throughput · rate
 export const PURPOSES = {
-  voice:     {label: 'calls & live audio', scales: ['round_trip', 'call_rate']},
-  news:      {label: 'opening an article', scales: ['ttfb', 'article']},
-  streaming: {label: 'video & downloads',  scales: ['rate']}
+  voice:     {label: 'voice & video calling', scales: ['round_trip', 'call_rate']},
+  news:      {label: 'reading articles',     scales: ['ttfb', 'article']},
+  streaming: {label: 'streaming video',      scales: ['rate']}
 };
 
 export const CAPABILITIES = Object.keys(PURPOSES);
@@ -140,7 +141,53 @@ export function capabilityReading(capability, sample) {
     grade,
     value: decided?.value ?? null,
     unit: decided?.scale ? SCALES[decided.scale].unit : null,
-    note: decided?.note ?? null
+    note: decided?.note ?? null,
+    scale: decided?.scale ?? null
+  };
+}
+
+// Which scale reads each probe's own number. Every probe in PROBES needs an entry: a probe
+// with no scale would show a measurement no colour ever contradicts.
+export const PROBE_SCALES = {
+  ip6: 'round_trip', ip4: 'round_trip', dns_ctl: 'round_trip', web: 'round_trip',
+  udp: 'round_trip', down: 'rate', dns: 'dns_delta'
+};
+
+// A probe reports before it grades. Only `failed` carries a colour; the other three say why
+// there is no measurement, so a rested probe and a dead one never look alike.
+function probeState(r) {
+  if (!r) return 'none';
+  if (r.fail === 'resting') return 'resting';
+  if (r.expected) return 'absent';
+  if (ourFault(r)) return 'refused';
+  if (failed(r)) return 'failed';
+  return r.ok ? 'ok' : 'none';
+}
+
+// The fresh lookup is graded against the cached-name control at the same destination, never on
+// its own latency. A single sample against a median of three goes negative on noise, and a
+// negative delta is not a faster-than-instant lookup.
+function dnsMeasure(p) {
+  if (p.dns?.retry_suspected) return {grade: 'red', note: 'lost'};
+  const ctl = p.dns_ctl?.ok ? p.dns_ctl.ms : null;
+  if (ctl == null) return {grade: 'green', note: 'resolved'};
+  return {scale: 'dns_delta', value: Math.max(0, p.dns.ms - ctl)};
+}
+
+// What a probe measured this round, and the colour that measurement grades to.
+export function probeReading(id, sample) {
+  const p = sample && !sample.skipped ? (sample.probes || {}) : {};
+  const r = p[id];
+  const state = probeState(r);
+  if (state !== 'ok') {
+    return {state, grade: state === 'failed' ? 'red' : null, value: null, unit: null,
+            note: state === 'failed' ? r.fail : state === 'none' ? null : state, scale: null};
+  }
+  const m = id === 'dns' ? dnsMeasure(p)
+    : {scale: PROBE_SCALES[id], value: id === 'down' ? r.bps_min : r.ms};
+  return {
+    state, grade: m.grade ?? gradeValue(m.scale, m.value), value: m.value ?? null,
+    unit: m.scale ? SCALES[m.scale].unit : null, note: m.note ?? null, scale: m.scale ?? null
   };
 }
 
@@ -150,6 +197,14 @@ export function gradeRound(sample) {
   if (!sample || sample.skipped) return null;
   const out = {};
   for (const cap of CAPABILITIES) out[cap] = capabilityReading(cap, sample).grade;
+  return out;
+}
+
+// Every probe's own grade for one round, resolved once so the file and the screen agree.
+export function gradeProbes(sample) {
+  if (!sample || sample.skipped) return null;
+  const out = {};
+  for (const id of Object.keys(PROBE_SCALES)) out[id] = probeReading(id, sample).grade;
   return out;
 }
 
