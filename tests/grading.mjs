@@ -219,7 +219,9 @@ s.test('calling reads whichever address family the network carries', () => {
 });
 
 s.test('no route means every family is gone, not merely one', () => {
-  const route = over => g.activityReading('voice', round(over));
+  // Nothing else reached the network either, or the literals are not the story.
+  const dead = {dns: bad(), dns_ctl: bad(), web: bad(), down: bad()};
+  const route = over => g.activityReading('voice', round({...dead, ...over}));
 
   assert.equal(route({ip6: bad(), ip4: bad()}).note, 'no route');
   // The absent family reported nothing, so the failure of the working one still decides.
@@ -228,6 +230,12 @@ s.test('no route means every family is gone, not merely one', () => {
 
   // One family carrying traffic is a route, however the other fared.
   assert.notEqual(route({ip6: bad(), ip4: ok(25)}).note, 'no route');
+
+  // And neither literal answering is not "no route" while the rest of the round gets out:
+  // one operator failed both every round while DNS, the web probe and the download answered.
+  const blocked = g.activityReading('voice', round({ip6: bad(), ip4: bad()}));
+  assert.notEqual(blocked.note, 'no route',
+                  'a blocked literal is not the same as a dead link');
   // Two rested probes have reported nothing at all and cannot condemn the link.
   assert.notEqual(route({ip6: bad({fail: 'resting'}), ip4: bad({fail: 'resting'})}).note,
                   'no route');

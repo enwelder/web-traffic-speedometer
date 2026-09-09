@@ -13,12 +13,19 @@ if (unknown.length) {
 }
 let failed = 0;
 
+// The browser suite runs once per engine. The app is opened in whatever browser someone has,
+// and the parts that differ between engines — streaming reads, connection reuse, storage, the
+// service worker — are exactly what that suite covers.
+const ENGINES = (process.env.WTS_ENGINES || 'chromium,webkit').split(',');
+
 for (const name of suites) {
   if (only.length && !only.includes(name)) continue;
   console.log(`\n${name}`);
-  const r = spawnSync(process.execPath, [new URL(`${name}.mjs`, import.meta.url).pathname],
-                      {stdio: 'inherit'});
-  if (r.status !== 0) failed++;
+  for (const engine of name === 'browser' ? ENGINES : [null]) {
+    const r = spawnSync(process.execPath, [new URL(`${name}.mjs`, import.meta.url).pathname],
+                        {stdio: 'inherit', env: engine ? {...process.env, WTS_ENGINE: engine} : process.env});
+    if (r.status !== 0) failed++;
+  }
 }
 
 console.log(failed ? `\n${failed} suite(s) failed` : '\nall suites passed');

@@ -100,7 +100,8 @@ const KEYS = {
           'ms_min', 'ms_max', 'expected', 'stuck', 'host', 'bytes', 'truncated', 'server',
           'ttfb_ms', 'transfer_ms', 'handshake', 'reused', 'protocol', 'lookup_ms',
           'connect_ms', 'tls_ms', 'retry_suspected', 'parse_reason', 'bps_min', 'complete',
-          'warmup_only', 'refused_by', 'duration_ms', 'aborted_reason', 'public_ips',
+          'warmup_only', 'refused_by', 'bps', 'window_bytes', 'window_ms',
+          'duration_ms', 'aborted_reason', 'public_ips',
           'candidates',
           // Written by releases up to 3.3.1 and still present in recordings kept for replay.
           // The current app writes none of them; removing them makes those files

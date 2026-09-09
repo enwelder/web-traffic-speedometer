@@ -1,6 +1,6 @@
 # Exported session format
 
-`format: "wts/session"`, `version: 5`. One button per session writes one JSON file: session
+`format: "wts/session"`, `version: 6`. One button per session writes one JSON file: session
 metadata, environment, a rollup, every sample, every event. CSV, GPX or GeoJSON are a few
 lines to derive from it.
 
@@ -9,6 +9,7 @@ lines to derive from it.
 | 3 | grades keyed by activity; the download reports a bound rather than a rate |
 | 4 | every round carries its per-probe grades beside its activity grades |
 | 5 | either address family can be flagged `expected`; the session records both |
+| 6 | throughput is graded on `bps`, the post-ramp rate, rather than on the whole-transfer floor |
 
 Version 5 matters to a reader counting failures: before it, `expected` appeared only on `ip4`,
 so an `ip6` failure was always a real one. On a network carrying no IPv6 it now marks a path
@@ -109,7 +110,9 @@ screen. Silent data loss is the one failure this tool cannot have.
 | `host` | `dns` `dns_ctl` | the hostname used: random each round for `dns`, constant for `dns_ctl` |
 | `retry_suspected` | `dns` | the answer arrived within 300 ms of a resolver retry timer (2 s or 5 s), so the first query was lost. Loss, not slowness, and red regardless of the number |
 | `bytes` `duration_ms` `ttfb_ms` | `down` | bytes counted, how long the read ran, time to first byte |
-| `bps_min` `complete` | `down` | the throughput bound, and whether the body arrived whole |
+| `bps_min` `complete` | `down` | the whole-transfer floor, and whether the body arrived whole |
+| `bps` | `down` | the rate over the measured window, which opens once the ramp is past. This is the figure graded. Null when the transfer was too short to hold a window |
+| `window_bytes` `window_ms` | `down` | the bytes and time `bps` was computed over |
 | `warmup_only` | `down` | the link was too slow for a second request; the warm-up is the measurement |
 | `refused_by` | `down` | on a `network` failure: `server` or `connection` |
 | `aborted_reason` | `down` | how the read ended: `eof`, `time`, `aborted` or `network` |

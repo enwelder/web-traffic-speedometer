@@ -22,7 +22,7 @@ const REFUSED_BYTES = 100;      // an IPv4 literal with no path never gets a con
 // STUN is UDP: no handshake to charge and no connection to resume.
 const cost = p => (WARM_BYTES[p.kind] * (p.samples || 1)) + (p.kind === 'stun' ? 0 : RESUMED_BYTES);
 
-export const APP_VERSION = '3.8.2';
+export const APP_VERSION = '3.9.0';
 
 // The download runs every round, so the interval is what controls data use.
 export const PROFILES = {
@@ -237,7 +237,7 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
   // the result rather than leaving the probe exempt for the whole journey.
   function revisePaths(row) {
     for (const [id, key, label] of PATHS) {
-      if (session[key] === false && row.probes[id]?.ok) {
+      if (session[key] !== true && row.probes[id]?.ok) {
         session[key] = true;
         noteEvent(`${label} available after all; the preflight caught a sleeping radio`);
         store.putSession(session);
@@ -383,7 +383,8 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
       for (const [label, c] of [['IPv6', paths.ip6], ['IPv4', paths.ip4]]) {
         record({sessionId: session.id, t: Date.now(), mono: Math.round(mono()), type: 'note',
                 lat: null, lon: null,
-                text: `${label} ${c.available ? 'available' : `absent (${c.fail} in ${c.ms} ms)`}`});
+                text: `${label} ${c.available === null ? `unresolved (${c.fail} in ${c.ms} ms)`
+          : c.available ? 'available' : `absent (${c.fail} in ${c.ms} ms)`}`});
       }
     }
 

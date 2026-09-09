@@ -45,7 +45,7 @@ const ourFault = r => r?.refused_by === 'server';
 export function articleMs(probes) {
   const dns = probes.dns?.ok ? probes.dns.ms : null;
   const web = probes.web?.ok ? probes.web.ms : null;
-  const rate = probes.down?.ok ? probes.down.bps_min : null;
+  const rate = throughput(probes.down);
   if (dns == null || web == null || !rate) return null;
   return Math.round(2 * dns + 2 * web + (ARTICLE_BYTES * 8000) / rate);
 }
@@ -60,9 +60,16 @@ export function activeRoute(probes = {}) {
 }
 
 const routeMs = p => (p.ip6?.ok ? p.ip6.ms : p.ip4?.ok ? p.ip4.ms : null);
-// No route means no family is carrying traffic and at least one of them genuinely failed. A
-// family that is merely absent, or rested, has reported nothing and cannot condemn the link.
-const noRoute = p => !p.ip6?.ok && !p.ip4?.ok && (failed(p.ip6) || failed(p.ip4));
+// Anything that reached the network this round. An IP literal can be blocked or hijacked
+// where ordinary traffic is not: on one operator both literals failed every round while DNS,
+// the web probe and the download all answered.
+const reached = p => !!(p.web?.ok || p.down?.ok || p.dns?.ok || p.dns_ctl?.ok);
+
+// No route means no family is carrying traffic, at least one genuinely failed, and nothing
+// else got out either. A family that is merely absent, or rested, has reported nothing and
+// cannot condemn the link; neither can a blocked literal while the rest of the round succeeds.
+const noRoute = p =>
+  !p.ip6?.ok && !p.ip4?.ok && (failed(p.ip6) || failed(p.ip4)) && !reached(p);
 
 // Only whether the UDP path exists is read, never its milliseconds: the row above grades those.
 const TERMS = {
@@ -86,8 +93,12 @@ const TERMS = {
   ]
 };
 
+// The post-ramp rate where the transfer was long enough to hold a window, else the
+// whole-transfer floor. Both are recorded; this is the one that describes the link.
+export const throughput = down => (down?.ok ? (down.bps ?? down.bps_min ?? null) : null);
+
 function terms(activity, p) {
-  const rate = p.down?.ok ? p.down.bps_min : null;
+  const rate = throughput(p.down);
   // A download the far end refused is a fact about the endpoint, so it leaves the activities
   // that read it with one fewer term rather than with a red one.
   const noThroughput = failed(p.down) && !ourFault(p.down) ? 'red' : null;
@@ -143,7 +154,7 @@ export function probeReading(id, sample) {
             note: state === 'failed' ? r.fail : state === 'none' ? null : state, scale: null};
   }
   const m = id === 'dns' ? dnsMeasure(p)
-    : {scale: PROBE_SCALES[id], value: id === 'down' ? r.bps_min : r.ms};
+    : {scale: PROBE_SCALES[id], value: id === 'down' ? throughput(r) : r.ms};
   return {
     state, grade: m.grade ?? gradeValue(m.scale, m.value), value: m.value ?? null,
     unit: m.scale ? SCALES[m.scale].unit : null, note: m.note ?? null, scale: m.scale ?? null

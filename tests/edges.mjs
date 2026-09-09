@@ -171,9 +171,7 @@ d.test('the connection is opened before the measured request, unless the link is
   await probe.runProbe(P.down, {timeoutMs: 8000, download: {budgetMs: 2000}});
   assert.equal(sizes.length, 2, 'one request to open the window, one to measure over it');
   assert.equal(sizes[0], probe.WARMUP_REQUEST_BYTES, 'the small one first');
-  // The measured request is sized from what the warm-up saw, within the floor and ceiling.
-  assert.ok(sizes[1] >= probe.DOWN_MIN_BYTES && sizes[1] <= probe.DOWN_MAX_BYTES,
-            `then one sized for the link: ${sizes[1]}`);
+  assert.equal(sizes[1], probe.DOWN_MAX_BYTES, 'then one that asks for the ceiling');
 
   // On a link too slow to finish the first request quickly there is no window to escape, so
   // the second is skipped and the round stays cheap.
@@ -189,12 +187,11 @@ d.test('the connection is opened before the measured request, unless the link is
   assert.ok(slow.bps_min > 0, 'it is still a measurement');
 });
 
-d.test('the measured request is sized for the link, so a slow one is not cut off', async () => {
-  // A fixed 4 MB body would take 32 s on a 1 Mb/s cell and be cut off every round; a fixed
-  // small one cannot see past a fast link's ramp. The size comes from what the warm-up saw.
-  for (const [mbps, floor, ceiling] of [[0.5, probe.DOWN_MIN_BYTES, 400000],
-                                        [10, 300000, 1500000],
-                                        [300, 2000000, probe.DOWN_MAX_BYTES]]) {
+d.test('the measured request asks for the ceiling whatever the link is doing', async () => {
+  // Sizing the request from the warm-up made the measurement decide its own size: 96 kB is
+  // spent inside the ramp, so it always read low, and a low read asked for less next time. A
+  // 320 Mb/s cell measured 6 Mb/s that way. The budget, not the size, bounds a slow link.
+  for (const mbps of [0.5, 10, 300]) {
     const sizes = [];
     const per = Math.max(1, Math.round((mbps * 1e6 / 8) * 0.02));
     globalThis.fetch = async url => {
@@ -204,10 +201,32 @@ d.test('the measured request is sized for the link, so a slow one is not cut off
               body: stream(Array.from({length: Math.ceil(want / per)}, () => ({after: 20, bytes: per})))};
     };
     await probe.runProbe(P.down, {timeoutMs: 20000, download: {budgetMs: 20000}});
-    const measured = sizes[1];
-    assert.ok(measured >= floor && measured <= ceiling,
-              `${mbps} Mb/s asked for ${measured} bytes, wanted ${floor}-${ceiling}`);
+    assert.equal(sizes[1], probe.DOWN_MAX_BYTES,
+                 `${mbps} Mb/s asked for ${sizes[1]} bytes, not the ceiling`);
   }
+});
+
+d.test('the rate is measured after the ramp, not across it', async () => {
+  // The whole-transfer figure is dragged down by however long the connection took to open,
+  // which depends on the client and on whether it reused a connection. Reading only what
+  // arrives after the ramp removes that dependency.
+  const slowStart = Array.from({length: 8}, () => ({after: 50, bytes: 500}));
+  const atSpeed = Array.from({length: 30}, () => ({after: 10, bytes: 200000}));
+  globalThis.fetch = async () => ({ok: true, status: 200, headers: {get: () => null},
+                                   body: stream([...slowStart, ...atSpeed])});
+  const r = await probe.runProbe(P.down, {timeoutMs: 20000, download: {budgetMs: 20000}});
+  assert.ok(r.window_ms >= probe.MIN_WINDOW_MS, `a window opened: ${r.window_ms} ms`);
+  assert.ok(r.bps > r.bps_min * 1.4,
+            `the post-ramp rate leaves the whole-transfer floor behind: ${r.bps} vs ${r.bps_min}`);
+  assert.ok(r.window_bytes < r.bytes, 'and it is measured over part of the transfer');
+});
+
+d.test('a transfer too short to hold a window still reports its floor', async () => {
+  globalThis.fetch = async () => ({ok: true, status: 200, headers: {get: () => null},
+                                   body: stream([{after: 5, bytes: 40000}])});
+  const r = await probe.runProbe(P.down, {timeoutMs: 8000, download: {budgetMs: 2000}});
+  assert.equal(r.bps, null, 'nothing arrived after the ramp, so there is no rate to report');
+  assert.ok(r.bps_min > 0, 'the floor still stands');
 });
 
 d.test('a refused download says which side refused it', async () => {

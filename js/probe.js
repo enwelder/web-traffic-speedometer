@@ -1,8 +1,11 @@
 // Seven probes run in parallel every round, each isolating a different layer. The README
 // argues each one; this file implements them.
-export const DOWN_TARGET_MS = 500;
-export const DOWN_MIN_BYTES = 128000;
 export const DOWN_MAX_BYTES = 4000000;
+// Discarded from the rate: a transfer opens at the congestion window's pace, not the link's,
+// and how long that lasts depends on the client, the connection and whether it was reused.
+// Measuring only what arrives afterwards removes the guesswork about all three.
+export const RAMP_MS = 300;
+export const MIN_WINDOW_MS = 150;
 export const DOWNLOAD_REQUEST_BYTES = 625000;   // what a 10 Mb/s link needs for the target
 export const WARMUP_REQUEST_BYTES = 96000;
 export const DEFAULT_DOWN_BUDGET_MS = 2000;
@@ -17,6 +20,7 @@ export const STUCK_AFTER = 3;
 export const STUCK_COOLDOWN = 6;
 export const STUN_SERVER = 'stun:stun.cloudflare.com:3478';
 export const PREFLIGHT_MS = 2000;
+export const PREFLIGHT_RETRY_MS = 1500;
 
 // `label` names the test performed, not what it is used for: a probe measures one thing and
 // the activities in grade.js decide what that means. It travels in the recording so a reader
@@ -226,12 +230,29 @@ function cancelQuietly(reader) {
 // Reads the body to its end, or until the budget runs out, and reports how much arrived and
 // why it stopped: eof | time | aborted | network. The response carries exactly the bytes that
 // were asked for, so a healthy link reaches eof and nothing is aborted.
+// Opens once the ramp is over, then counts whole chunks only. The chunk that crosses the
+// boundary belongs to neither side and is dropped.
+function rampWindow(t0) {
+  let start = null;
+  return {
+    take(n) {
+      const now = performance.now();
+      if (start !== null) return n;
+      if (now - t0 >= RAMP_MS) start = now;
+      return 0;
+    },
+    elapsed(end) { return start == null ? 0 : Math.round(end - start); }
+  };
+}
+
 async function readStream(res, {budgetMs, controller}) {
   const t0 = performance.now();
   let bytes = 0;
   let reason = 'eof';
   let truncated = false;
   let fail = null;
+  const window = rampWindow(t0);
+  let windowBytes = 0;
 
   let reader = null;
   try {
@@ -244,6 +265,7 @@ async function readStream(res, {budgetMs, controller}) {
       if (next === EXPIRED) { reason = 'time'; break; }
       if (next.done) break;
       bytes += next.value.byteLength;
+      windowBytes += window.take(next.value.byteLength);
     }
   } catch (e) {
     truncated = true;
@@ -258,7 +280,9 @@ async function readStream(res, {budgetMs, controller}) {
 
   // Wall clock: a stream that stalled spent that time, and charging it makes the bound
   // smaller, which is the safe direction.
-  return {bytes, reason, truncated, fail, duration: Math.round(performance.now() - t0)};
+  const end = performance.now();
+  return {bytes, reason, truncated, fail, duration: Math.round(end - t0),
+          window_bytes: windowBytes, window_ms: window.elapsed(end)};
 }
 
 // What the transfer proves the link carries, and never more. Every uncertainty is charged
@@ -289,6 +313,12 @@ async function readDownload(res, {url, elapsed, controller, budgetMs}) {
     // floor rather than close to the rate.
     complete: stream.reason === 'eof',
     bps_min: boundFrom(stream.bytes, timing.transfer_ms, stream.duration),
+    // What the link carried once it was up to speed. Null when the transfer was too short to
+    // hold a window, and then the whole-transfer floor is all there is.
+    bps: stream.window_ms >= MIN_WINDOW_MS && stream.window_bytes > 0
+      ? Math.round((stream.window_bytes * 8) / (stream.window_ms / 1000)) : null,
+    window_bytes: stream.window_bytes,
+    window_ms: stream.window_ms,
     server,
     ...timing,
     ok: stream.bytes > 0 && !stream.truncated,
@@ -327,12 +357,6 @@ async function whoRefused(probe, opts) {
 // the limit from the first packet — so there the first request is the measurement and the
 // second is skipped, which is also what keeps a slow round cheap.
 // What to ask for so the body lasts about the target at the rate the warm-up just saw.
-function sizeFrom(warm, max) {
-  const bytesPerSecond = (warm.bps_min ?? 0) / 8;
-  const wanted = Math.round(bytesPerSecond * (DOWN_TARGET_MS / 1000));
-  return Math.max(DOWN_MIN_BYTES, Math.min(max, wanted));
-}
-
 async function measureDownload(probe, opts) {
   const budgetMs = opts.download?.budgetMs ?? DEFAULT_DOWN_BUDGET_MS;
   const deadline = opts.timeoutMs ?? TIMEOUT_MS;
@@ -348,7 +372,10 @@ async function measureDownload(probe, opts) {
     warm.warmup_only = true;
     return warm;
   }
-  const bytes = sizeFrom(warm, opts.download?.maxBytes ?? DOWN_MAX_BYTES);
+  // Ask for the ceiling every time and let the budget decide how much of it arrives. Sizing
+  // the request from the warm-up measured a 320 Mb/s link at 6 Mb/s: 96 kB is spent inside
+  // slow start, so it always understated, and each undersized request confirmed the last.
+  const bytes = opts.download?.maxBytes ?? DOWN_MAX_BYTES;
   return runOnce({...probe, bytes}, {...opts, timeoutMs: timeLeft,
                                      download: {...opts.download, budgetMs: budgetLeft}});
 }
@@ -398,9 +425,19 @@ export async function runProbe(probe, opts = {}) {
 // is ordinary — mobile carriers are commonly IPv6-only with NAT64, and plenty of networks
 // elsewhere have no IPv6 at all — so the absent family must not read as an outage.
 export async function checkPaths(signal) {
-  const [v6, v4] = await Promise.all(['ip6', 'ip4'].map(id =>
+  const attempt = () => Promise.all(['ip6', 'ip4'].map(id =>
     runProbe(PROBES.find(p => p.id === id), {timeoutMs: PREFLIGHT_MS, signal})));
-  const one = r => ({available: r.ok, ms: r.ms, fail: r.fail});
+  let [v6, v4] = await attempt();
+  // Both failing at once usually means the radio is still waking rather than that the network
+  // carries neither family, and the answer is kept for the whole session. Ask again.
+  if (!v6.ok && !v4.ok) {
+    await new Promise(r => setTimeout(r, PREFLIGHT_RETRY_MS));
+    [v6, v4] = await attempt();
+  }
+  // Still nothing: unknown, not absent. Marking a path absent excuses its failures all
+  // session, and a network that answers neither literal has told us nothing about either.
+  const settled = v6.ok || v4.ok;
+  const one = r => ({available: settled ? r.ok : null, ms: r.ms, fail: r.fail});
   return {ip6: one(v6), ip4: one(v4)};
 }
 

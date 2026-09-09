@@ -185,8 +185,16 @@ where iOS has no CLAT and relies on DNS64 synthesising an address during resolut
 address literal skips, so `ip4` cannot connect at all. Plenty of other networks carry no IPv6.
 A preflight settles both families once per session into `ipv6_available` and `ipv4_available`;
 afterwards a failure of the absent family carries `expected: true` and stays out of every
-tally. A failure *without* that flag means the family worked at the start and stopped. Both
-gone is never "expected" — that is the network being down.
+tally. A failure *without* that flag means the family worked at the start and stopped.
+
+The verdict is kept for the whole session, so it must not be taken from a radio that was still
+waking: when both families fail the preflight it is retried, and if both fail again neither is
+recorded as absent. Unknown, not absent — and the first later success settles it.
+
+**A blocked literal is not a dead link.** All three of the operators tested fail the IPv4
+literal every round, and one failed both, while DNS, the web probe and the download answered
+throughout. Calling therefore reports `no route` only when no family is carrying traffic *and*
+nothing else in the round reached the network either.
 
 **Latency is a median of three.** One round trip moves by an order of magnitude on a cold
 connection, a retransmission or a scheduling delay. RMBT takes 10-200 samples for the same
@@ -244,23 +252,31 @@ or a completed negotiation, and none is ever created. Its milliseconds are grade
 row but ignored by the calling activity, which reads only whether the path exists: gathering
 rides on top of the round trip, so the number overstates the link.
 
-**The download reports a bound.** `bps_min` is what the bytes that arrived prove the link
-carries. Charging every uncertainty to the bound — slow start, WebKit's lumpy delivery, clock
-jitter — means it can only understate, so none of them needs correcting for. Two requests per
-round: a 96 kB warm-up to open the congestion window, then a measured one sized from it for
-~500 ms of body. iOS opens a fresh connection every round, and a fresh one delivers at the
-congestion window's pace rather than the link's:
+**The download measures after the ramp.** Every transfer opens at the congestion window's
+pace rather than the link's. How long that lasts depends on the client, the connection and
+whether it was reused — none of which a page can see or rely on. So the probe asks for the
+4 MB ceiling every round and measures only what arrives *after* the first 300 ms:
 
-| condition | measured against a 350 Mb/s reference |
+| field | meaning |
 |---|---|
-| 625 kB, cold connection | 19.9 Mb/s |
-| 625 kB, warm connection | 177 Mb/s |
-| 4 MB, warm connection | 293 Mb/s |
-| 8 MB, warm connection | 291 Mb/s |
+| `bps` | the rate over the measured window. The figure that is graded |
+| `bps_min` | the whole transfer including the ramp. A floor, always true, never flattering |
+| `window_bytes` `window_ms` | what `bps` was computed over |
 
-Accuracy stops improving at 4 MB, which sets the ceiling. Spending more does not steady the
-result either: 4 MB transfers vary 5.4× across passes, and three samples a round cost 2.7× the
-data for no gain. The variance is between rounds, so a journey has to be aggregated.
+Sizing the request from a 96 kB warm-up instead — the previous design — made the measurement
+choose its own size. 96 kB is spent entirely inside the ramp, so it always read low, and a low
+read asked for less next round. On a KPN 5G cell that RTR measured at 320 Mb/s, the request
+shrank 623 → 533 → 490 → 466 → 462 kB over five rounds and reported 6 Mb/s. The warm-up
+remains, to open the window; it no longer decides anything.
+
+The budget, not the request size, is what bounds a slow link: 2 s of reading on a 1 Mb/s cell
+transfers 250 kB and reports 1 Mb/s, which is correct and cheap. A fast link takes the whole
+4 MB in a fraction of that.
+
+4 MB is the ceiling because accuracy stops improving there: against a 350 Mb/s reference, 4 MB
+read 293 Mb/s and 8 MB read 291. Spending more does not steady the result either — 4 MB
+transfers vary 5.4× across passes, and three samples a round cost 2.7× the data for no gain.
+The variance is between rounds, so a journey has to be aggregated.
 
 **Deadlines and scheduling.** Every TCP probe gets 8 s, capped at the interval minus half a
 second; `udp` gets 3 s, since a STUN binding answers within a round trip or not at all. Eight
@@ -302,8 +318,14 @@ npm run test:unit / test:security / test:browser
 ```
 
 Unit, grading and edge-case suites run with no browser and no network. `tests/replay.mjs`
-runs three anonymised real journeys through the grading and rollup; `tests/browser.mjs`
-drives a real browser for IndexedDB, crash recovery, the service worker and the CSP.
+runs three anonymised real journeys through the grading and rollup.
+
+`tests/browser.mjs` drives a real browser for IndexedDB, crash recovery, the service worker,
+the CSP and the phone layout, and it runs **once per engine** — Chromium for desktop and
+Android Chrome, WebKit for Safari and iOS. The parts most likely to differ between engines are
+exactly what it covers, and running WebKit first caught behaviour Chromium never showed.
+`WTS_ENGINES=chromium,webkit,firefox npm test` picks the set; each needs
+`npx playwright install <engine>`.
 
 Recordings become fixtures with `node tools/anonymise.mjs <recording> <fixture>`: coordinates
 removed, addresses and user agents redacted, timestamps shifted to a fixed epoch with

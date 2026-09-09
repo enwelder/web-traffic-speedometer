@@ -79,13 +79,23 @@ s.test('no probe may outlive its own round', async () => {
 });
 
 s.test('an absent address family is settled once and flagged, not rediscovered', async () => {
+  // A network answering neither literal has said nothing about either, so neither is called
+  // absent: the radio may still be waking, and the verdict is kept for the whole session.
   globalThis.fetch = async () => { throw netError(); };
+  const unresolved = await probe.checkPaths();
+  assert.deepEqual([unresolved.ip4.available, unresolved.ip4.fail], [null, 'network']);
+  assert.deepEqual([unresolved.ip6.available, unresolved.ip6.fail], [null, 'network']);
+
+  // One family answering makes the other's silence a verdict.
+  globalThis.fetch = async url => (url.includes('[') ? {ok: true, status: 200, text: async () => TRACE}
+                                                     : Promise.reject(netError()));
   const paths = await probe.checkPaths();
-  assert.deepEqual([paths.ip4.available, paths.ip4.fail], [false, 'network']);
-  assert.deepEqual([paths.ip6.available, paths.ip6.fail], [false, 'network']);
+  assert.equal(paths.ip6.available, true);
+  assert.equal(paths.ip4.available, false, 'IPv4 alone failing is an absent path');
 
   // Either family can be the missing one. Networks that carry only IPv6 and networks that
   // carry only IPv4 are both ordinary, and neither absence is an outage.
+  globalThis.fetch = async () => { throw netError(); };
   const only6 = await probe.runRound({available: {ip6: true, ip4: false}});
   assert.equal(only6.ip4.expected, true);
   assert.equal(only6.ip6.expected, undefined, 'the family that works is held to its result');

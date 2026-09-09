@@ -69,8 +69,8 @@ function gradeTally(ran, keys, field) {
   return grades;
 }
 
-// 5: either address family can be flagged expected, not only ip4.
-const FORMAT_VERSION = 5;
+// 6: throughput is graded on the post-ramp rate `bps`, not the whole-transfer floor.
+const FORMAT_VERSION = 6;
 
 export function summarise(samples) {
   const ran = samples.filter(s => !s.skipped && !s.round_error);
