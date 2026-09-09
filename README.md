@@ -351,7 +351,9 @@ the CSP and the phone layout, and it runs **once per engine** — Chromium for d
 Android Chrome, WebKit for Safari and iOS. The parts most likely to differ between engines are
 exactly what it covers, and running WebKit first caught behaviour Chromium never showed.
 `WTS_ENGINES=chromium,webkit,firefox npm test` picks the set; each needs
-`npx playwright install <engine>`.
+`npx playwright install <engine>`. A missing engine is a note locally and a failure on CI,
+where the workflow decides what is installed and a quiet skip would report coverage that does
+not exist.
 
 Recordings become fixtures with `node tools/anonymise.mjs <recording> <fixture>`: coordinates
 removed, addresses and user agents redacted, timestamps shifted to a fixed epoch with

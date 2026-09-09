@@ -14,8 +14,8 @@ jobs:
     name: functional tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
@@ -26,8 +26,13 @@ jobs:
         run: node tests/run.mjs unit stuck wakelock position
       - name: grading, and replay against real recordings
         run: node tests/run.mjs grading replay regressions
-      - name: install browser
-        run: npx playwright install --with-deps chromium
+      # --with-deps runs apt-get update, which fails on the Google Chrome repository the runner
+      # image ships preconfigured whenever its index and Release file disagree. Nothing here
+      # needs that repository, so it goes before apt is asked to read it.
+      - name: install browsers
+        run: |
+          sudo rm -f /etc/apt/sources.list.d/google-chrome.list
+          npx playwright install --with-deps chromium webkit
       - name: end to end in a browser
         run: node tests/run.mjs browser
 
@@ -35,8 +40,8 @@ jobs:
     name: security tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
       - name: allowlist, exfiltration, CSP, secrets, version consistency

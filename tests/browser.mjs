@@ -40,6 +40,9 @@ const browser = await (async () => {
     return await engine.launch();
   } catch {
     if (engineName !== 'chromium') {
+      // Locally a missing engine is a note. On CI it is a hole: the workflow decides what is
+      // installed, so passing without running would report coverage that does not exist.
+      if (process.env.CI) throw new Error(`${engineName} is not installed on this runner`);
       console.log(`  ..    ${engineName} is not installed; run npx playwright install ${engineName}`);
       process.exit(0);
     }
