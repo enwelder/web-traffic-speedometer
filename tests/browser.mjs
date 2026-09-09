@@ -7,6 +7,7 @@ import {chromium, webkit, firefox} from 'playwright';
 import {suite} from './helpers.mjs';
 import {ACTIVITY_IDS, ACTIVITIES} from '../js/grade.js';
 import {PROBES} from '../js/probe.js';
+import * as ui from '../js/ui.js';
 import {APP_VERSION} from '../js/session.js';
 
 const PORT = 8799;
@@ -196,7 +197,15 @@ b.test('a session records, survives a reload, and exports losslessly', async () 
   assert.match(session.name, /^Odido · \d+ \w{3} \d{2}:\d{2}$/, `name generated: ${session.name}`);
   assert.equal(session.ipv4_available, false);
   assert.ok(session.ipv4_check.fail, 'with the evidence kept');
-  assert.ok(db.samples.every(x => x.probes.ip4.expected === true), 'every ip4 failure is flagged');
+  // The harness has no IPv4 path. In every round where something carried the traffic, the
+  // IPv4 literal failing cost nobody anything and is charged to nothing. In a round where
+  // nothing carried, it is a real failure — that is the whole rule.
+  const carried = db.samples.filter(x => x.probes.ip6.ok);
+  assert.ok(carried.length > 0, 'some round had IPv6 carrying');
+  assert.ok(carried.every(x => x.probes.ip4.unused === true),
+            'a literal nobody waited on is charged to nothing');
+  assert.ok(carried.every(x => !ui.counts(x.probes.ip4)),
+            'and does not count against the link');
   assert.ok(db.samples.every(x => x.probes.down), 'every round carries a download');
   // A rested probe issues no lookup, so those rounds carry no hostname.
   const hosts = db.samples.map(x => x.probes.dns?.host).filter(Boolean);
@@ -413,7 +422,8 @@ b.test('the probe rows report each path without a sentence to read', async () =>
   assert.match(await shown('route'), /timeout|network/, 'with the reason, not just the fact');
 
   // The IPv4 result goes to the log and the file; the notice area stays clear.
-  assert.match(await page.textContent('#log'), /IPv4 absent/, 'the IPv4 verdict is logged once');
+  assert.match(await page.textContent('#log'), /IPv4 did not answer/,
+               'what each family did at the start is logged once');
   assert.ok(!/IPv4 probe failures are expected/.test(await page.textContent('#notice')),
             'and no longer occupies the screen');
   await page.click('#btn-start');

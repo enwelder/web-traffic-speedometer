@@ -22,7 +22,7 @@ const REFUSED_BYTES = 100;      // an IPv4 literal with no path never gets a con
 // STUN is UDP: no handshake to charge and no connection to resume.
 const cost = p => (WARM_BYTES[p.kind] * (p.samples || 1)) + (p.kind === 'stun' ? 0 : RESUMED_BYTES);
 
-export const APP_VERSION = '3.10.0';
+export const APP_VERSION = '3.11.0';
 
 // The download runs every round, so the interval is what controls data use.
 export const PROFILES = {
@@ -117,7 +117,7 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
   let lastRoundMs = null;
   let lastSpeed = null;
   let lastSpeedSource = null;
-  let egressIp = null;
+  const egressIp = {};
   let throughput = null;
   let udpMs = null;
   let downloadBytesUsed = 0;
@@ -226,13 +226,17 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
   // The operator label is typed in, the egress address is measured, so an address change
   // under an unchanged label marks a hotspot picked up mid-journey or a handover onto a
   // different core network.
+  // One address per family. Comparing across them reported a change every time a dual-stack
+  // round happened to report the other family first, with both addresses unchanged.
   function noteEgressChange(row) {
-    const seen = PROBES.map(p => row.probes[p.id]?.egress_ip).find(Boolean);
-    if (!seen) return;
-    if (!egressIp) { egressIp = seen; return; }
-    if (seen === egressIp) return;
-    noteEvent('egress address changed');
-    egressIp = seen;
+    for (const r of Object.values(row.probes || {})) {
+      if (!r?.egress_ip) continue;
+      const family = r.egress_ip.includes(':') ? 'ip6' : 'ip4';
+      if (!egressIp[family]) { egressIp[family] = r.egress_ip; continue; }
+      if (egressIp[family] === r.egress_ip) continue;
+      noteEvent(`egress address changed over ${family === 'ip6' ? 'IPv6' : 'IPv4'}`);
+      egressIp[family] = r.egress_ip;
+    }
   }
 
   // A radio still waking at session start can refuse the preflight, so one success overturns
@@ -249,9 +253,12 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
   // Cloudflare over it. They disagree where a literal is blocked but the path is fine —
   // 1.1.1.1 is a public resolver and relays and filters intercept it — and reading only the
   // literal then calls a working path absent and excuses every failure on it.
+  // The preflight is recorded, not obeyed: what a literal did at session start explains a log
+  // line, and every round decides for itself. A family that answers is still worth settling,
+  // because a session that never sees one again should say so in the file.
   function revisePaths(row) {
     for (const [id, key, label] of PATHS) {
-      if (row.probes[id]?.ok) settle(key, label, 'available after all; the preflight was early');
+      if (row.probes[id]?.ok) settle(key, label, 'answered');
     }
     for (const r of Object.values(row.probes || {})) {
       if (!r?.egress_ip) continue;
@@ -260,6 +267,7 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
              'carries traffic; its literal is blocked, not its path');
     }
   }
+
 
   async function measure(late) {
     inFlight = true;
@@ -271,7 +279,6 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
         signal: abort.signal,
         download: session.download || DOWNLOAD_DEFAULTS,
         intervalMs: interval(),
-        available: {ip6: session.ipv6_available, ip4: session.ipv4_available},
         resting: stuck.resting(seq)
       });
       row.probes = round.probes;
@@ -358,6 +365,22 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
   // `monoBase` continues the monotonic clock across a reload: performance.now() restarts,
   // so the gap is bridged with the wall clock. Both clocks are on every row, so the bridge
   // is checkable.
+  // What each family did at the start, recorded so a log line can explain the first rounds. No
+  // round reads it: a literal is judged on what carried traffic in its own round. A resume
+  // leaves alone any family an earlier run had already settled.
+  async function preflight() {
+    const paths = await checkPaths(abort.signal);
+    for (const [id, key, label] of PATHS) {
+      if (session[key] != null) continue;
+      const c = paths[id];
+      session[key] = c.available;
+      session[`${key.replace('_available', '')}_check`] = c;
+      noteEvent(`${label} ${c.available === null ? `unresolved (${c.fail} in ${c.ms} ms)`
+        : c.available ? 'answered' : `did not answer (${c.fail} in ${c.ms} ms)`}`);
+    }
+    await store.putSession(session);
+  }
+
   async function start(s, {resumeSeq = 0, monoBase = 0, resumedGapMs = 0, spent = null} = {}) {
     session = s;
     seq = resumeSeq;
@@ -370,7 +393,7 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
       lastRoundMs = null;
       inPause = false;
       position.reset();
-      egressIp = null;
+      for (const k of Object.keys(egressIp)) delete egressIp[k];
       lastSpeed = null;
       lastSpeedSource = null;
     }
@@ -392,20 +415,7 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
 
     // Established once per session, so a single-stack network does not report the same absent
     // path every round.
-    if (session.ipv4_available == null) {
-      const paths = await checkPaths(abort.signal);
-      session.ipv6_available = paths.ip6.available;
-      session.ipv4_available = paths.ip4.available;
-      session.ipv6_check = paths.ip6;
-      session.ipv4_check = paths.ip4;
-      await store.putSession(session);
-      for (const [label, c] of [['IPv6', paths.ip6], ['IPv4', paths.ip4]]) {
-        record({sessionId: session.id, t: Date.now(), mono: Math.round(mono()), type: 'note',
-                lat: null, lon: null,
-                text: `${label} ${c.available === null ? `unresolved (${c.fail} in ${c.ms} ms)`
-          : c.available ? 'available' : `absent (${c.fail} in ${c.ms} ms)`}`});
-      }
-    }
+    if (session.ipv6_available == null || session.ipv4_available == null) await preflight();
 
     if (resumedGapMs) {
       record({sessionId: session.id, t: Date.now(), mono: Math.round(monoBase), type: 'pause',

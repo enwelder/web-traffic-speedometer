@@ -18,23 +18,29 @@ import * as store from './store.js';
 // anything about the link. Shared with the screen so the count on it and the count in the file
 // agree.
 export const countsAsFailure = r =>
-  !!r && r.ok === false && !r.expected && !r.blocked && r.fail !== 'resting';
+  !!r && r.ok === false && !r.expected && !r.blocked && !r.unused && r.fail !== 'resting';
 
 // One probe across the rounds that ran. Failures and deliberate stops are counted apart,
 // so neither hides the other.
+// Failures that were the link's are counted apart from the ones that were not, and the ones
+// that were not are counted apart from each other: a literal refused while its own family
+// worked is a different fact from one nobody waited on, and neither is the recorder standing
+// a probe down.
 function probeSummary(rs) {
   const ok = rs.filter(r => r.ok);
   const ms = ok.map(r => r.ms).filter(v => v != null).sort((a, b) => a - b);
   const fails = {};
   const stopped = {};
   for (const r of rs) {
-    if (r.ok || r.expected) continue;
+    if (r.ok || r.expected || r.blocked || r.unused) continue;
     const into = countsAsFailure(r) ? fails : stopped;
     into[r.fail] = (into[r.fail] || 0) + 1;
   }
   return {
     n: rs.length, ok: ok.length,
     expected: rs.filter(r => r.expected).length,
+    blocked: rs.filter(r => r.blocked).length,
+    unused: rs.filter(r => r.unused).length,
     fails, stopped,
     ms_p50: quantile(ms, 0.5), ms_p90: quantile(ms, 0.9), ms_max: ms.at(-1) ?? null
   };
@@ -71,9 +77,9 @@ function gradeTally(ran, keys, field) {
   return grades;
 }
 
-// 7: throughput is streamed on several connections for a fixed window, and saturates at a
-// stated ceiling rather than reporting a single flow's whole-transfer floor.
-const FORMAT_VERSION = 7;
+// 8: a failing address-family literal is judged on its own round rather than against a
+// session-long verdict about the family.
+const FORMAT_VERSION = 8;
 
 export function summarise(samples) {
   const ran = samples.filter(s => !s.skipped && !s.round_error);

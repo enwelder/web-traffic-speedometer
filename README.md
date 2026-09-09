@@ -180,29 +180,37 @@ projection is shown before a run and the running total during it.
 Why each probe is built the way it is. Most of this came from recorded journeys rather than
 from review.
 
-**Single-stack networks are normal.** Many mobile carriers are IPv6-only with NAT64/DNS64,
-where iOS has no CLAT and relies on DNS64 synthesising an address during resolution — which an
-address literal skips, so `ip4` cannot connect at all. Plenty of other networks carry no IPv6.
-A preflight settles both families once per session into `ipv6_available` and `ipv4_available`;
-afterwards a failure of the absent family carries `expected: true` and stays out of every
-tally. A failure *without* that flag means the family worked at the start and stopped.
+**A failing address family is only a failure if someone waited on it.** Networks carry IPv6
+only, or IPv4 only, or both; a literal can be blocked while its path works, and a family can
+stop working while the other carries every byte. None of that is the connection failing, and
+the person using it notices none of it.
 
-The verdict is kept for the whole session, so it must not be taken from a radio that was still
-waking: when both families fail the preflight it is retried, and if both fail again neither is
-recorded as absent. Unknown, not absent — and the first later success settles it.
+So each round decides for itself, from what carried traffic in that round:
 
-**A blocked literal is not a dead link.** All three operators tested failed the IPv4 literal
-every round, and one failed both, while DNS, the web probe and the download answered
-throughout. `1.1.1.1` is a public resolver, and relays and filters intercept it — on two of
-those sessions the download's own egress address was IPv4 while the IPv4 literal was failing.
+| the round shows | the literal is | colour | counted |
+|---|---|---|---|
+| this family carried traffic | `blocked` — the address is refused, the path is not | none | no |
+| another family carried it | `unused` — nobody waited on this one | none | no |
+| nothing carried anything | a failure | red | yes |
 
-So availability is settled by two kinds of evidence. The literal answering is direct; an
-egress address of that family is indirect and just as conclusive, because the round reached
-Cloudflare over it. Either one marks the family available, and its failures then stay real
-rather than being excused for the session.
+A family carries traffic when its own literal answers, when it answers with a status or a body
+this code rejects — a completed handshake either way — or when a probe reports an egress
+address of that family.
 
-And calling reports `no route` only when no family is carrying traffic *and* nothing else in
-the round reached the network either.
+Nothing here remembers anything between rounds. Deciding it once per session instead needed a
+verdict about whether a family was "absent", and that verdict was wrong on a fibre link with
+no route to the IPv6 literal, wrong again across a handover between networks, and wrong when
+both literals were blocked at once. The preflight at session start is still recorded in
+`ipv6_check` and `ipv4_check` because it explains the first rounds; no round is judged by it.
+
+The screen shows one of the two, whichever has most to say: a family that answered, then one
+that carried traffic with its literal refused, then one that genuinely failed. A network with
+no IPv6 therefore reports the IPv4 that is doing the work.
+
+All three operators tested failed the IPv4 literal every round — `1.1.1.1` is a public
+resolver, and relays and filters intercept it — while the download's own egress address was
+IPv4. That is what `blocked` is for.
+
 
 **Latency is a median of three.** One round trip moves by an order of magnitude on a cold
 connection, a retransmission or a scheduling delay. RMBT takes 10-200 samples for the same

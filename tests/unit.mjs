@@ -78,41 +78,58 @@ s.test('no probe may outlive its own round', async () => {
   assert.equal(probe.timeoutFor(P.ip6, 2000), 1500, 'a short interval squeezes the small probes too');
 });
 
-s.test('an absent address family is settled once and flagged, not rediscovered', async () => {
-  // A network answering neither literal has said nothing about either, so neither is called
-  // absent: the radio may still be waking, and the verdict is kept for the whole session.
-  globalThis.fetch = async () => { throw netError(); };
-  const unresolved = await probe.checkPaths();
-  assert.deepEqual([unresolved.ip4.available, unresolved.ip4.fail], [null, 'network']);
-  assert.deepEqual([unresolved.ip6.available, unresolved.ip6.fail], [null, 'network']);
+s.test('a literal is judged on the round it ran in, and nothing else', async () => {
+  // Inferring that a family is absent from its silence needed a session-long verdict, and the
+  // verdict was wrong on a network with no route to the IPv6 literal, wrong again across a
+  // handover, and wrong when both literals were blocked at once. Every case below is decided
+  // by what carried traffic in that one round.
+  const trace = ip => ({ok: true, status: 200, type: 'opaque', body: bodyOf(2000),
+                        headers: {get: h => (h === 'cf-meta-ip' ? ip : null)},
+                        text: async () => TRACE});
+  const round = async answer => {
+    globalThis.fetch = async (url, o) => {
+      const r = answer(String(url));
+      if (r instanceof Error) throw r;
+      return {...r, signal: o?.signal};
+    };
+    return (await probe.runRound({})).probes;
+  };
+  const v6 = u => u.includes('[');
+  const v4 = u => u.includes('1.1.1.1');
 
-  // One family answering makes the other's silence a verdict.
-  globalThis.fetch = async url => (url.includes('[') ? {ok: true, status: 200, text: async () => TRACE}
-                                                     : Promise.reject(netError()));
-  const paths = await probe.checkPaths();
-  assert.equal(paths.ip6.available, true);
-  assert.equal(paths.ip4.available, false, 'IPv4 alone failing is an absent path');
+  // A carrier with no IPv4 path: IPv6 carries, so the IPv4 literal costs nobody anything.
+  let r = await round(u => (v4(u) ? netError() : trace('2a02::1')));
+  assert.equal(r.ip4.unused, true, 'nobody waited on IPv4');
+  assert.equal(r.ip4.blocked, undefined);
 
-  // Either family can be the missing one. Networks that carry only IPv6 and networks that
-  // carry only IPv4 are both ordinary, and neither absence is an outage.
-  globalThis.fetch = async () => { throw netError(); };
-  const only6 = (await probe.runRound({available: {ip6: true, ip4: false}})).probes;
-  assert.equal(only6.ip4.expected, true);
-  assert.equal(only6.ip6.expected, undefined, 'the family that works is held to its result');
+  // A network with no route to the IPv6 literal. The same rule, the other way round, and it
+  // applies from the first round rather than after three.
+  r = await round(u => (v6(u) ? netError() : trace('1.2.3.4')));
+  assert.equal(r.ip6.unused, true, 'and none on IPv6');
 
-  const only4 = (await probe.runRound({available: {ip6: false, ip4: true}})).probes;
-  assert.equal(only4.ip6.expected, true, 'an IPv4-only network is not a broken one');
-  assert.equal(only4.ip4.expected, undefined);
+  // 1.1.1.1 refused while IPv4 carries the download: the address, not the path.
+  r = await round(u => (v4(u) ? netError() : trace('1.2.3.4')));
+  assert.equal(r.ip4.blocked, true, 'IPv4 egress in this round proves the path');
 
-  const dual = (await probe.runRound({available: {ip6: true, ip4: true}})).probes;
-  assert.equal(dual.ip4.expected, undefined, 'where a family exists, a failure is a failure');
-  assert.equal(dual.ip6.expected, undefined);
+  // Both literals refused while the download still egresses. Neither is the link failing, and
+  // the old model had to declare one of them absent.
+  r = await round(u => (v6(u) || v4(u) ? netError() : trace('1.2.3.4')));
+  assert.equal(r.ip4.blocked, true);
+  assert.equal(r.ip6.unused, true);
 
-  // Both gone is the network being down; exempting them would hide a total outage.
-  const none = (await probe.runRound({available: {ip6: false, ip4: false}})).probes;
-  assert.equal(none.ip6.expected, undefined, 'a dead network is not two absent paths');
-  assert.equal(none.ip4.expected, undefined);
+  // A literal that answers with a status this code rejects still completed a handshake to that
+  // address, so its family carried traffic.
+  r = await round(u => (v6(u) ? {ok: false, status: 429, text: async () => ''} : trace('1.2.3.4')));
+  assert.equal(r.ip6.blocked, true, 'a 429 is an answer, not an absent path');
+
+  // Nothing reached anything: no excuses, and the row is a real failure.
+  r = await round(() => netError());
+  for (const id of ['ip6', 'ip4']) {
+    assert.equal(r[id].unused, undefined, `${id} is not excused by a dead network`);
+    assert.equal(r[id].blocked, undefined);
+  }
 });
+
 
 s.test('a literal refused while its family carries traffic is blocked, not broken', async () => {
   // Recorded on two operators: the download egressed over IPv4 in the same round the IPv4

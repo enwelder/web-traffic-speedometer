@@ -557,30 +557,50 @@ function runStun(probe, {timeoutMs, signal}) {
   });
 }
 
-// Which families carried traffic in this round, taken from the egress addresses the far end
-// reported back. Evidence from this round only: a family that worked earlier and has now
-// stopped is an outage, not a blocked address.
-function carriedFamilies(results) {
+// Which families carried traffic in this round. Evidence from this round only: what a family
+// did earlier cannot excuse it now, and what it does now needs no memory to read.
+//
+// Three things count, and all of them mean packets crossed the network over that family: an
+// egress address the far end reported back — recorded even by a transfer that then stalled —
+// a literal that answered, and a literal that answered with a status or a body this code
+// rejected. A 429 or a middlebox's page is a completed TLS handshake to that address.
+function carriedFamilies(out) {
   const carried = new Set();
-  for (const r of results) {
-    if (r.ok && r.egress_ip) carried.add(r.egress_ip.includes(':') ? 'ip6' : 'ip4');
+  for (const [id, r] of Object.entries(out)) {
+    if (!r) continue;
+    if (id === 'ip6' || id === 'ip4') {
+      // A literal names its own family: the address is in the URL. Reading it from the egress
+      // instead would credit whichever family the far end happened to report.
+      if (r.ok || r.fail === 'http' || r.fail === 'parse') carried.add(id);
+    } else if (r.egress_ip) {
+      // Everything else reaches a hostname, so the family is only knowable from the address
+      // the far end saw. Both endpoints that report one are dual-stack, so what they saw is
+      // what was used; behind NAT64 to an IPv4-only host it would not be.
+      carried.add(r.egress_ip.includes(':') ? 'ip6' : 'ip4');
+    }
   }
   return carried;
 }
 
-// A failing literal is one of three things, and only one of them is the link.
-function markLiterals(out, results, available) {
-  const carried = carriedFamilies(results);
+// A failing literal is one of three things, and only one of them is the connection failing.
+// The test is what the person using this would notice: while any address family is carrying
+// their traffic, a literal failing costs them nothing, whatever the reason for it.
+//
+// Decided from this round alone. Inferring that a family is absent from its silence needed a
+// session-long verdict, and that verdict was wrong on a network with no route to the IPv6
+// literal, wrong again across a handover between networks, and wrong when both literals were
+// blocked at once. Nothing here remembers anything.
+function markLiterals(out) {
+  const carried = carriedFamilies(out);
   for (const id of ['ip6', 'ip4']) {
     const r = out[id];
     if (!r || r.ok || r.fail === 'resting') continue;
-    const other = id === 'ip4' ? 'ip6' : 'ip4';
-    // The family reached the far end this round, so this address alone is being refused — a
-    // public resolver is a common thing to intercept.
+    // This family reached the far end, so the address alone is refused — a public resolver is
+    // a common thing to intercept.
     if (carried.has(id)) r.blocked = true;
-    // A family this network does not carry is a known-absent path, but only while the other
-    // one answers: when both are gone the network is down, not single-stack.
-    else if (available[id] === false && available[other] !== false) r.expected = true;
+    // The other one carried the traffic instead. Recorded with its reason, and charged to
+    // nothing, because nobody waited on it.
+    else if (carried.size) r.unused = true;
   }
 }
 
@@ -595,7 +615,7 @@ const runOrRest = (p, opts, resting) => (resting?.has(p.id)
 // once measures the round trip under this tool's own load, which reads high and moves with
 // whatever the download happens to be doing.
 export async function runRound({signal, download = {}, intervalMs = 5000,
-                                available = {}, resting = null} = {}) {
+                                resting = null} = {}) {
   const opts = p => ({signal, download, timeoutMs: timeoutFor(p, intervalMs)});
   const idle = PROBES.filter(p => p.kind !== 'download');
   const results = await Promise.all(idle.map(p => runOrRest(p, opts(p), resting)));
@@ -613,7 +633,7 @@ export async function runRound({signal, download = {}, intervalMs = 5000,
   ]);
   out[down.id] = downResult;
 
-  markLiterals(out, Object.values(out), available);
+  markLiterals(out);
   return {probes: out, loaded_rtt_ms: loaded[0] ?? null, loaded_rtt_from: loaded[1] ?? null};
 }
 

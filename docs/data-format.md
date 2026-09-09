@@ -1,6 +1,6 @@
 # Exported session format
 
-`format: "wts/session"`, `version: 7`. One button per session writes one JSON file: session
+`format: "wts/session"`, `version: 8`. One button per session writes one JSON file: session
 metadata, environment, a rollup, every sample, every event. CSV, GPX or GeoJSON are a few
 lines to derive from it.
 
@@ -11,6 +11,7 @@ lines to derive from it.
 | 5 | either address family can be flagged `expected`; the session records both |
 | 6 | throughput is graded on the largest of `bps`, `bps_server` and `bps_min`, rather than on the whole-transfer floor alone |
 | 7 | throughput is streamed on several connections for a fixed window and saturates at a stated ceiling; `bps_min`, `bps_server` and `warmup_only` are gone |
+| 8 | a failing address-family literal is judged on its own round: `unused` replaces `expected` on `ip6`/`ip4`, which no longer carry a session-long verdict |
 
 Version 5 matters to a reader counting failures: before it, `expected` appeared only on `ip4`,
 so an `ip6` failure was always a real one. On a network carrying no IPv6 it now marks a path
@@ -25,7 +26,7 @@ Everything the run was told or settled once, rather than measured per round.
 | `id` `name` `started` `stopped` | identity and span |
 | `operator` `connection` | what the operator answered before the run; no browser API exposes either |
 | `profile` `intervalMs` `download` | the settings in force |
-| `ipv6_available` `ipv4_available` | whether each address family answered the preflight. A network carrying only one is ordinary; failures of the absent family are flagged `expected` and stay out of every tally |
+| `ipv6_available` `ipv4_available` | whether each family answered at session start, and whether one was seen carrying traffic later. Recorded for the reader; no round is judged by it |
 | `ipv6_check` `ipv4_check` | the evidence behind each verdict: time to answer, and the failure reason if it did not |
 | `environment` | app version, user agent, language, timezone, screen, the deadlines in force, and `download` — the streams, window, cap and ceiling the run measured with |
 | `exportedAt` | null until the session has been written out; never-exported sessions are flagged on screen |
@@ -103,7 +104,9 @@ screen. Silent data loss is the one failure this tool cannot have.
 |---|---|---|
 | `ok` `ms` `fail` | all | success, round trip, failure reason |
 | `status` | `ip6` `ip4` `down` | HTTP status; null where the response is opaque and the status is unknowable |
-| `expected` | `ip4` | the failure was a known-absent path, excluded from tallies |
+| `unused` | `ip6` `ip4` | this family carried nothing while another one carried the traffic, so nobody waited on it. Excluded from tallies |
+| `blocked` | `ip6` `ip4` | this family carried traffic in the same round, so the address alone was refused. Excluded from tallies |
+| `expected` | `udp` | the browser has no such API. Excluded from tallies |
 | `stuck` | any | the probe was failing alone and has been rested |
 | `egress_ip` `colo` | `ip6` `ip4` `down` | the operator's public address and the Cloudflare PoP |
 | `ms_samples` `samples_ok` `ms_min` `ms_max` | `ip6` `dns_ctl` `web` `udp` | every latency sample, how many succeeded, and the spread; `ms` is their median. A median of [893, 4275, 52] hides the round's story |

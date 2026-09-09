@@ -255,4 +255,68 @@ s.test('throughput is what the round streamed over its window', () => {
                'and the reading says so, so the screen can print a ≥');
 });
 
+s.test('the route row shows the family doing the work', () => {
+  // A fibre connection with IPv6 addressing but no route to the IPv6 literal reported a red
+  // row every round while IPv4 carried every byte. Neither literal answered, and the tie went
+  // to IPv6 — the family that was doing nothing.
+  const ok = ms => ({ok: true, ms});
+  const bad = over => ({ok: false, ms: null, fail: 'network', ...over});
+
+  assert.equal(g.activeRoute({ip6: ok(30), ip4: ok(25)}), 'ip6', 'a browser prefers IPv6');
+  assert.equal(g.activeRoute({ip6: bad(), ip4: ok(25)}), 'ip4');
+
+  // Its literal is refused but the family carries traffic, which beats a family that fails.
+  const blocked = {ip6: bad(), ip4: bad({blocked: true})};
+  assert.equal(g.activeRoute(blocked), 'ip4');
+  assert.equal(g.probeReading('ip4', {probes: blocked}).grade, null,
+               'and a blocked literal takes no colour, because the path is fine');
+
+  // An absent family has said nothing at all, so it is the last thing worth showing.
+  assert.equal(g.activeRoute({ip6: bad({expected: true}), ip4: bad({blocked: true})}), 'ip4');
+
+  // Nothing carrying anything is still red.
+  const dead = {ip6: bad(), ip4: bad()};
+  assert.equal(g.activeRoute(dead), 'ip6');
+  assert.equal(g.probeReading('ip6', {probes: dead}).grade, 'red');
+});
+
+s.test('a literal never decides an activity while anything reached the network', () => {
+  // The whole point of the flags is what the screen and the file say about the literal. They
+  // must not be able to change a verdict about calling, reading or watching — that belongs to
+  // the probes a person actually waits on.
+  const ok = ms => ({ok: true, ms});
+  const bad = o => ({ok: false, ms: null, fail: 'network', ...o});
+  const base = {dns: ok(180), dns_ctl: ok(30), web: ok(25), udp: ok(20), down: {ok: true, bps: 25e6}};
+
+  for (const over of [{ip6: bad(), ip4: bad()},
+                      {ip6: bad({unused: true}), ip4: bad({blocked: true})},
+                      {ip6: bad({blocked: true}), ip4: bad({unused: true})},
+                      {ip6: bad({expected: true}), ip4: bad()}]) {
+    const probes = {...base, ...over};
+    const stripped = {...probes, ip6: {...probes.ip6}, ip4: {...probes.ip4}};
+    for (const id of ['ip6', 'ip4']) {
+      delete stripped[id].unused; delete stripped[id].blocked; delete stripped[id].expected;
+    }
+    assert.deepEqual(g.gradeActivities({probes}), g.gradeActivities({probes: stripped}),
+                     `the flags moved a verdict: ${JSON.stringify(over)}`);
+  }
+});
+
+s.test('the states a failing literal can take are exclusive, and only one is red', () => {
+  const bad = o => ({ok: false, ms: null, fail: 'network', ...o});
+  const state = o => g.probeReading('ip4', {probes: {ip4: bad(o)}}).state;
+  assert.equal(state({}), 'failed');
+  assert.equal(state({unused: true}), 'unused');
+  assert.equal(state({blocked: true}), 'blocked');
+  assert.equal(state({expected: true}), 'absent');
+  assert.equal(state({fail: 'resting'}), 'resting');
+
+  // Only a plain failure is charged to the link, and only it takes a colour.
+  for (const o of [{unused: true}, {blocked: true}, {expected: true}, {fail: 'resting'}]) {
+    const r = g.probeReading('ip4', {probes: {ip4: bad(o)}});
+    assert.equal(r.grade, null, `${JSON.stringify(o)} takes no colour`);
+  }
+  assert.equal(g.probeReading('ip4', {probes: {ip4: bad()}}).grade, 'red');
+});
+
 await s.run();

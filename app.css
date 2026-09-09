@@ -51,7 +51,9 @@ main{flex:1;overflow-y:auto;overscroll-behavior:contain;-webkit-overflow-scrolli
 .probe.red,.strip i.red{--grade:var(--bad)}
 
 .probes{display:grid;grid-template-columns:repeat(2,1fr);gap:4px 8px}
-.probe{display:grid;grid-template-columns:1fr auto auto;align-items:baseline;gap:0 5px;
+/* Fixed columns rather than auto: the numbers line up on their right edge and the units on
+   their left, so a column of rows reads down as well as across. */
+.probe{display:grid;grid-template-columns:1fr 5.4em 4.2em;align-items:baseline;gap:0 4px;
        position:relative;padding:5px 7px 5px 10px;border-radius:7px;background:var(--panel);
        border:1px solid var(--line);cursor:pointer}
 .probe::before{content:"";position:absolute;inset:0 auto 0 0;width:3px;
@@ -62,9 +64,11 @@ main{flex:1;overflow-y:auto;overscroll-behavior:contain;-webkit-overflow-scrolli
 .probe .name{font-size:11px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;
              white-space:nowrap}
 .probe .value{font-family:var(--num);font-size:13px;font-variant-numeric:tabular-nums;
-              white-space:nowrap}
-.probe .unit{font-size:10px;color:var(--muted)}
-.probe.words .value{font-family:var(--ui);font-size:11px;color:var(--muted)}
+              white-space:nowrap;text-align:right}
+.probe .unit{font-size:10px;color:var(--muted);white-space:nowrap}
+/* A word in place of a number takes both columns, since it is not a quantity to align. */
+.probe.words .value{font-family:var(--ui);font-size:11px;color:var(--muted);
+                    grid-column:2/-1;text-align:right}
 .probe.red .value{color:var(--bad)}
 .probe.orange .value{color:var(--poor)}
 .probe .explain{grid-column:1/-1;font-size:11.5px;color:var(--text);line-height:1.35;

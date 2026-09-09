@@ -97,7 +97,7 @@ const KEYS = {
            'accuracy_class', 'speed', 'speed_derived', 'speed_source', 'heading', 'pos_t',
            'pos_error', 'probes', 'grades', 'pgrades', 'first_packet_ms', 'loaded_rtt_ms', 'loaded_rtt_from'],
   probe: ['ok', 'ms', 'status', 'fail', 'egress_ip', 'colo', 'ms_samples', 'samples_ok',
-          'ms_min', 'ms_max', 'expected', 'stuck', 'host', 'bytes', 'truncated', 'server',
+          'ms_min', 'ms_max', 'expected', 'blocked', 'unused', 'stuck', 'host', 'bytes', 'truncated', 'server',
           'ttfb_ms', 'transfer_ms', 'handshake', 'reused', 'protocol', 'lookup_ms',
           'connect_ms', 'tls_ms', 'retry_suspected', 'parse_reason', 'bps_min', 'complete',
           'warmup_only', 'refused_by', 'bps', 'bps_server', 'saturated', 'ceiling_bps', 'streams', 'ramp_ms',

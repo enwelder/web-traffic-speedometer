@@ -1,3 +1,5 @@
+import {countsAsFailure} from './export.js';
+
 export const GRADES = ['green', 'yellow', 'orange', 'red'];
 const RANK = Object.fromEntries(GRADES.map((g, i) => [g, i]));
 
@@ -35,7 +37,7 @@ export const worse = (a, b) => (a == null ? b : b == null ? a : (RANK[a] >= RANK
 
 // A resting probe has reported nothing about the network, so it must not grade the activity it
 // feeds as red for the whole cool-down.
-const failed = r => !!r && r.ok === false && !r.expected && !r.blocked && r.fail !== 'resting';
+const failed = countsAsFailure;
 
 // A download the far end turned away is a fact about the endpoint, not about the link, and
 // must not be reported as the person's connection being bad. Anything else that stops a
@@ -60,9 +62,17 @@ export function articleMs(probes) {
 // failing that the one that genuinely failed, since a merely absent family explains nothing.
 // A browser prefers IPv6 where both work, so it leads.
 export function activeRoute(probes = {}) {
-  if (probes.ip6?.ok) return 'ip6';
-  if (probes.ip4?.ok) return 'ip4';
-  return failed(probes.ip4) && !failed(probes.ip6) ? 'ip4' : 'ip6';
+  // In order of what the round can say about a family: its literal answered, or the family
+  // carried traffic while the literal was refused, or the literal genuinely failed. A family
+  // that is merely absent has said nothing and is the last thing worth showing, so a network
+  // with no IPv6 reports the IPv4 that is doing the work rather than the IPv6 that is not.
+  const rank = [f => probes[f]?.ok, f => probes[f]?.blocked, f => failed(probes[f]),
+                f => probes[f] && !probes[f].expected];
+  for (const better of rank) {
+    const found = ['ip6', 'ip4'].find(better);
+    if (found) return found;
+  }
+  return 'ip6';
 }
 
 const routeMs = p => (p.ip6?.ok ? p.ip6.ms : p.ip4?.ok ? p.ip4.ms : null);
@@ -138,6 +148,7 @@ function probeState(r) {
   if (r.fail === 'resting') return 'resting';
   if (r.expected) return 'absent';
   if (r.blocked) return 'blocked';
+  if (r.unused) return 'unused';
   if (ourFault(r)) return 'refused';
   if (failed(r)) return 'failed';
   return r.ok ? 'ok' : 'none';

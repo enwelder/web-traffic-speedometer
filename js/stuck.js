@@ -20,7 +20,7 @@ export function createStuckTracker({onNotice} = {}) {
       const r = row.probes[p.id];
       if (!r || r.fail === 'resting') continue;
       if (r.ok) { consecutiveFails[p.id] = 0; delete restingUntil[p.id]; continue; }
-      if (r.expected) continue;
+      if (r.expected || r.blocked || r.unused) continue;
       if (!WEDGE_FAILS.has(r.fail)) { consecutiveFails[p.id] = 0; continue; }
       const n = consecutiveFails[p.id] = (consecutiveFails[p.id] || 0) + 1;
       if (isolated && n >= STUCK_AFTER && restingUntil[p.id] == null) {
