@@ -22,7 +22,7 @@ const REFUSED_BYTES = 100;      // an IPv4 literal with no path never gets a con
 // STUN is UDP: no handshake to charge and no connection to resume.
 const cost = p => (WARM_BYTES[p.kind] * (p.samples || 1)) + (p.kind === 'stun' ? 0 : RESUMED_BYTES);
 
-export const APP_VERSION = '3.8.1';
+export const APP_VERSION = '3.8.2';
 
 // The download runs every round, so the interval is what controls data use.
 export const PROFILES = {

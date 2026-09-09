@@ -1,15 +1,12 @@
 import * as store from './store.js';
 import * as ui from './ui.js';
-import {PROBES} from './probe.js';
 import {createRecorder, environment, projectedBytes, spentSoFar, PROFILES,
-        DOWNLOAD_DEFAULTS} from './session.js';
+        DOWNLOAD_DEFAULTS, APP_VERSION} from './session.js';
 import {exportSession, exportAll} from './export.js';
 
 const PREFS_KEY = 'wts.prefs';
 const $ = ui.$;
 
-let degradedRounds = 0;
-let scoredRounds = 0;
 let listDirty = true;
 
 // Test seam: on localhost only, ?interval=<ms> shortens the round for the browser suite.
@@ -25,7 +22,6 @@ function profile() {
   return override ? {...base, intervalMs: override} : base;
 }
 
-let lastFirstPacket = null;
 // Start and Stop await storage before the recorder's own flag moves. Without this guard a
 // second tap inside that window starts a second session and a second tick loop.
 let busy = false;
@@ -38,16 +34,9 @@ const uuid = () => (crypto.randomUUID ? crypto.randomUUID()
 
 const recorder = createRecorder({
   onSample(sample) {
-    // Rounds carrying at least one failure that was not a known-absent path, which is the
-    // common case; full outages are rare.
-    if (!sample.skipped && !sample.round_error) {
-      scoredRounds++;
-      if (PROBES.some(p => ui.counts(sample.probes[p.id]))) degradedRounds++;
-    }
     ui.setProbes(sample);
     const kind = ui.classify(sample);
     ui.pushStrip(sample);
-    if (sample.first_packet_ms != null) lastFirstPacket = sample.first_packet_ms;
     ui.pushLog(ui.sampleLine(sample),
                sample.skipped ? 'warn' : kind === 'green' || kind === 'yellow' ? '' : 'bad');
   },
@@ -64,9 +53,7 @@ const recorder = createRecorder({
       pos: c ? `${c.latitude.toFixed(5)}, ${c.longitude.toFixed(5)}` : (s.posError || '—'),
       speed: c && c.speed != null ? `${Math.round(c.speed * 3.6)} km/h` : '—',
       data: ui.bytes(s.bytes) + (s.pending ? ` (${s.pending} held)` : ''),
-      marks: s.marks,
-      degraded: scoredRounds ? `${Math.round((degradedRounds / scoredRounds) * 100)}%` : '—',
-      firstPacket: lastFirstPacket == null ? '—' : `${lastFirstPacket} ms`
+      marks: s.marks
     });
   },
   onNotice: ui.notice
@@ -160,8 +147,6 @@ function newSession() {
 // Everything on screen that belongs to one session. Both ways into a session reset the
 // same set, so state added here cannot carry from one session into the next.
 function resetReadout(intervalMs) {
-  degradedRounds = scoredRounds = 0;
-  lastFirstPacket = null;
   ui.clearLog();
   ui.clearStrip();
   ui.setStripWindow(intervalMs);
@@ -317,6 +302,7 @@ $('btn-start').onclick = async () => {
 $('btn-mark').onclick = () => recorder.mark();
 for (const id of ['f-connection', 'f-operator', 'f-profile']) $(id).onchange = syncSetup;
 ui.buildProbeRows();
+ui.setVersion(APP_VERSION);
 ui.bindExplanations();
 
 let helpOn = false;

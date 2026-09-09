@@ -7,6 +7,7 @@ import {chromium} from 'playwright';
 import {suite} from './helpers.mjs';
 import {ACTIVITY_IDS, ACTIVITIES} from '../js/grade.js';
 import {PROBES} from '../js/probe.js';
+import {APP_VERSION} from '../js/session.js';
 
 const PORT = 8799;
 // ?interval shortens the round; the app honours it on localhost only.
@@ -309,6 +310,24 @@ b.test('the newest log line is on top and nothing hides behind the controls', as
   await ctx.close();
 });
 
+
+b.test('the header carries the build, and offers nothing to explain while idle', async () => {
+  const {ctx} = await context();
+  const page = await ctx.newPage();
+  await page.goto(BASE, {waitUntil: 'networkidle'});
+
+  // A tester has to be able to tell which build is on screen without opening a file.
+  assert.equal(await page.textContent('#app-version'), APP_VERSION);
+  assert.equal(await page.$eval('#btn-help', e => e.hidden), true,
+               'nothing is measured yet, so there is nothing to explain');
+  assert.equal(await page.$eval('#f-profile', e => e.value), 'fine', 'Fine is the default');
+
+  await page.click('#btn-start');
+  await page.waitForTimeout(500);
+  assert.equal(await page.$eval('#btn-help', e => e.hidden), false, 'and it appears with the rows');
+  await page.click('#btn-start');
+  await ctx.close();
+});
 
 b.test('a grade is a colour on screen, not only a class name', async () => {
   const {ctx} = await context();

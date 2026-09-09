@@ -231,26 +231,29 @@ export function sampleLine(sample) {
   return `${time}  v6 ${num(sample.probes.ip6?.ms)}  dns ${dns}${ctl != null ? '/' + ctl : ''}${speed}`;
 }
 
-export function setStats({rounds, elapsed, pos, speed, data, marks, degraded, firstPacket}) {
+export function setStats({rounds, elapsed, pos, speed, data, marks}) {
   $('m-rounds').textContent = rounds;
   $('m-time').textContent = elapsed;
   $('m-pos').textContent = pos;
   $('m-speed').textContent = speed;
   $('m-data').textContent = data;
   $('m-marks').textContent = marks;
-  $('m-degraded').textContent = degraded;
-  $('m-first').textContent = firstPacket;
 }
 
 export function setRunning(running) {
   const start = $('btn-start');
   start.textContent = running ? 'Stop' : 'Start';
   start.className = running ? 'stop' : 'start';
-  // While idle Start is the only action and takes the whole width.
+  // While idle Start is the only action and takes the whole width, and there is nothing on
+  // screen for the help control to explain.
   $('btn-mark').hidden = !running;
   $('btn-mark').disabled = !running;
+  $('btn-help').hidden = !running;
   $('setup').hidden = running;
 }
+
+// Which build is on screen, so a tester can tell one from another without opening a file.
+export function setVersion(v) { $('app-version').textContent = v; }
 
 // Tap a row to see what it measures; tap again for the number.
 export function bindExplanations() {

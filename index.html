@@ -22,7 +22,7 @@
 </head>
 <body>
 
-<h1>Web Traffic Speedometer<button id="btn-help" type="button" aria-pressed="false" aria-label="Explain the measurements">?</button></h1>
+<h1>Web Traffic Speedometer<span class="ver" id="app-version"></span><button id="btn-help" type="button" aria-pressed="false" aria-label="Explain the measurements" hidden>?</button></h1>
 
 <main>
 
@@ -58,8 +58,8 @@
     <div class="field">
       <label for="f-profile">Detail</label>
       <select id="f-profile">
-        <option value="fine">Fine — every 15 s</option>
-        <option value="coarse" selected>Coarse — every 30 s</option>
+        <option value="fine" selected>Fine — every 15 s</option>
+        <option value="coarse">Coarse — every 30 s</option>
       </select>
     </div>
     <p class="hint" id="budget"></p>
@@ -84,8 +84,6 @@
       <div><span>Position</span><b id="m-pos">—</b></div>
       <div><span>Speed</span><b id="m-speed">—</b></div>
       <div><span>Marks</span><b id="m-marks">0</b></div>
-      <div><span>First packet</span><b id="m-first">—</b></div>
-      <div><span>Degraded</span><b id="m-degraded">—</b></div>
       <div><span>Data (est.)</span><b id="m-data">0 kB</b></div>
     </div>
 

@@ -157,17 +157,21 @@ Six rows on top, one per reading, then one history strip per activity. The two a
 families share a row — the one carrying traffic is the one worth reading, and its label says
 which it is. Tapping a row says what it measures; **?** does all six at once.
 
-The strips carry the activity verdicts: one bar per round, newest on the right.
+The strips carry the activity verdicts: one bar per round, newest on the right. The header
+shows the running build, so a tester can tell one from another without opening a file.
 
-**Degraded** is the share of rounds with any probe failure, and is the figure worth watching:
-full outages are rare — the longest recorded ran four rounds — while partially failing rounds
-reached 47% over the worst stretch at a perfectly healthy median latency of 96 ms.
+Nothing on the readout summarises the session, because the useful summaries are aggregates
+over a whole journey rather than figures to watch while travelling. They are in the exported
+`summary`: `degraded` counts the rounds in which any probe failed, which is the number worth
+reading afterwards — full outages are rare, the longest recorded ran four rounds, while
+partially failing rounds reached 47% over the worst stretch at a perfectly healthy median
+latency of 96 ms.
 
 ## Data usage
 
 The two download requests are almost the whole cost; the six small probes total ~12 kB per
-round. The projection assumes the 4 MB ceiling every round: **~630 MB for 40 minutes on
-Fine**, ~310 MB on Coarse. A slow link costs far less, because the measured request is sized
+round. The projection assumes the 4 MB ceiling every round: **~630 MB for 40 minutes on Fine**,
+the default, or ~310 MB on Coarse. A slow link costs far less, because the measured request is sized
 from what the warm-up saw. Both figures are shown before a run and tracked during it. Nothing
 stops a run partway.
 
