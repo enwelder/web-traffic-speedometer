@@ -40,8 +40,14 @@ main{flex:1;overflow-y:auto;overscroll-behavior:contain;-webkit-overflow-scrolli
 .view{min-height:100%}
 [hidden]{display:none!important}
 
-/* One row per probe. The rail carries the grade the same way a tile's does, so the two
-   sections read as one system. A row with no grade keeps the neutral rail. */
+/* One row per reading. The 3px rail carries its grade; a row with no grade keeps the neutral
+   one, so an absent path never reads as a bad one. */
+/* One mapping from grade to colour, for every element that carries one. */
+.probe.green,.strip i.green{--grade:var(--good)}
+.probe.yellow,.strip i.yellow{--grade:var(--ok)}
+.probe.orange,.strip i.orange{--grade:var(--poor)}
+.probe.red,.strip i.red{--grade:var(--bad)}
+
 .probes{display:grid;grid-template-columns:repeat(2,1fr);gap:4px 8px}
 .probe{display:grid;grid-template-columns:1fr auto auto;align-items:baseline;gap:0 5px;
        position:relative;padding:5px 7px 5px 10px;border-radius:7px;background:var(--panel);

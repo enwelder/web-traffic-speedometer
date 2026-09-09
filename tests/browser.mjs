@@ -310,6 +310,46 @@ b.test('the newest log line is on top and nothing hides behind the controls', as
 });
 
 
+b.test('a grade is a colour on screen, not only a class name', async () => {
+  const {ctx} = await context();
+  const page = await ctx.newPage();
+  await page.goto(BASE, {waitUntil: 'networkidle'});
+  await page.click('#btn-start');
+  await page.waitForTimeout(5000);
+
+  // Asserting the class alone passed while the rules that colour it had been deleted, which
+  // left every rail and every bar the same grey.
+  const paint = await page.evaluate(() => {
+    const bg = el => getComputedStyle(el).backgroundColor;
+    const rail = el => getComputedStyle(el, '::before').backgroundColor;
+    const neutral = getComputedStyle(document.documentElement).getPropertyValue('--line').trim();
+    const graded = [...document.querySelectorAll('.probe')]
+      .filter(e => ['green', 'yellow', 'orange', 'red'].some(g => e.classList.contains(g)));
+    const bars = [...document.querySelectorAll('.strip i')]
+      .filter(e => ['green', 'yellow', 'orange', 'red'].some(g => e.classList.contains(g)));
+    return {rows: graded.length, bars: bars.length, neutral,
+            rowPaint: graded.map(rail), barPaint: bars.map(bg)};
+  });
+
+  assert.ok(paint.rows > 0, 'some row graded, or this proves nothing');
+  assert.ok(paint.bars > 0, 'and some bar too');
+  for (const c of paint.rowPaint) {
+    assert.ok(c && c !== 'rgba(0, 0, 0, 0)', `a graded row's rail is painted: ${c}`);
+  }
+  for (const c of paint.barPaint) {
+    assert.ok(c && c !== 'rgba(0, 0, 0, 0)', `a graded bar is painted: ${c}`);
+  }
+  // The neutral fallback is what an ungraded element gets; a graded one must differ from it.
+  const neutralRgb = await page.evaluate(v => {
+    const d = document.createElement('div');
+    d.style.color = v; document.body.appendChild(d);
+    const c = getComputedStyle(d).color; d.remove(); return c;
+  }, paint.neutral);
+  assert.ok(!paint.barPaint.every(c => c === neutralRgb),
+            `graded bars must not all be the neutral colour ${neutralRgb}`);
+  await ctx.close();
+});
+
 b.test('the probe rows report each path without a sentence to read', async () => {
   const {ctx, state} = await context();
   const page = await ctx.newPage();
