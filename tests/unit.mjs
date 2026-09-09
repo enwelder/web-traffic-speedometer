@@ -78,14 +78,30 @@ s.test('no probe may outlive its own round', async () => {
   assert.equal(probe.timeoutFor(P.ip6, 2000), 1500, 'a short interval squeezes the small probes too');
 });
 
-s.test('an absent IPv4 path is settled once and flagged, not rediscovered', async () => {
+s.test('an absent address family is settled once and flagged, not rediscovered', async () => {
   globalThis.fetch = async () => { throw netError(); };
-  const v4 = await probe.checkIpv4();
-  assert.deepEqual([v4.available, v4.fail], [false, 'network']);
-  assert.equal((await probe.runRound({ipv4Available: false})).ip4.expected, true);
-  assert.equal((await probe.runRound({ipv4Available: false})).ip6.expected, undefined, 'only ip4 is exempt');
-  assert.equal((await probe.runRound({ipv4Available: true})).ip4.expected, undefined,
-               'where IPv4 exists, a failure is a real failure');
+  const paths = await probe.checkPaths();
+  assert.deepEqual([paths.ip4.available, paths.ip4.fail], [false, 'network']);
+  assert.deepEqual([paths.ip6.available, paths.ip6.fail], [false, 'network']);
+
+  // Either family can be the missing one. Networks that carry only IPv6 and networks that
+  // carry only IPv4 are both ordinary, and neither absence is an outage.
+  const only6 = await probe.runRound({available: {ip6: true, ip4: false}});
+  assert.equal(only6.ip4.expected, true);
+  assert.equal(only6.ip6.expected, undefined, 'the family that works is held to its result');
+
+  const only4 = await probe.runRound({available: {ip6: false, ip4: true}});
+  assert.equal(only4.ip6.expected, true, 'an IPv4-only network is not a broken one');
+  assert.equal(only4.ip4.expected, undefined);
+
+  const dual = await probe.runRound({available: {ip6: true, ip4: true}});
+  assert.equal(dual.ip4.expected, undefined, 'where a family exists, a failure is a failure');
+  assert.equal(dual.ip6.expected, undefined);
+
+  // Both gone is the network being down; exempting them would hide a total outage.
+  const none = await probe.runRound({available: {ip6: false, ip4: false}});
+  assert.equal(none.ip6.expected, undefined, 'a dead network is not two absent paths');
+  assert.equal(none.ip4.expected, undefined);
 });
 
 s.test('a repeated probe reports the median and keeps every sample', async () => {
@@ -514,15 +530,15 @@ c.test('an expected failure colours nothing and counts as nothing', () => {
   assert.equal(ui.classify({probes: healthy()}), 'green', 'a missing IPv4 path is not degraded');
 });
 
-c.test('a round taken as a whole is its worst purpose', () => {
+c.test('a round taken as a whole is its worst activity', () => {
   assert.equal(ui.classify({probes: {...healthy(), dns: OK(2500)}}), 'orange');
   assert.equal(ui.classify({probes: {...healthy(), udp: BAD()}}), 'red', 'no UDP path sinks voice');
   assert.equal(ui.classify({probes: healthy(), skipped: 'overlap'}), 'skip');
 });
 
-c.test('each purpose keeps its own colour, which is what the strips show', () => {
+c.test('each activity keeps its own colour, which is what the strips show', () => {
   // The failure that started this: one probe down painted a whole tile red while the rest of
-  // the connection was fine. A per-purpose grade is what makes that legible.
+  // the connection was fine. A per-activity grade is what makes that legible.
   const oneBadLookup = {probes: {...healthy(), dns: OK(2500)}};
   assert.equal(ui.gradeFor('news', oneBadLookup), 'orange');
   assert.equal(ui.gradeFor('voice', oneBadLookup), 'green', 'calls are unaffected by a lookup');
@@ -607,8 +623,8 @@ e.test('the rollup describes the session without judging it', () => {
   samples.push(row(11, {probes: {...row(11).probes, web: probe(false, 8000)}}));
 
   const sum = summarise(samples);
-  assert.ok(sum.scales.round_trip && sum.purposes.voice,
-            'the scales and the purposes they compose travel with the numbers');
+  assert.ok(sum.scales.round_trip && sum.activities.voice,
+            'the scales and the activities they compose travel with the numbers');
   assert.ok(sum.grades, 'and the grades they produced');
   assert.equal(sum.rounds, 12);
   assert.equal(sum.ran, 11, 'a skipped round did not run');

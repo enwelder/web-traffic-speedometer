@@ -1,8 +1,8 @@
 // DOM rendering. Nothing here is persisted.
 
 import {PROBES} from './probe.js';
-import {CAPABILITIES, GRADES, PURPOSES, gradeRound, worse, capabilityReading,
-        probeReading} from './grade.js';
+import {ACTIVITY_IDS, GRADES, ACTIVITIES, gradeActivities, worse, probeReading,
+        activeRoute} from './grade.js';
 import {countsAsFailure} from './export.js';
 
 const STRIP_BARS = 48;
@@ -36,41 +36,41 @@ export function notice(text) { $('notice').textContent = text || ''; }
 // count in the file agree.
 export {countsAsFailure as counts} from './export.js';
 
-// One purpose's colour for one round. A skipped round has no measurement to grade.
+// One activity's colour for one round. A skipped round has no measurement to grade.
 export function gradeFor(cap, sample) {
   if (sample.skipped) return 'skip';
-  return (sample.grades || gradeRound(sample))?.[cap] ?? 'none';
+  return (sample.grades || gradeActivities(sample))?.[cap] ?? 'none';
 }
 
-// The colour of a round taken as a whole: its worst purpose. Used for the log line, where
-// there is one line per round rather than one per purpose.
+// The colour of a round taken as a whole: its worst activity. Used for the log line, where
+// there is one line per round rather than one per activity.
 export function classify(sample) {
   if (sample.skipped) return 'skip';
-  const g = sample.grades || gradeRound(sample);
+  const g = sample.grades || gradeActivities(sample);
   let worstGrade = null;
-  for (const cap of CAPABILITIES) worstGrade = worse(worstGrade, g?.[cap] ?? null);
+  for (const cap of ACTIVITY_IDS) worstGrade = worse(worstGrade, g?.[cap] ?? null);
   return worstGrade || 'green';
 }
 
 // What each row is called on screen. Short enough for a 320px column, and named for what the
 // probe touches rather than what it is for; PROBES carries the full sentence.
+// One row per reading, not one per probe: the two address families share a row, because only
+// the family carrying traffic tells you anything and a network rarely has both to report.
+const ROWS = ['route', 'dns', 'dns_ctl', 'web', 'udp', 'down'];
 const PROBE_LABELS = {
   ip6: 'IPv6', ip4: 'IPv4', dns: 'new name', dns_ctl: 'cached name',
   web: 'known host', down: 'throughput', udp: 'UDP'
 };
+// The row id a reading comes from, and the label it carries, both depend on the round.
+const rowProbe = (row, sample) =>
+  (row === 'route' ? activeRoute(sample && !sample.skipped ? sample.probes : {}) : row);
 
-// Where a row's number would be read as something it is not. Both are argued in docs/design.md.
+// Where a row's number would be read as something it is not. Both are argued in the README.
+const ROUTE_EXPLAIN = 'GET to an address literal, no lookup. Whichever family is carrying traffic: a network with only one of them is ordinary.';
+
 const PROBE_CAVEATS = {
   dns: 'Graded against the cached-name control, not on its own: most of this gap is the far end handling a hostname it has not seen.',
   udp: 'ICE gathering rides on top of the round trip, so this reads slower than the link is.'
-};
-
-// Shown in place of a tile's value while that tile is tapped. Each names the measurements the
-// purpose is judged on, since no purpose reads a single probe any more.
-const EXPLAIN = {
-  voice:     'Round trip to Cloudflare by address, the UDP path being open at all, and enough throughput to carry a call. Live audio breaks on any of the three, and the tile shows whichever is worst.',
-  news:      'Resolving a hostname never seen before, reaching a host already known, and the time an article of average weight would take over this link. The tile shows whichever of them decides.',
-  streaming: 'What the bytes that arrived prove the link carries. A floor, not a top speed: enough to answer whether video will play, which is the question.'
 };
 
 // The measurement that decided the grade, so the tile's number and its colour describe the
@@ -86,32 +86,15 @@ function displayReading(r) {
 // `rate` writes its own unit, and a term reporting a gone path has none.
 const displayUnit = r => (r && !r.note && r.value != null && r.unit === 'ms' ? 'ms' : '');
 
-// Colour and number both come from the round passed in, so a tile describes one moment.
-// History is the strip's job.
-export function setSignals(sample) {
-  const live = sample && !sample.skipped;
-  for (const cap of CAPABILITIES) {
-    const cell = $(`cap-${cap}`);
-    cell.classList.remove(...GRADES);
-    const reading = live ? capabilityReading(cap, sample) : null;
-    if (reading?.grade) cell.classList.add(reading.grade);
-    // A word in place of a number is a reason, not a measurement, and must not read like one.
-    cell.classList.toggle('words', !!reading?.note);
-    $(`val-${cap}`).textContent = sample && sample.skipped ? '–' : displayReading(reading);
-    $(`unit-${cap}`).textContent = displayUnit(reading);
-  }
-  renderExplanations();
-}
-
 // One row per probe, generated from PROBES so the order and the set cannot drift from the
-// table that defines them. Tile names come from PURPOSES for the same reason.
+// table that defines them. Tile names come from ACTIVITIES for the same reason.
 export function buildProbeRows() {
   const host = $('probes');
   host.textContent = '';
-  for (const p of PROBES) {
+  for (const id of ROWS) {
     const row = document.createElement('div');
     row.className = 'probe';
-    row.id = `probe-${p.id}`;
+    row.id = `probe-${id}`;
     const add = (cls, id, text) => {
       const el = document.createElement('span');
       el.className = cls;
@@ -120,37 +103,40 @@ export function buildProbeRows() {
       row.appendChild(el);
       return el;
     };
-    add('name', null, PROBE_LABELS[p.id] ?? p.id);
-    add('value', `pval-${p.id}`, '—');
-    add('unit', `punit-${p.id}`, '');
-    add('explain', `explain-probe-${p.id}`, '');
+    add('name', `pname-${id}`, PROBE_LABELS[rowProbe(id, null)] ?? id);
+    add('value', `pval-${id}`, '—');
+    add('unit', `punit-${id}`, '');
+    add('explain', `explain-probe-${id}`, '');
     host.appendChild(row);
   }
-  for (const cap of CAPABILITIES) {
-    $(`cap-${cap}`).querySelector('.name').textContent = PURPOSES[cap].label;
+  for (const cap of ACTIVITY_IDS) {
+    $(`strip-name-${cap}`).textContent = ACTIVITIES[cap].label;
   }
 }
 
 // Every cell that can explain itself, in the order they appear.
-const cells = () => [...PROBES.map(p => `probe-${p.id}`), ...CAPABILITIES.map(c => `cap-${c}`)];
+const cells = () => ROWS.map(id => `probe-${id}`);
 
-const explainText = id => (id.startsWith('probe-')
-  ? [PROBES.find(p => `probe-${p.id}` === id)?.label, PROBE_CAVEATS[id.slice(6)]]
-    .filter(Boolean).join(' ')
-  : EXPLAIN[id.slice(4)]);
+const explainText = id => {
+  const row = id.slice(6);
+  return [row === 'route' ? ROUTE_EXPLAIN : PROBES.find(p => p.id === row)?.label,
+          PROBE_CAVEATS[row]].filter(Boolean).join(' ');
+};
 
 // Each probe's own measurement and the colour it grades to, from the round passed in.
 export function setProbes(sample) {
-  for (const p of PROBES) {
-    const cell = $(`probe-${p.id}`);
+  for (const id of ROWS) {
+    const cell = $(`probe-${id}`);
     if (!cell) continue;
+    const probe = rowProbe(id, sample);
     cell.classList.remove(...GRADES);
-    const reading = sample && !sample.skipped ? probeReading(p.id, sample) : null;
+    const reading = sample && !sample.skipped ? probeReading(probe, sample) : null;
     if (reading?.grade) cell.classList.add(reading.grade);
     // A word in place of a number is a reason, not a measurement, and must not read like one.
     cell.classList.toggle('words', !!reading?.note);
-    $(`pval-${p.id}`).textContent = sample?.skipped ? '–' : displayReading(reading);
-    $(`punit-${p.id}`).textContent = displayUnit(reading);
+    $(`pname-${id}`).textContent = PROBE_LABELS[probe] ?? probe;
+    $(`pval-${id}`).textContent = sample?.skipped ? '–' : displayReading(reading);
+    $(`punit-${id}`).textContent = displayUnit(reading);
   }
 }
 
@@ -164,11 +150,11 @@ export function renderExplanations() {
   }
 }
 
-// One strip per purpose, each always full width with empty slots dimmed, scrolling right to
-// left. Separate rows are what make a single failing purpose visible: one combined row shows
+// One strip per activity, each always full width with empty slots dimmed, scrolling right to
+// left. Separate rows are what make a single failing activity visible: one combined row shows
 // only the worst of them and never says which.
 export function clearStrip() {
-  for (const cap of CAPABILITIES) {
+  for (const cap of ACTIVITY_IDS) {
     const strip = $(`strip-${cap}`);
     strip.replaceChildren();
     for (let i = 0; i < STRIP_BARS; i++) {
@@ -180,7 +166,7 @@ export function clearStrip() {
 }
 
 export function pushStrip(sample) {
-  for (const cap of CAPABILITIES) {
+  for (const cap of ACTIVITY_IDS) {
     const strip = $(`strip-${cap}`);
     const bar = document.createElement('i');
     bar.className = gradeFor(cap, sample);
@@ -189,9 +175,9 @@ export function pushStrip(sample) {
   }
 }
 
-// A bridged gap belongs on every row: no purpose was measured while the page was frozen.
+// A bridged gap belongs on every row: no activity was measured while the page was frozen.
 export function pushStripPause() {
-  for (const cap of CAPABILITIES) {
+  for (const cap of ACTIVITY_IDS) {
     const strip = $(`strip-${cap}`);
     const bar = document.createElement('i');
     bar.className = 'pause';

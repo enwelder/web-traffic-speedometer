@@ -87,7 +87,8 @@ const PUBLIC_ENDPOINTS = [
 const KEYS = {
   root: ['format', 'version', 'source_app_version', 'note', 'session', 'samples', 'events'],
   session: ['id', 'name', 'operator', 'connection', 'note', 'started', 'stopped', 'intervalMs',
-            'downloadBytes', 'download', 'profile', 'ipv4_available', 'ipv4_check',
+            'downloadBytes', 'download', 'profile', 'ipv6_available', 'ipv6_check',
+            'ipv4_available', 'ipv4_check',
             'environment', 'exportedAt'],
   environment: ['app_version', 'user_agent', 'language', 'timezone', 'screen', 'interval_ms',
                 'download_bytes', 'download', 'timeouts_ms', 'probes', 'network_information'],

@@ -5,7 +5,7 @@ import {readFileSync} from 'node:fs';
 import {spawn} from 'node:child_process';
 import {chromium} from 'playwright';
 import {suite} from './helpers.mjs';
-import {CAPABILITIES, PURPOSES} from '../js/grade.js';
+import {ACTIVITY_IDS, ACTIVITIES} from '../js/grade.js';
 import {PROBES} from '../js/probe.js';
 
 const PORT = 8799;
@@ -91,17 +91,19 @@ const readDb = page => page.evaluate(async () => {
 
 const b = suite('browser');
 
-b.test('the tiles are named for where they go', async () => {
+b.test('the rows and strips are named for what they are', async () => {
   const {ctx} = await context();
   const page = await ctx.newPage();
   await page.goto(BASE, {waitUntil: 'networkidle'});
-  // The tiles name capabilities and the rows above them name probes. Both sets are read from
-  // the modules that define them, so neither can drift from a rename.
-  const names = await page.$$eval('.signal .name', els => els.map(e => e.textContent.trim()));
-  assert.deepEqual(names, CAPABILITIES.map(c => PURPOSES[c].label),
-                   `purposes, not probes: ${names.join(' | ')}`);
+  // The strips name activities and the rows above them name probes. Both are read from the
+  // modules that define them, so neither can drift from a rename.
+  const names = await page.$$eval('.strip-row>span', els => els.map(e => e.textContent.trim()));
+  assert.deepEqual(names, ACTIVITY_IDS.map(c => ACTIVITIES[c].label),
+                   `activities, not probes: ${names.join(' | ')}`);
   const rows = await page.$$eval('.probe', els => els.map(e => e.id));
-  assert.deepEqual(rows, PROBES.map(p => `probe-${p.id}`), 'every probe has a row, in order');
+  // The two address families share the route row, so there are six rows for seven probes.
+  assert.equal(rows.length, PROBES.length - 1, `six rows for seven probes: ${rows.join(' ')}`);
+  assert.equal(rows[0], 'probe-route', 'the route leads');
   assert.equal(await page.locator('#m-udp').count(), 0, 'no probe readings among the counters');
   await ctx.close();
 });
@@ -153,18 +155,18 @@ b.test('a session records, survives a reload, and exports losslessly', async () 
   await page.selectOption('#f-operator', 'Odido');
   await page.click('#btn-start');
   await page.waitForTimeout(3000);
-  assert.equal(await page.$eval('#probe-ip4', e =>
-    ['green', 'yellow', 'orange', 'red'].filter(g => e.classList.contains(g)).join('')), '',
-               'an absent IPv4 path takes no colour rather than failing a tile');
-  assert.match(await page.$eval('#probe-ip6', e => e.className), /green|yellow|orange/,
-               'while the path that works is graded');
+  // The route row reports whichever family carries traffic, so an absent IPv4 path is simply
+  // not what is shown.
+  assert.equal(await page.textContent('#pname-route'), 'IPv6');
+  assert.match(await page.$eval('#probe-route', e => e.className), /green|yellow|orange/,
+               'and the family that works is graded');
   await page.click('#btn-mark');
 
-  // A tile's colour changes with the round it shows, within one round.
-  const red = () => page.$eval('#cap-voice', e => e.classList.contains('red'));
+  // A row's colour changes with the round it shows, within one round.
+  const red = () => page.$eval('#probe-route', e => e.classList.contains('red'));
   state.mode = 'fail';
   await page.waitForTimeout(3000);
-  assert.equal(await red(), true, 'a failing round paints its own tile');
+  assert.equal(await red(), true, 'a failing round paints its own row');
   state.mode = 'ok';
   await page.waitForTimeout(3000);
   assert.equal(await red(), false, 'and a good one clears it, without waiting for agreement');
@@ -318,14 +320,14 @@ b.test('the probe rows report each path without a sentence to read', async () =>
   const row = id => page.$eval(`#probe-${id}`, e =>
     ['green', 'yellow', 'orange', 'red'].filter(g => e.classList.contains(g)).join(''));
   const shown = id => page.textContent(`#pval-${id}`);
-  assert.match(await row('ip6'), /green|yellow|orange/, 'the working path is graded');
-  assert.equal(await row('ip4'), '', 'an absent path takes no colour, which is not alarming');
-  assert.equal(await shown('ip4'), 'absent', 'and says why it has no number');
+  const family = () => page.textContent('#pname-route');
+  assert.match(await row('route'), /green|yellow|orange/, 'the working path is graded');
+  assert.equal(await family(), 'IPv6', 'and the row names the family it is reporting');
 
   state.mode = 'fail';
   await page.waitForTimeout(4000);
-  assert.equal(await row('ip6'), 'red', 'and a failing path is unmistakable');
-  assert.match(await shown('ip6'), /timeout|network/, 'with the reason, not just the fact');
+  assert.equal(await row('route'), 'red', 'a failing path is unmistakable');
+  assert.match(await shown('route'), /timeout|network/, 'with the reason, not just the fact');
 
   // The IPv4 result goes to the log and the file; the notice area stays clear.
   assert.match(await page.textContent('#log'), /IPv4 absent/, 'the IPv4 verdict is logged once');
@@ -368,33 +370,33 @@ b.test('the log grows into the space a taller window gives it', async () => {
             `a taller window gives the log more room: ${heights[852]} then ${heights[1100]}`);
 });
 
-b.test('a tile explains itself on tap and gives the number back', async () => {
+b.test('a row explains itself on tap and gives the number back', async () => {
   const {ctx} = await context();
   const page = await ctx.newPage();
   await page.goto(BASE, {waitUntil: 'networkidle'});
   await page.click('#btn-start');
   await page.waitForTimeout(5000);
 
-  const explain = () => page.textContent('#explain-cap-news');
-  const value = () => page.$eval('#val-news', e => e.offsetParent !== null);
-  assert.equal(await explain(), '', 'a tile shows its measurement by default');
+  const explain = () => page.textContent('#explain-probe-dns');
+  const value = () => page.$eval('#pval-dns', e => e.offsetParent !== null);
+  assert.equal(await explain(), '', 'a row shows its measurement by default');
   assert.equal(await value(), true);
 
-  await page.click('#cap-news');
-  assert.match(await explain(), /hostname never seen before/, 'tapping says what the tile measures');
+  await page.click('#probe-dns');
+  assert.match(await explain(), /no resolver has seen/, 'tapping says what the row measures');
   assert.equal(await value(), false, 'in place of the number, not beside it');
   await page.waitForTimeout(2500);
-  assert.match(await explain(), /hostname never seen before/, 'and the next round does not overwrite it');
+  assert.match(await explain(), /no resolver has seen/, 'and the next round does not overwrite it');
 
-  await page.click('#cap-news');
+  await page.click('#probe-dns');
   assert.equal(await explain(), '', 'tapping again returns the number');
   assert.equal(await value(), true);
 
-  // One control turns every tile's explanation on.
+  // One control turns every row's explanation on.
   await page.click('#btn-help');
   await page.waitForTimeout(200);
-  const shown = await page.$$eval('.signal .explain', els => els.filter(e => e.textContent.length > 40).length);
-  assert.equal(shown, 3, 'the help control explains every tile at once');
+  const shown = await page.$$eval('.probe .explain', els => els.filter(e => e.textContent.trim()).length);
+  assert.equal(shown, 6, 'the help control explains every row at once');
   await ctx.close();
 });
 

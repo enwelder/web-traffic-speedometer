@@ -1,14 +1,16 @@
 // The round loop. Every scheduled round produces a row, including rounds that failed and
 // rounds that could not run: a failed attempt is a measurement, so it is never left out.
 
-import {PROBES, runRound, checkIpv4, clearTimings, timeoutFor,
+import {PROBES, runRound, checkPaths, clearTimings, timeoutFor,
         DEFAULT_DOWN_BUDGET_MS, DOWN_MAX_BYTES,
         WARMUP_REQUEST_BYTES} from './probe.js';
-import {gradeRound, gradeProbes} from './grade.js';
+import {gradeActivities, gradeProbes} from './grade.js';
 import {createStuckTracker} from './stuck.js';
 import {createWakeLock} from './wakelock.js';
 import {createPositionTracker} from './position.js';
 import * as realStore from './store.js';
+
+const PATHS = [['ip6', 'ipv6_available', 'IPv6'], ['ip4', 'ipv4_available', 'IPv4']];
 
 // Byte estimates for the data-used figure. Safari opens a fresh connection per request, so
 // every repeat contact is charged a resumed TLS handshake and only the first contact with an
@@ -231,6 +233,18 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
     egressIp = seen;
   }
 
+  // A radio still waking at session start can refuse the preflight, so one success overturns
+  // the result rather than leaving the probe exempt for the whole journey.
+  function revisePaths(row) {
+    for (const [id, key, label] of PATHS) {
+      if (session[key] === false && row.probes[id]?.ok) {
+        session[key] = true;
+        noteEvent(`${label} available after all; the preflight caught a sleeping radio`);
+        store.putSession(session);
+      }
+    }
+  }
+
   async function measure(late) {
     inFlight = true;
     const startedAt = mono();
@@ -241,7 +255,7 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
         signal: abort.signal,
         download: session.download || DOWNLOAD_DEFAULTS,
         intervalMs: interval(),
-        ipv4Available: session.ipv4_available,
+        available: {ip6: session.ipv6_available, ip4: session.ipv4_available},
         resting: stuck.resting(seq)
       });
     } catch (e) {
@@ -266,17 +280,11 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
     row.first_packet_ms = firsts.length ? Math.min(...firsts) : null;
 
     // Resolved once and stored on the row, so the file and the screen carry the same grade.
-    row.grades = gradeRound(row);
+    row.grades = gradeActivities(row);
     row.pgrades = gradeProbes(row);
     lastGrades = row.grades;
 
-    // A radio still waking at session start can refuse the preflight, so one success
-    // overturns the result rather than leaving the probe exempt for the whole journey.
-    if (session.ipv4_available === false && row.probes.ip4?.ok) {
-      session.ipv4_available = true;
-      noteEvent('IPv4 available after all; the preflight caught a sleeping radio');
-      store.putSession(session);
-    }
+    revisePaths(row);
 
     noteEgressChange(row);
     stuck.note(row, seq);
@@ -363,17 +371,20 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
     wake.reset();
     await wake.acquire();
 
-    // Established once per session: on an IPv6-only network every round would otherwise
-    // report the same absent path.
+    // Established once per session, so a single-stack network does not report the same absent
+    // path every round.
     if (session.ipv4_available == null) {
-      const v4 = await checkIpv4(abort.signal);
-      session.ipv4_available = v4.available;
-      session.ipv4_check = v4;
+      const paths = await checkPaths(abort.signal);
+      session.ipv6_available = paths.ip6.available;
+      session.ipv4_available = paths.ip4.available;
+      session.ipv6_check = paths.ip6;
+      session.ipv4_check = paths.ip4;
       await store.putSession(session);
-      // Recorded once in the log and on the session; the lamps carry it afterwards.
-      record({sessionId: session.id, t: Date.now(), mono: Math.round(mono()), type: 'note',
-              lat: null, lon: null,
-              text: `IPv4 ${v4.available ? 'available' : `absent (${v4.fail} in ${v4.ms} ms)`}`});
+      for (const [label, c] of [['IPv6', paths.ip6], ['IPv4', paths.ip4]]) {
+        record({sessionId: session.id, t: Date.now(), mono: Math.round(mono()), type: 'note',
+                lat: null, lon: null,
+                text: `${label} ${c.available ? 'available' : `absent (${c.fail} in ${c.ms} ms)`}`});
+      }
     }
 
     if (resumedGapMs) {

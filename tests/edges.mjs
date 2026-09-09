@@ -8,7 +8,8 @@ stubBrowser();
 const probe = await import('../js/probe.js');
 const g = await import('../js/grade.js');
 const {createRecorder} = await import('../js/session.js');
-const {summarise, countsAsFailure} = await import('../js/export.js');
+const ex = await import('../js/export.js');
+const {summarise, countsAsFailure} = ex;
 
 const P = Object.fromEntries(probe.PROBES.map(p => [p.id, p]));
 const PROBE_IDS = probe.PROBES.map(p => p.id);
@@ -69,14 +70,14 @@ t.test('nothing and nonsense are not grades', () => {
 });
 
 t.test('a percentile of a short series is not the maximum', () => {
-  assert.equal(g.quantile([], 0.5), null, 'nothing has no median');
-  assert.equal(g.quantile([5], 0.9), 5);
-  assert.deepEqual([g.quantile([1, 2], 0.5), g.quantile([1, 2], 0.9)], [1, 2]);
+  assert.equal(ex.quantile([], 0.5), null, 'nothing has no median');
+  assert.equal(ex.quantile([5], 0.9), 5);
+  assert.deepEqual([ex.quantile([1, 2], 0.5), ex.quantile([1, 2], 0.9)], [1, 2]);
   const ten = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
-  assert.equal(g.quantile(ten, 0.9), 9, 'nearest rank: p90 of ten samples is the ninth');
-  assert.equal(g.quantile(ten, 0.5), 5);
-  assert.equal(g.quantile(ten, 0), 1, 'and the ends stay inside the array');
-  assert.equal(g.quantile(ten, 1), 10);
+  assert.equal(ex.quantile(ten, 0.9), 9, 'nearest rank: p90 of ten samples is the ninth');
+  assert.equal(ex.quantile(ten, 0.5), 5);
+  assert.equal(ex.quantile(ten, 0), 1, 'and the ends stay inside the array');
+  assert.equal(ex.quantile(ten, 1), 10);
 });
 
 
@@ -154,7 +155,7 @@ d.test('a body too short to rate still bounds the link', async () => {
       assert.ok(r.bps_min <= (r.bytes * 8) / (r.duration_ms / 1000) * 1.01,
                 `${name}: the bound may not exceed what arrived over the time it took`);
     }
-    assert.ok(g.gradeRound({probes: {down: r}}).streaming !== undefined, `${name}: graded either way`);
+    assert.ok(g.gradeActivities({probes: {down: r}}).streaming !== undefined, `${name}: graded either way`);
   }
 });
 
@@ -311,7 +312,7 @@ n.test('a rate limit is told apart from a radio failure', async () => {
             'the status is kept so a busy endpoint is not read as an outage');
 });
 
-n.test('a carrier that drops UDP shows up on the real-time capability alone', async () => {
+n.test('a carrier that drops UDP shows up on the real-time activity alone', async () => {
   const {rows} = await record(async () => okResponse(), 400, {stun: {block: true}});
   const settled = rows.filter(x => x.probes.udp);
   assert.ok(settled.length > 0);
@@ -328,7 +329,7 @@ n.test('a resolver answering on its retry timer is loss, not slowness', () => {
     assert.equal(probe.looksLikeRetry(ms), false, `${ms} ms does not`);
   }
   const row = {probes: {dns: {ok: true, ms: 2000, retry_suspected: true}}};
-  assert.equal(g.gradeRound(row).news, 'red', 'and a lost first query is red however fast the retry');
+  assert.equal(g.gradeActivities(row).news, 'red', 'and a lost first query is red however fast the retry');
 });
 
 n.test('a tunnel is a total outage and comes back whole', async () => {
@@ -404,7 +405,7 @@ n.test('every failure reason a probe can produce is classified once, everywhere'
   assert.equal(countsAsFailure({ok: true}), false);
   assert.equal(countsAsFailure(undefined), false, 'a probe that produced no row at all');
   assert.equal(countsAsFailure({ok: false, fail: 'unsupported', expected: true}), false,
-               'a browser without the API is a missing capability, not an outage');
+               'a browser without the API is a missing activity, not an outage');
 });
 
 // The UDP probe is the only one that is not a fetch, so each outcome is produced explicitly
@@ -778,13 +779,13 @@ h.test('a tile shows the grade of the round whose number it shows', () => {
     seq, skipped: null, probes: {down: {ok: true, bps_min: bps}}
   }));
   for (const row of rows) {
-    const grades = g.gradeRound(row);
-    assert.equal(grades.streaming, g.gradeValue('rate', g.capabilityValue('streaming', row)),
+    const grades = g.gradeActivities(row);
+    assert.equal(grades.streaming, g.gradeValue('rate', g.activityValue('streaming', row)),
                  `${(row.probes.down.bps_min / 1e6).toFixed(1)} Mb/s: the colour is this ` +
                  `round's, taken from the number the tile shows`);
   }
-  assert.equal(g.gradeRound(rows[4]).streaming, 'green', '35.5 Mb/s is green, whatever came before it');
-  assert.equal(g.gradeRound(rows[3]).streaming, 'red', 'and 1.1 Mb/s is red, whatever came after');
+  assert.equal(g.gradeActivities(rows[4]).streaming, 'green', '35.5 Mb/s is green, whatever came before it');
+  assert.equal(g.gradeActivities(rows[3]).streaming, 'red', 'and 1.1 Mb/s is red, whatever came after');
 });
 
 h.test('the strip and the tiles cannot disagree', async () => {
@@ -800,18 +801,18 @@ h.test('the strip and the tiles cannot disagree', async () => {
               down: {ok: true, bps_steady: 50e6}}}
   ];
   for (const row of rows) {
-    const grades = g.gradeRound(row);
+    const grades = g.gradeActivities(row);
     let worst = null;
-    for (const cap of g.CAPABILITIES) worst = g.worse(worst, grades[cap]);
+    for (const cap of g.ACTIVITY_IDS) worst = g.worse(worst, grades[cap]);
     assert.equal(ui.classify(row), worst,
                  `the bar is the worst tile: ${JSON.stringify(grades)}`);
   }
 });
 
 h.test('a round that never ran colours nothing', () => {
-  assert.equal(g.gradeRound({skipped: 'overlap', probes: {}}), null);
-  const empty = g.gradeRound({probes: {}});
-  assert.ok(g.CAPABILITIES.every(c => empty[c] === null),
+  assert.equal(g.gradeActivities({skipped: 'overlap', probes: {}}), null);
+  const empty = g.gradeActivities({probes: {}});
+  assert.ok(g.ACTIVITY_IDS.every(c => empty[c] === null),
             'and a round with no probe results grades nothing rather than green');
 });
 

@@ -44,7 +44,6 @@ const recorder = createRecorder({
       scoredRounds++;
       if (PROBES.some(p => ui.counts(sample.probes[p.id]))) degradedRounds++;
     }
-    ui.setSignals(sample);
     ui.setProbes(sample);
     const kind = ui.classify(sample);
     ui.pushStrip(sample);
@@ -147,6 +146,8 @@ function newSession() {
     download: {...DOWNLOAD_DEFAULTS},
     profile: $('f-profile').value,
     // Determined by a preflight at start; null until then.
+    ipv6_available: null,
+    ipv6_check: null,
     ipv4_available: null,
     ipv4_check: null,
     environment: environment(intervalMs, DOWNLOAD_DEFAULTS),
@@ -176,7 +177,6 @@ async function begin() {
 
   // Blanked before the first round lands, or the previous session's colours stay for a whole
   // interval: 30 s on the coarse profile.
-  ui.setSignals(null);
   ui.setProbes(null);
 
   const session = newSession();

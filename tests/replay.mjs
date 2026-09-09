@@ -107,15 +107,15 @@ r.test('grading runs over every recording without inventing or crashing', () => 
   for (const [name, j] of Object.entries(journeys)) {
     let graded = 0;
     for (const s of j.samples) {
-      const grades = g.gradeRound(s);
+      const grades = g.gradeActivities(s);
       if (s.skipped) { assert.equal(grades, null, `${name}: a skipped round is not graded`); continue; }
       assert.ok(grades, `${name} seq ${s.seq}`);
       for (const [cap, val] of Object.entries(grades)) {
         assert.ok(val === null || g.GRADES.includes(val),
                   `${name} seq ${s.seq}: ${cap} produced ${val}`);
-        // A capability with no usable input yields no grade and no value.
+        // A activity with no usable input yields no grade and no value.
         if (val === null) {
-          assert.equal(g.capabilityValue(cap, s), null,
+          assert.equal(g.activityValue(cap, s), null,
                        `${name} seq ${s.seq}: ${cap} had a value but no grade`);
         }
       }
@@ -192,7 +192,7 @@ r.test('every impossible speed in the recordings comes from a fix the rules now 
 
 r.test('the recordings cannot yet speak for the throughput probe', () => {
   // Every committed recording predates the time-boxed download, so its rows carry
-  // whole-transfer figures and no `bps_steady`; the video capability is graded only against
+  // whole-transfer figures and no `bps_steady`; the video activity is graded only against
   // the synthetic streams in tests/edges.mjs. Adding a recording from 3.3.0 or later fails
   // this test, which is when it should become an assertion about the rate.
   const rated = Object.values(journeys)
@@ -209,17 +209,17 @@ r.test('a recording from an older build grades without a schema for it', () => {
   const old = journeys['stuck-probe'];
   assert.equal(old.source_app_version, '6.0.0');
   assert.ok(!old.samples[0].probes.udp, 'no UDP probe existed then');
-  const grades = g.gradeRound(old.samples[0]);
+  const grades = g.gradeActivities(old.samples[0]);
   assert.ok(g.GRADES.includes(grades.voice), 'what can be graded is');
   assert.equal(grades.video, null, 'and what cannot is left empty');
 });
 
 r.test('the run that looked broken was the grading, not the network', () => {
   // Forty rounds of 5G at 30-60 ms round trips and ~200 ms fresh lookups grade green under
-  // per-capability thresholds.
+  // per-activity thresholds.
   const j = journeys['good-5g'];
   const tally = cap => j.samples.reduce((acc, s) => {
-    const v = g.gradeRound(s)?.[cap];
+    const v = g.gradeActivities(s)?.[cap];
     if (v) acc[v] = (acc[v] || 0) + 1;
     return acc;
   }, {});
@@ -244,10 +244,10 @@ r.test('a wedged probe is visible in the recording that showed it', () => {
   const tail = j.samples.slice(-20);
   assert.ok(tail.every(s => !s.probes.web.ok), 'the control never recovered');
   assert.ok(tail.filter(s => s.probes.ip6.ok).length >= 18, 'while the link was fine');
-  // One probe failing alone still sinks the purpose that reads it: an article cannot open
+  // One probe failing alone still sinks the activity that reads it: an article cannot open
   // if a host the phone already knows will not answer.
-  const grades = tail.map(s => g.gradeRound(s).news);
-  assert.ok(grades.every(x => x === 'red'), 'and the purpose it feeds says so');
+  const grades = tail.map(s => g.gradeActivities(s).news);
+  assert.ok(grades.every(x => x === 'red'), 'and the activity it feeds says so');
 });
 
 r.test('the rollup describes each recording without throwing', () => {

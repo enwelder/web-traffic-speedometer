@@ -279,23 +279,23 @@ r.test('a wake lock taken back by the system is reacquired, not lost for the ses
 // Rounding the rank down puts a ten-sample window on its own last element, which reports the
 // maximum as p90.
 r.test('a percentile is the nearest rank, not the largest value that fits', async () => {
-  const ui = await import('../js/grade.js');
+  const exq = await import('../js/export.js');
   const asc = n => Array.from({length: n}, (_, i) => i + 1);
 
   for (const n of [3, 5, 8, 10, 15, 20]) {
     const v = asc(n);
-    const p90 = ui.quantile(v, 0.9);
+    const p90 = exq.quantile(v, 0.9);
     assert.ok(p90 <= n, 'within range');
     if (n >= 10) assert.ok(p90 < n, `n=${n}: p90 must not be the maximum, got rank ${p90}/${n}`);
     assert.equal(p90, Math.ceil(n * 0.9), `n=${n}: nearest rank`);
   }
-  assert.equal(ui.quantile(asc(10), 0.1), 1, 'the low end is the first rank, not the second');
-  assert.equal(ui.quantile(asc(20), 0.9), 18);
-  assert.equal(ui.quantile([], 0.9), null);
-  assert.equal(ui.quantile([7], 0.9), 7);
+  assert.equal(exq.quantile(asc(10), 0.1), 1, 'the low end is the first rank, not the second');
+  assert.equal(exq.quantile(asc(20), 0.9), 18);
+  assert.equal(exq.quantile([], 0.9), null);
+  assert.equal(exq.quantile([7], 0.9), 7);
 
   // Nine identical readings and one spike: p90 is the reading.
-  assert.equal(ui.quantile([10, 10, 10, 10, 10, 10, 10, 10, 10, 900], 0.9), 10);
+  assert.equal(exq.quantile([10, 10, 10, 10, 10, 10, 10, 10, 10, 900], 0.9), 10);
 });
 
 // The operator label is typed in and the egress address is measured, so a hotspot picked up

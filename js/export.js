@@ -1,8 +1,15 @@
 // JSON export.
 
+// Nearest rank: the smallest value at or above the quantile. Rounding the index down puts a
+// ten-sample window on its own last element, making p90 the maximum.
+export function quantile(sorted, q) {
+  if (!sorted.length) return null;
+  return sorted[Math.min(sorted.length - 1, Math.max(0, Math.ceil(sorted.length * q) - 1))];
+}
+
 import {PROBES} from './probe.js';
 import {APP_VERSION} from './session.js';
-import {CAPABILITIES, SCALES, PURPOSES, PROBE_SCALES, quantile} from './grade.js';
+import {ACTIVITY_IDS, SCALES, ACTIVITIES, PROBE_SCALES} from './grade.js';
 import * as store from './store.js';
 
 // What counts as a probe failure: a resting probe has not reached the network, and an IPv4
@@ -62,7 +69,7 @@ function gradeTally(ran, keys, field) {
   return grades;
 }
 
-// 4: every round carries its per-probe grades beside its purpose grades.
+// 4: every round carries its per-probe grades beside its activity grades.
 const FORMAT_VERSION = 4;
 
 export function summarise(samples) {
@@ -78,9 +85,9 @@ export function summarise(samples) {
   const fixed = ran.filter(s => s.accuracy_class === 'gps');
   return {
     scales: SCALES,
-    purposes: PURPOSES,
+    activities: ACTIVITIES,
     probe_scales: PROBE_SCALES,
-    grades: gradeTally(ran, CAPABILITIES, 'grades'),
+    grades: gradeTally(ran, ACTIVITY_IDS, 'grades'),
     grades_by_probe: gradeTally(ran, Object.keys(PROBE_SCALES), 'pgrades'),
     generated_by: `wts ${APP_VERSION}`,
     rounds: samples.length,

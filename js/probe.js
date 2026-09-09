@@ -1,4 +1,4 @@
-// Seven probes run in parallel every round, each isolating a different layer. docs/design.md
+// Seven probes run in parallel every round, each isolating a different layer. The README
 // argues each one; this file implements them.
 export const DOWN_TARGET_MS = 500;
 export const DOWN_MIN_BYTES = 128000;
@@ -16,10 +16,10 @@ export const MIN_TIMEOUT_MS = 1000;
 export const STUCK_AFTER = 3;
 export const STUCK_COOLDOWN = 6;
 export const STUN_SERVER = 'stun:stun.cloudflare.com:3478';
-export const IPV4_PREFLIGHT_MS = 2000;
+export const PREFLIGHT_MS = 2000;
 
 // `label` names the test performed, not what it is used for: a probe measures one thing and
-// the purposes in grade.js decide what that means. It travels in the recording so a reader
+// the activities in grade.js decide what that means. It travels in the recording so a reader
 // does not have to infer the test from a URL.
 export const PROBES = [
   // Probes with `samples` run repeatedly within the round; `ms` is the median of the
@@ -394,10 +394,14 @@ export async function runProbe(probe, opts = {}) {
 
 // Run once per session: on an IPv6-only network the ip4 probe would otherwise report the
 // same failure every round.
-export async function checkIpv4(signal) {
-  const probe = PROBES.find(p => p.id === 'ip4');
-  const r = await runProbe(probe, {timeoutMs: IPV4_PREFLIGHT_MS, signal});
-  return {available: r.ok, ms: r.ms, fail: r.fail};
+// Both address families are established once per session. A network carrying only one of them
+// is ordinary — mobile carriers are commonly IPv6-only with NAT64, and plenty of networks
+// elsewhere have no IPv6 at all — so the absent family must not read as an outage.
+export async function checkPaths(signal) {
+  const [v6, v4] = await Promise.all(['ip6', 'ip4'].map(id =>
+    runProbe(PROBES.find(p => p.id === id), {timeoutMs: PREFLIGHT_MS, signal})));
+  const one = r => ({available: r.ok, ms: r.ms, fail: r.fail});
+  return {ip6: one(v6), ip4: one(v4)};
 }
 
 // Every deadline is capped by the interval: a probe outliving its round stacks rounds on
@@ -466,7 +470,7 @@ function runStun(probe, {timeoutMs, signal}) {
 }
 
 export async function runRound({signal, download = {}, intervalMs = 5000,
-                                ipv4Available = true, resting = null} = {}) {
+                                available = {}, resting = null} = {}) {
   const results = await Promise.all(PROBES.map(p => {
     // A resting probe still produces a row, so the round is complete and carries the reason
     // instead of another timeout.
@@ -478,8 +482,13 @@ export async function runRound({signal, download = {}, intervalMs = 5000,
   const out = {};
   PROBES.forEach((p, i) => {
     const r = results[i];
-    // An IPv4 literal on an IPv6-only network is a known-absent path.
-    if (p.id === 'ip4' && !r.ok && !ipv4Available) r.expected = true;
+    // A literal of a family this network does not carry is a known-absent path, but only while
+    // the other family answers: when both are gone the network is down, not single-stack.
+    const other = p.id === 'ip4' ? 'ip6' : 'ip4';
+    if ((p.id === 'ip4' || p.id === 'ip6') && !r.ok &&
+        available[p.id] === false && available[other] !== false) {
+      r.expected = true;
+    }
     out[p.id] = r;
   });
   return out;
