@@ -12,9 +12,9 @@ import {APP_VERSION} from './session.js';
 import {ACTIVITY_IDS, SCALES, ACTIVITIES, PROBE_SCALES} from './grade.js';
 import * as store from './store.js';
 
-// What counts as a probe failure: a resting probe has not reached the network, and an IPv4
-// literal on a network with no IPv4 path is a known-absent path. Shared with the screen so
-// the percentage shown and the count in the file agree.
+// What counts as a probe failure: a resting probe has not reached the network, and a literal
+// of an address family this network does not carry is a known-absent path. Shared with the
+// screen so the percentage shown and the count in the file agree.
 export const countsAsFailure = r =>
   !!r && r.ok === false && !r.expected && r.fail !== 'resting';
 

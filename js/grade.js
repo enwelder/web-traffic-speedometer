@@ -50,11 +50,9 @@ export function articleMs(probes) {
   return Math.round(2 * dns + 2 * web + (ARTICLE_BYTES * 8000) / rate);
 }
 
-// The route is whichever address family this network carries. A browser prefers IPv6 where
-// both work, so it leads; an IPv4-only network is read over IPv4 rather than reported as
-// having no route at all.
-// Which address family the screen should report. The one carrying traffic; failing that, the
-// one that genuinely failed, since a merely absent family explains nothing.
+// The route is whichever address family this network carries: the one carrying traffic, or
+// failing that the one that genuinely failed, since a merely absent family explains nothing.
+// A browser prefers IPv6 where both work, so it leads.
 export function activeRoute(probes = {}) {
   if (probes.ip6?.ok) return 'ip6';
   if (probes.ip4?.ok) return 'ip4';
@@ -96,8 +94,8 @@ function terms(activity, p) {
   return TERMS[activity]?.({p, rate, noThroughput}) ?? [];
 }
 
-// A activity's verdict and the measurement that decided it, so the tile's number and its colour
-// always describe the same thing.
+// An activity's verdict and the measurement that decided it, so the number shown and the
+// colour beside it always describe the same thing.
 export function activityReading(activity, sample) {
   const graded = terms(activity, sample?.probes || {})
     .map(t => ({...t, grade: t.grade ?? gradeValue(t.scale, t.value)}));
@@ -155,7 +153,7 @@ export function probeReading(id, sample) {
 export function gradeActivities(sample) {
   if (!sample || sample.skipped) return null;
   const out = {};
-  for (const cap of ACTIVITY_IDS) out[cap] = activityReading(cap, sample).grade;
+  for (const activity of ACTIVITY_IDS) out[activity] = activityReading(activity, sample).grade;
   return out;
 }
 
@@ -167,7 +165,7 @@ export function gradeProbes(sample) {
   return out;
 }
 
-// The figure a activity leads with, which is the one that decided its grade.
+// The figure an activity leads with, which is the one that decided its grade.
 export function activityValue(activity, sample) {
   return activityReading(activity, sample).value;
 }

@@ -100,9 +100,13 @@ const KEYS = {
           'ms_min', 'ms_max', 'expected', 'stuck', 'host', 'bytes', 'truncated', 'server',
           'ttfb_ms', 'transfer_ms', 'handshake', 'reused', 'protocol', 'lookup_ms',
           'connect_ms', 'tls_ms', 'retry_suspected', 'parse_reason', 'bps_min', 'complete',
-          'warmup_only', 'refused_by', 'bps_transfer', 'bps_end_to_end', 'bps_steady',
-          'bps_peak', 'warmup_ms', 'warmup_bytes', 'insufficient_sample', 'duration_ms',
-          'aborted_reason', 'public_ips', 'candidates'],
+          'warmup_only', 'refused_by', 'duration_ms', 'aborted_reason', 'public_ips',
+          'candidates',
+          // Written by releases up to 3.3.1 and still present in recordings kept for replay.
+          // The current app writes none of them; removing them makes those files
+          // un-anonymisable.
+          'bps_transfer', 'bps_end_to_end', 'bps_steady', 'bps_peak', 'warmup_ms',
+          'warmup_bytes', 'insufficient_sample'],
   event: ['sessionId', 'id', 't', 'mono', 'type', 'lat', 'lon', 'text']
 };
 

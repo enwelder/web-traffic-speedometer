@@ -110,13 +110,13 @@ r.test('grading runs over every recording without inventing or crashing', () => 
       const grades = g.gradeActivities(s);
       if (s.skipped) { assert.equal(grades, null, `${name}: a skipped round is not graded`); continue; }
       assert.ok(grades, `${name} seq ${s.seq}`);
-      for (const [cap, val] of Object.entries(grades)) {
+      for (const [activity, val] of Object.entries(grades)) {
         assert.ok(val === null || g.GRADES.includes(val),
-                  `${name} seq ${s.seq}: ${cap} produced ${val}`);
+                  `${name} seq ${s.seq}: ${activity} produced ${val}`);
         // A activity with no usable input yields no grade and no value.
         if (val === null) {
-          assert.equal(g.activityValue(cap, s), null,
-                       `${name} seq ${s.seq}: ${cap} had a value but no grade`);
+          assert.equal(g.activityValue(activity, s), null,
+                       `${name} seq ${s.seq}: ${activity} had a value but no grade`);
         }
       }
       graded++;
@@ -148,7 +148,7 @@ r.test('nothing derived from a real journey is a number that cannot exist', () =
       for (const [id, probe] of Object.entries(s.probes || {})) {
         if (!probe) continue;
         for (const k of ['ms', 'ms_min', 'ms_max', 'bytes', 'duration_ms', 'ttfb_ms',
-                         'bps_steady', 'bps_peak', 'warmup_ms', 'warmup_bytes']) {
+                         'bps_min', 'bps_transfer', 'bps_end_to_end']) {
           nonNegative(probe[k], `${at}.${id}.${k}`);
         }
         if (probe.ms_samples) {
@@ -191,16 +191,16 @@ r.test('every impossible speed in the recordings comes from a fix the rules now 
 });
 
 r.test('the recordings cannot yet speak for the throughput probe', () => {
-  // Every committed recording predates the time-boxed download, so its rows carry
-  // whole-transfer figures and no `bps_steady`; the video activity is graded only against
-  // the synthetic streams in tests/edges.mjs. Adding a recording from 3.3.0 or later fails
-  // this test, which is when it should become an assertion about the rate.
+  // Every committed recording predates the bound, so its rows carry whole-transfer figures
+  // and no `bps_min`; streaming is graded only against the synthetic streams in
+  // tests/edges.mjs. Adding a recording that carries a bound fails this test, which is when
+  // it should become an assertion about the rate itself.
   const rated = Object.values(journeys)
     .flatMap(j => j.samples)
-    .filter(s => s.probes?.down?.bps_steady != null);
+    .filter(s => s.probes?.down?.bps_min != null);
   assert.equal(rated.length, 0,
-               `a journey now carries a steady rate (${rated.length} rounds): grade it here ` +
-               `instead of trusting the synthetic streams`);
+               `a journey now carries a throughput bound (${rated.length} rounds): grade it ` +
+               `here instead of trusting the synthetic streams`);
 });
 
 r.test('a recording from an older build grades without a schema for it', () => {
@@ -218,8 +218,8 @@ r.test('the run that looked broken was the grading, not the network', () => {
   // Forty rounds of 5G at 30-60 ms round trips and ~200 ms fresh lookups grade green under
   // per-activity thresholds.
   const j = journeys['good-5g'];
-  const tally = cap => j.samples.reduce((acc, s) => {
-    const v = g.gradeActivities(s)?.[cap];
+  const tally = activity => j.samples.reduce((acc, s) => {
+    const v = g.gradeActivities(s)?.[activity];
     if (v) acc[v] = (acc[v] || 0) + 1;
     return acc;
   }, {});

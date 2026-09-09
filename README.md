@@ -25,7 +25,7 @@ noted.
 every 15 s (Fine) or 30 s (Coarse)
         │
         ▼
-  seven probes in parallel, 8 s deadline each
+  seven probes in parallel, each on its own deadline
         │
         ▼
   one row ─── 7 measurements · GPS fix · timing · grades
@@ -99,8 +99,9 @@ that answered; a browser prefers IPv6 where both work, so it leads.
 
 **An activity is the worst of its terms.** One failed requirement sinks it however well the
 others read: a call with a 30 ms round trip and no UDP path is a call that will not connect.
-The tile shows whichever term decided the grade, so its number and its colour always describe
-the same thing.
+Its verdict is a colour rather than a number, since the terms behind it are measured in
+different units; the numbers are on the probe rows above it, and the grade is stored per round
+so it can be traced back to them.
 
 Article time is modelled, not measured:
 
@@ -165,9 +166,10 @@ reached 47% over the worst stretch at a perfectly healthy median latency of 96 m
 ## Data usage
 
 The two download requests are almost the whole cost; the six small probes total ~12 kB per
-round. The projection assumes the 4 MB ceiling every round: **~530 MB for 40 minutes on
-Fine**, ~270 MB on Coarse. Both are shown before a run and tracked during it. Nothing stops a
-run partway.
+round. The projection assumes the 4 MB ceiling every round: **~630 MB for 40 minutes on
+Fine**, ~310 MB on Coarse. A slow link costs far less, because the measured request is sized
+from what the warm-up saw. Both figures are shown before a run and tracked during it. Nothing
+stops a run partway.
 
 ## Design notes
 
@@ -256,10 +258,10 @@ Accuracy stops improving at 4 MB, which sets the ceiling. Spending more does not
 result either: 4 MB transfers vary 5.4× across passes, and three samples a round cost 2.7× the
 data for no gain. The variance is between rounds, so a journey has to be aggregated.
 
-**Deadlines and scheduling.** Every deadline is 8 s, capped at the interval minus half a
-second. Eight rather than four because journey data showed probes succeeding at 3885 ms
-against a 4000 ms ceiling — anything slower was filed as a failure, which collapses "slow"
-into "gone". Rounds are scheduled from when the previous one fired, not onto a grid: on a
+**Deadlines and scheduling.** Every TCP probe gets 8 s, capped at the interval minus half a
+second; `udp` gets 3 s, since a STUN binding answers within a round trip or not at all. Eight
+rather than four because journey data showed probes succeeding at 3885 ms against a 4000 ms
+ceiling — anything slower was filed as a failure, which collapses "slow" into "gone". Rounds are scheduled from when the previous one fired, not onto a grid: on a
 grid, lateness pulls the next slot closer, so after a freeze two rounds fire moments apart and
 measure the same instant twice at twice the price.
 

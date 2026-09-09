@@ -44,24 +44,24 @@ const t = suite('thresholds');
 
 t.test('a value on an edge belongs to the worse side, and only just', () => {
   // Every edge is checked from both sides.
-  for (const [cap, edges] of Object.entries(g.SCALES).map(([k, v]) => [k, v.edges])) {
-    const low = g.SCALES[cap].dir === 'low';
+  for (const [scale, edges] of Object.entries(g.SCALES).map(([k, v]) => [k, v.edges])) {
+    const low = g.SCALES[scale].dir === 'low';
     edges.forEach((edge, i) => {
       const better = low ? edge - 0.001 : edge + 0.001;
       const worse = low ? edge : edge;    // the edge itself is already the worse side
-      assert.equal(g.gradeValue(cap, better), g.GRADES[i],
-                   `${cap}: ${better} sits just inside ${g.GRADES[i]}`);
-      assert.equal(g.gradeValue(cap, worse), g.GRADES[i + 1],
-                   `${cap}: ${worse} is exactly the edge and grades one worse`);
+      assert.equal(g.gradeValue(scale, better), g.GRADES[i],
+                   `${scale}: ${better} sits just inside ${g.GRADES[i]}`);
+      assert.equal(g.gradeValue(scale, worse), g.GRADES[i + 1],
+                   `${scale}: ${worse} is exactly the edge and grades one worse`);
     });
   }
 });
 
 t.test('nothing and nonsense are not grades', () => {
-  for (const cap of Object.keys(g.SCALES)) {
+  for (const scale of Object.keys(g.SCALES)) {
     for (const v of [null, undefined, NaN, Infinity, -Infinity, -1, '30']) {
-      assert.equal(g.gradeValue(cap, v), null,
-                   `${cap} must grade ${String(v)} as nothing rather than a colour`);
+      assert.equal(g.gradeValue(scale, v), null,
+                   `${scale} must grade ${String(v)} as nothing rather than a colour`);
     }
   }
   // Zero is a valid reading in both directions: instant, and stopped.
@@ -603,7 +603,7 @@ e.test('a session in which everything failed still describes itself', () => {
   assert.equal(s.degraded, 5);
   assert.equal(s.probes.ip6.fails.timeout, 5);
   assert.equal(s.probes.ip6.ms_p50, null, 'a median of failures is not a latency');
-  assert.equal(s.probes.down.bps_steady_p50, null);
+  assert.equal(s.probes.down.bps_min_p50, null, 'nor is a median of failures a rate');
 });
 
 e.test('a session of nothing but skipped rounds is not counted as measurement', () => {
@@ -769,9 +769,9 @@ await x.run();
 
 /* ---------------- the readout ---------------- */
 
-const h = suite('tile edges');
+const h = suite('readout edges');
 
-h.test('a tile shows the grade of the round whose number it shows', () => {
+h.test('a grade belongs to the round whose number produced it', () => {
   // Colour and number both come from the same round. Smoothing the colour over three rounds
   // while printing the current number paints a round measured at 35.5 Mb/s red because a
   // round three back was slow.
@@ -782,30 +782,30 @@ h.test('a tile shows the grade of the round whose number it shows', () => {
     const grades = g.gradeActivities(row);
     assert.equal(grades.streaming, g.gradeValue('rate', g.activityValue('streaming', row)),
                  `${(row.probes.down.bps_min / 1e6).toFixed(1)} Mb/s: the colour is this ` +
-                 `round's, taken from the number the tile shows`);
+                 `round's, taken from the number that produced it`);
   }
   assert.equal(g.gradeActivities(rows[4]).streaming, 'green', '35.5 Mb/s is green, whatever came before it');
   assert.equal(g.gradeActivities(rows[3]).streaming, 'red', 'and 1.1 Mb/s is red, whatever came after');
 });
 
-h.test('the strip and the tiles cannot disagree', async () => {
+h.test('the strip and the activity grades cannot disagree', async () => {
   const ui = await import('../js/ui.js');
-  // The strip takes the worst grade in the round and every tile takes its own, so the worst
-  // tile and the strip bar carry the same colour.
+  // Each activity takes the worst of its own terms and the log line takes the worst activity,
+  // so the two cannot describe different rounds.
   const rows = [
     {probes: {ip6: {ok: true, ms: 30}, web: {ok: true, ms: 30}, dns: {ok: true, ms: 30},
-              down: {ok: true, bps_steady: 50e6}}},
+              down: {ok: true, bps_min: 50e6}}},
     {probes: {ip6: {ok: true, ms: 30}, web: {ok: true, ms: 30}, dns: {ok: true, ms: 2500},
-              down: {ok: true, bps_steady: 50e6}}},
+              down: {ok: true, bps_min: 50e6}}},
     {probes: {ip6: {ok: false, fail: 'timeout'}, web: {ok: true, ms: 30}, dns: {ok: true, ms: 30},
-              down: {ok: true, bps_steady: 50e6}}}
+              down: {ok: true, bps_min: 50e6}}}
   ];
   for (const row of rows) {
     const grades = g.gradeActivities(row);
     let worst = null;
-    for (const cap of g.ACTIVITY_IDS) worst = g.worse(worst, grades[cap]);
+    for (const scale of g.ACTIVITY_IDS) worst = g.worse(worst, grades[scale]);
     assert.equal(ui.classify(row), worst,
-                 `the bar is the worst tile: ${JSON.stringify(grades)}`);
+                 `the bar is the worst activity: ${JSON.stringify(grades)}`);
   }
 });
 
