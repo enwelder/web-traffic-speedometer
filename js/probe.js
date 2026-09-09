@@ -1,11 +1,17 @@
 // Seven probes run in parallel every round, each isolating a different layer. The README
 // argues each one; this file implements them.
 export const DOWN_MAX_BYTES = 4000000;
-// Discarded from the rate: a transfer opens at the congestion window's pace, not the link's,
-// and how long that lasts depends on the client, the connection and whether it was reused.
-// Measuring only what arrives afterwards removes the guesswork about all three.
-export const RAMP_MS = 300;
-export const MIN_WINDOW_MS = 150;
+// A transfer opens at the congestion window's pace, not the link's. How long that lasts is a
+// property of the connection, not of the clock, so the ramp is discarded by share of the bytes
+// rather than by a fixed time: a fixed 300 ms never opened at all on a link that delivered
+// 4 MB in 80 ms, and still contained ramp on one that took a second.
+export const RAMP_SHARE = 0.5;
+// How long the measured request should take. Half of it is ramp and half is the window, so
+// this is about 200 ms of measurement — enough to time, and far less than a fixed ceiling
+// costs on a link that does not need it.
+export const DOWN_TARGET_MS = 400;
+export const DOWN_MIN_BYTES = 256000;
+export const MIN_WINDOW_MS = 4;
 export const DOWNLOAD_REQUEST_BYTES = 625000;   // what a 10 Mb/s link needs for the target
 export const WARMUP_REQUEST_BYTES = 96000;
 export const DEFAULT_DOWN_BUDGET_MS = 2000;
@@ -230,18 +236,24 @@ function cancelQuietly(reader) {
 // Reads the body to its end, or until the budget runs out, and reports how much arrived and
 // why it stopped: eof | time | aborted | network. The response carries exactly the bytes that
 // were asked for, so a healthy link reaches eof and nothing is aborted.
-// Opens once the ramp is over, then counts whole chunks only. The chunk that crosses the
-// boundary belongs to neither side and is dropped.
-function rampWindow(t0) {
-  let start = null;
+// When each chunk landed, so the ramp can be cut once the whole transfer is known. Keeping
+// arrival times costs one entry per chunk and settles the question after the fact rather than
+// guessing at it in advance.
+function arrivals(t0) {
+  const at = [];
+  let total = 0;
   return {
-    take(n) {
-      const now = performance.now();
-      if (start !== null) return n;
-      if (now - t0 >= RAMP_MS) start = now;
-      return 0;
-    },
-    elapsed(end) { return start == null ? 0 : Math.round(end - start); }
+    take(n) { total += n; at.push([performance.now() - t0, total]); },
+    // The rate over the last share of the bytes, which is the part delivered at the link's
+    // pace rather than the congestion window's.
+    measure() {
+      if (at.length < 2) return {window_bytes: 0, window_ms: 0};
+      const from = total * RAMP_SHARE;
+      const i = at.findIndex(([, cum]) => cum >= from);
+      const [startMs, startBytes] = at[i];
+      const [endMs] = at[at.length - 1];
+      return {window_bytes: total - startBytes, window_ms: Math.round(endMs - startMs)};
+    }
   };
 }
 
@@ -251,8 +263,7 @@ async function readStream(res, {budgetMs, controller}) {
   let reason = 'eof';
   let truncated = false;
   let fail = null;
-  const window = rampWindow(t0);
-  let windowBytes = 0;
+  const seen = arrivals(t0);
 
   let reader = null;
   try {
@@ -265,7 +276,7 @@ async function readStream(res, {budgetMs, controller}) {
       if (next === EXPIRED) { reason = 'time'; break; }
       if (next.done) break;
       bytes += next.value.byteLength;
-      windowBytes += window.take(next.value.byteLength);
+      seen.take(next.value.byteLength);
     }
   } catch (e) {
     truncated = true;
@@ -280,9 +291,8 @@ async function readStream(res, {budgetMs, controller}) {
 
   // Wall clock: a stream that stalled spent that time, and charging it makes the bound
   // smaller, which is the safe direction.
-  const end = performance.now();
-  return {bytes, reason, truncated, fail, duration: Math.round(end - t0),
-          window_bytes: windowBytes, window_ms: window.elapsed(end)};
+  return {bytes, reason, truncated, fail, duration: Math.round(performance.now() - t0),
+          ...seen.measure()};
 }
 
 // What the transfer proves the link carries, and never more. Every uncertainty is charged
@@ -317,6 +327,10 @@ async function readDownload(res, {url, elapsed, controller, budgetMs}) {
     // hold a window, and then the whole-transfer floor is all there is.
     bps: stream.window_ms >= MIN_WINDOW_MS && stream.window_bytes > 0
       ? Math.round((stream.window_bytes * 8) / (stream.window_ms / 1000)) : null,
+    // Cloudflare's own view of the same transfer, from tcpi_delivery_rate in bytes per second.
+    // Measured at the far end, so it owes nothing to this page's clock, its scheduler or how
+    // the body was handed over.
+    bps_server: server?.delivery_rate ? server.delivery_rate * 8 : null,
     window_bytes: stream.window_bytes,
     window_ms: stream.window_ms,
     server,
@@ -357,6 +371,15 @@ async function whoRefused(probe, opts) {
 // the limit from the first packet — so there the first request is the measurement and the
 // second is skipped, which is also what keeps a slow round cheap.
 // What to ask for so the body lasts about the target at the rate the warm-up just saw.
+// The size of the next measured request, from the rate the last one saw. Sizing from a 96 kB
+// warm-up read only the ramp and shrank every round; sizing from a measured rate cannot,
+// because a small request still reports the link's rate once the ramp is cut out of it.
+export function nextDownloadBytes(bps, max = DOWN_MAX_BYTES) {
+  if (!Number.isFinite(bps) || bps <= 0) return max;
+  const wanted = Math.round((bps / 8) * (DOWN_TARGET_MS / 1000));
+  return Math.max(DOWN_MIN_BYTES, Math.min(max, wanted));
+}
+
 async function measureDownload(probe, opts) {
   const budgetMs = opts.download?.budgetMs ?? DEFAULT_DOWN_BUDGET_MS;
   const deadline = opts.timeoutMs ?? TIMEOUT_MS;
@@ -506,6 +529,33 @@ function runStun(probe, {timeoutMs, signal}) {
   });
 }
 
+// Which families carried traffic in this round, taken from the egress addresses the far end
+// reported back. Evidence from this round only: a family that worked earlier and has now
+// stopped is an outage, not a blocked address.
+function carriedFamilies(results) {
+  const carried = new Set();
+  for (const r of results) {
+    if (r.ok && r.egress_ip) carried.add(r.egress_ip.includes(':') ? 'ip6' : 'ip4');
+  }
+  return carried;
+}
+
+// A failing literal is one of three things, and only one of them is the link.
+function markLiterals(out, results, available) {
+  const carried = carriedFamilies(results);
+  for (const id of ['ip6', 'ip4']) {
+    const r = out[id];
+    if (!r || r.ok || r.fail === 'resting') continue;
+    const other = id === 'ip4' ? 'ip6' : 'ip4';
+    // The family reached the far end this round, so this address alone is being refused — a
+    // public resolver is a common thing to intercept.
+    if (carried.has(id)) r.blocked = true;
+    // A family this network does not carry is a known-absent path, but only while the other
+    // one answers: when both are gone the network is down, not single-stack.
+    else if (available[id] === false && available[other] !== false) r.expected = true;
+  }
+}
+
 export async function runRound({signal, download = {}, intervalMs = 5000,
                                 available = {}, resting = null} = {}) {
   const results = await Promise.all(PROBES.map(p => {
@@ -517,17 +567,9 @@ export async function runRound({signal, download = {}, intervalMs = 5000,
     return runProbe(p, {signal, download, timeoutMs: timeoutFor(p, intervalMs)});
   }));
   const out = {};
-  PROBES.forEach((p, i) => {
-    const r = results[i];
-    // A literal of a family this network does not carry is a known-absent path, but only while
-    // the other family answers: when both are gone the network is down, not single-stack.
-    const other = p.id === 'ip4' ? 'ip6' : 'ip4';
-    if ((p.id === 'ip4' || p.id === 'ip6') && !r.ok &&
-        available[p.id] === false && available[other] !== false) {
-      r.expected = true;
-    }
-    out[p.id] = r;
-  });
+  PROBES.forEach((p, i) => { out[p.id] = results[i]; });
+
+  markLiterals(out, results, available);
   return out;
 }
 

@@ -260,31 +260,35 @@ or a completed negotiation, and none is ever created. Its milliseconds are grade
 row but ignored by the calling activity, which reads only whether the path exists: gathering
 rides on top of the round trip, so the number overstates the link.
 
-**The download measures after the ramp.** Every transfer opens at the congestion window's
-pace rather than the link's. How long that lasts depends on the client, the connection and
-whether it was reused — none of which a page can see or rely on. So the probe asks for the
-4 MB ceiling every round and measures only what arrives *after* the first 300 ms:
+**Throughput is measured three ways, and the best is taken.** Every one of them is a floor,
+so the largest is the least wrong:
 
-| field | meaning |
-|---|---|
-| `bps` | the rate over the measured window. The figure that is graded |
-| `bps_min` | the whole transfer including the ramp. A floor, always true, never flattering |
-| `window_bytes` `window_ms` | what `bps` was computed over |
+| field | measured by | blind to |
+|---|---|---|
+| `bps` | this page, over the last half of the bytes | nothing before that half arrived |
+| `bps_server` | Cloudflare, over the same transfer (`tcpi_delivery_rate`) | nothing — it owes this page's clock nothing |
+| `bps_min` | this page, over the whole transfer | it includes the ramp, so it always understates |
 
-Sizing the request from a 96 kB warm-up instead — the previous design — made the measurement
-choose its own size. 96 kB is spent entirely inside the ramp, so it always read low, and a low
-read asked for less next round. On a KPN 5G cell that RTR measured at 320 Mb/s, the request
-shrank 623 → 533 → 490 → 466 → 462 kB over five rounds and reported 6 Mb/s. The warm-up
-remains, to open the window; it no longer decides anything.
+Two independent clocks measuring one transfer is also a check: on a recorded KPN session the
+page read 41.3 Mb/s and Cloudflare read 50.9 Mb/s for the same rounds, and on a Vodafone one
+28.9 against 78.0. Where they disagree, the file says so.
 
-The budget, not the request size, is what bounds a slow link: 2 s of reading on a 1 Mb/s cell
-transfers 250 kB and reports 1 Mb/s, which is correct and cheap. A fast link takes the whole
-4 MB in a fraction of that.
+A transfer opens at the congestion window's pace rather than the link's, and how long that
+lasts is a property of the connection, not of the clock. So the ramp is cut by share of the
+bytes — the rate is taken over the last half of what arrived. A fixed 300 ms cut, tried first,
+never opened at all on a link delivering 4 MB in 80 ms: 124 rounds of a real session reported
+no rate whatsoever.
 
-4 MB is the ceiling because accuracy stops improving there: against a 350 Mb/s reference, 4 MB
-read 293 Mb/s and 8 MB read 291. Spending more does not steady the result either — 4 MB
-transfers vary 5.4× across passes, and three samples a round cost 2.7× the data for no gain.
-The variance is between rounds, so a journey has to be aggregated.
+The request is sized from the rate the last round measured, targeting about 400 ms of
+transfer, between 256 kB and 4 MB. Sizing it from a 96 kB warm-up instead — the design before
+that — made the measurement choose its own size: 96 kB is spent entirely inside the ramp, so
+it always read low, and a low read asked for less next round. One session shrank
+623 → 533 → 490 → 466 → 462 kB over five rounds and reported 6 Mb/s. A rate taken after the
+ramp cannot do that, because a small request still reports the link's rate.
+
+4 MB is the ceiling because accuracy stopped improving there: against a 350 Mb/s reference,
+4 MB read 293 Mb/s and 8 MB read 291. Per-round rates on a mobile link vary 5.4× across
+passes, so a journey has to be aggregated; the variance is between rounds, not within them.
 
 **Deadlines and scheduling.** Every TCP probe gets 8 s, capped at the interval minus half a
 second; `udp` gets 3 s, since a STUN binding answers within a round trip or not at all. Eight

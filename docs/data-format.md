@@ -9,7 +9,7 @@ lines to derive from it.
 | 3 | grades keyed by activity; the download reports a bound rather than a rate |
 | 4 | every round carries its per-probe grades beside its activity grades |
 | 5 | either address family can be flagged `expected`; the session records both |
-| 6 | throughput is graded on `bps`, the post-ramp rate, rather than on the whole-transfer floor |
+| 6 | throughput is graded on the largest of `bps`, `bps_server` and `bps_min`, rather than on the whole-transfer floor alone |
 
 Version 5 matters to a reader counting failures: before it, `expected` appeared only on `ip4`,
 so an `ip6` failure was always a real one. On a network carrying no IPv6 it now marks a path
@@ -113,6 +113,7 @@ screen. Silent data loss is the one failure this tool cannot have.
 | `bps_min` `complete` | `down` | the whole-transfer floor, and whether the body arrived whole |
 | `bps` | `down` | the rate over the measured window, which opens once the ramp is past. This is the figure graded. Null when the transfer was too short to hold a window |
 | `window_bytes` `window_ms` | `down` | the bytes and time `bps` was computed over |
+| `bps_server` | `down` | Cloudflare's own rate for the same transfer, from `tcpi_delivery_rate`. Measured at the far end, so it owes nothing to this page's clock |
 | `warmup_only` | `down` | the link was too slow for a second request; the warm-up is the measurement |
 | `refused_by` | `down` | on a `network` failure: `server` or `connection` |
 | `aborted_reason` | `down` | how the read ended: `eof`, `time`, `aborted` or `network` |

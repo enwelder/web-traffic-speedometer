@@ -35,7 +35,7 @@ export const worse = (a, b) => (a == null ? b : b == null ? a : (RANK[a] >= RANK
 
 // A resting probe has reported nothing about the network, so it must not grade the activity it
 // feeds as red for the whole cool-down.
-const failed = r => !!r && r.ok === false && !r.expected && r.fail !== 'resting';
+const failed = r => !!r && r.ok === false && !r.expected && !r.blocked && r.fail !== 'resting';
 
 // A download the far end turned away is a fact about the endpoint, not about the link, and
 // must not be reported as the person's connection being bad. Anything else that stops a
@@ -93,9 +93,15 @@ const TERMS = {
   ]
 };
 
-// The post-ramp rate where the transfer was long enough to hold a window, else the
-// whole-transfer floor. Both are recorded; this is the one that describes the link.
-export const throughput = down => (down?.ok ? (down.bps ?? down.bps_min ?? null) : null);
+// What the link carried. Three figures are recorded and every one of them is a floor: what
+// this page timed after the ramp, what Cloudflare measured at its end of the same transfer,
+// and the whole transfer including its ramp. The largest is the least wrong, and the two
+// independent ones disagreeing is itself worth seeing in the file.
+export function throughput(down) {
+  if (!down?.ok) return null;
+  const seen = [down.bps, down.bps_server, down.bps_min].filter(Number.isFinite);
+  return seen.length ? Math.max(...seen) : null;
+}
 
 function terms(activity, p) {
   const rate = throughput(p.down);
@@ -132,6 +138,7 @@ function probeState(r) {
   if (!r) return 'none';
   if (r.fail === 'resting') return 'resting';
   if (r.expected) return 'absent';
+  if (r.blocked) return 'blocked';
   if (ourFault(r)) return 'refused';
   if (failed(r)) return 'failed';
   return r.ok ? 'ok' : 'none';

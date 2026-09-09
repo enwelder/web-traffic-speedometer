@@ -1,7 +1,7 @@
 // The round loop. Every scheduled round produces a row, including rounds that failed and
 // rounds that could not run: a failed attempt is a measurement, so it is never left out.
 
-import {PROBES, runRound, checkPaths, clearTimings, timeoutFor,
+import {PROBES, runRound, checkPaths, clearTimings, timeoutFor, nextDownloadBytes,
         DEFAULT_DOWN_BUDGET_MS, DOWN_MAX_BYTES,
         WARMUP_REQUEST_BYTES} from './probe.js';
 import {gradeActivities, gradeProbes} from './grade.js';
@@ -119,6 +119,8 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
   let throughput = null;
   let udpMs = null;
   let downloadBytesUsed = 0;
+  // Undefined until a round has measured: the first asks for the ceiling.
+  let nextBytes;
   let lastGrades = null;
   let flushing = null;
   let writeFailed = false;
@@ -267,7 +269,7 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
     try {
       row.probes = await runRound({
         signal: abort.signal,
-        download: session.download || DOWNLOAD_DEFAULTS,
+        download: {...(session.download || DOWNLOAD_DEFAULTS), maxBytes: nextBytes},
         intervalMs: interval(),
         available: {ip6: session.ipv6_available, ip4: session.ipv4_available},
         resting: stuck.resting(seq)
@@ -284,6 +286,11 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
 
     if (!wake.held()) wake.acquire();
     downloadBytesUsed += row.probes.down?.bytes || 0;
+    // Ask for what this link needs next round rather than for the ceiling every time. The
+    // rate comes from the window, not from the ramp, so a small request cannot understate it
+    // and talk the next one smaller.
+    nextBytes = nextDownloadBytes(row.probes.down?.bps,
+                                  (session.download || DOWNLOAD_DEFAULTS).maxBytes);
 
     // The quickest first response in the round, which approximates the cost of waking the
     // radio. Reported, never graded. Zero values are excluded: connect_ms is zero both for a
@@ -375,6 +382,7 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
     throughput = null;
     udpMs = null;
     downloadBytesUsed = spent?.downloadBytes || 0;
+    nextBytes = undefined;
     lastGrades = null;
     inFlight = false;
     contacted.clear();

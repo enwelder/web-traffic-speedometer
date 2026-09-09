@@ -114,6 +114,27 @@ s.test('an absent address family is settled once and flagged, not rediscovered',
   assert.equal(none.ip4.expected, undefined);
 });
 
+s.test('a literal refused while its family carries traffic is blocked, not broken', async () => {
+  // Recorded on two operators: the download egressed over IPv4 in the same round the IPv4
+  // literal failed. 1.1.1.1 is a public resolver and is a common thing to intercept, so the
+  // failure is about that address and not about the link.
+  globalThis.fetch = async (url, o) => {
+    if (String(url).includes('1.1.1.1')) throw netError();
+    return {ok: true, status: 200, type: 'opaque',
+            headers: {get: h => (h === 'cf-meta-ip' ? '109.36.152.49' : null)},
+            body: bodyOf(25000), text: async () => TRACE, signal: o?.signal};
+  };
+  const round = await probe.runRound({available: {ip6: true, ip4: true}});
+  assert.equal(round.ip4.blocked, true, 'the round saw IPv4 carry traffic');
+  assert.equal(round.ip4.expected, undefined, 'so the path is not absent');
+
+  // With nothing reaching the far end, the same failure is the network.
+  globalThis.fetch = async () => { throw netError(); };
+  const dead = await probe.runRound({available: {ip6: true, ip4: true}});
+  assert.equal(dead.ip4.blocked, undefined, 'no egress this round, so nothing excuses it');
+  assert.equal(dead.ip6.blocked, undefined);
+});
+
 s.test('a repeated probe reports the median and keeps every sample', async () => {
   const times = [10, 50, 90];   // median 50, last 90, so the two are distinguishable
   let i = 0;
