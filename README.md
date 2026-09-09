@@ -45,20 +45,18 @@ lower bound on throughput, not a rate.
 
 ## On screen
 
-Three tiles, one per purpose: **calls & live audio**, **opening an article**, **video &
-downloads**. Each reads several measurements and takes the worst. A tile shows the
-measurement that decided its grade. Below them, one history strip per purpose and two lamps
-for the IPv4 and UDP paths.
+Two sections. Seven rows at the top, one per probe, each showing its measurement and the
+colour that measurement grades to. A probe that measured nothing says why instead — `absent`,
+`resting`, `refused` — and takes no colour.
 
-Grading scales are absolute, never relative to the session:
+Below them, three tiles naming what a person is doing: **voice & video calling**, **reading
+articles**, **streaming video**. Each reads several probes and takes the worst, and shows the
+measurement that decided its grade. One history strip per activity sits under the tiles.
 
-| scale | green | yellow | orange | red | source |
-|---|---|---|---|---|---|
-| round trip | <100 ms | <200 ms | <400 ms | ≥400 ms | ITU-T G.114 |
-| TTFB | <800 ms | <1800 ms | <3000 ms | ≥3000 ms | web.dev |
-| article | <2.5 s | <4 s | <8 s | ≥8 s | Core Web Vitals LCP |
-| rate | >10 Mb/s | >5 Mb/s | >1.5 Mb/s | ≤1.5 Mb/s | Netflix tiers |
-| call rate | >300 kb/s | >100 kb/s | >30 kb/s | ≤30 kb/s | Opus, RFC 6716 |
+Tapping any row or tile says what it measures; the **?** does all ten at once.
+
+Grading scales are absolute, never relative to the session. They are listed with their
+sources in [docs/design.md](docs/design.md#grading).
 
 **Degraded** is the share of rounds with any probe failure. It is the useful figure: full
 outages are rare, while partially failing rounds reached 47% over the worst recorded stretch
@@ -102,8 +100,10 @@ address, a workplace and a daily timetable, and this repository is public. Secur
 enforce it: nothing under `.dev/` may be tracked, and no committed file may have the shape of
 a journey export.
 
-The version is stated once in `package.json`. A push to `main` publishes to Pages; a new
-version number also tags and releases.
+`package.json` is the source of the version; `js/session.js` and `sw.js` restate it, since
+there is no build step to read it from. A security test fails the build if the three disagree.
+
+A push to `main` publishes to Pages; a new version number also tags and releases.
 
 ## Security properties
 

@@ -1,48 +1,18 @@
-// Seven probes run in parallel every round, each isolating a different layer.
-//
-// ip6/ip4 use address literals, so no name resolution happens. On an IPv6-only carrier
-// (NAT64/DNS64) ip4 cannot work: iOS has no CLAT and depends on DNS64 synthesising an
-// address during lookup, which a literal skips. Availability is established once per
-// session by checkIpv4.
-//
-// dns requests a random <label>.github.io. The wildcard record and the *.github.io
-// certificate make any label valid, so the resolver must perform an uncached lookup.
-// dns_ctl requests a fixed label at the same destination, whose name stays cached for an
-// hour, so dns failing while dns_ctl succeeds isolates resolution with the destination
-// held constant.
-
-// The download probe answers which band the link is in, not how fast it is, and reports a
-// bound: what the bytes that arrived prove the link can carry. The request asks for what
-// clears the top grading edge over a 500 ms window, and nothing beyond it is ever read, so a
-// fast link pays for the whole body and a slow one stops at the budget having transferred
-// whatever it managed — the same measurement from fewer bytes.
-// The measured request is sized from the warm-up so the body lasts about DOWN_TARGET_MS
-// whatever the link does: a cell at 1 Mb/s finishes a small one inside the budget instead of
-// being cut off, and a fast one gets enough bytes to be measured past its ramp. Accuracy stops
-// improving above the ceiling — 4 MB reads 293 Mb/s where 8 MB reads 291 — and below the floor
-// there is too little body to time.
+// Seven probes run in parallel every round, each isolating a different layer. docs/design.md
+// argues each one; this file implements them.
 export const DOWN_TARGET_MS = 500;
 export const DOWN_MIN_BYTES = 128000;
 export const DOWN_MAX_BYTES = 4000000;
 export const DOWNLOAD_REQUEST_BYTES = 625000;   // what a 10 Mb/s link needs for the target
-// iOS opens a fresh connection for the download every round, and a fresh connection delivers
-// its first bytes at the congestion window's pace rather than the link's. This request is
-// spent opening that window so that the measured one sees the link. Without it a 5G cell a
-// reference test clocked at 350 Mb/s measured 7 Mb/s here, which is the ramp, not the link.
 export const WARMUP_REQUEST_BYTES = 96000;
 export const DEFAULT_DOWN_BUDGET_MS = 2000;
 // Added to a duration taken from the wall clock, which brackets more than the body. Resource
 // timing reports the body's own span, and is charged nothing.
 export const DOWN_SLACK_MS = 50;
-// Applies to every TCP probe. Small probes have been observed succeeding at 3885 ms, so a
-// lower ceiling records slow-but-working rounds as failures.
 export const TIMEOUT_MS = 8000;
 export const STUN_TIMEOUT_MS = 3000;      // UDP answers within a round trip or not at all
 export const MIN_TIMEOUT_MS = 1000;
 
-// A probe whose connection has stopped carrying traffic fails every round while its peers
-// succeed. Safari cannot be told to open a fresh connection, so the probe stops running for
-// STUCK_COOLDOWN rounds and the browser retires the connection on idle.
 export const STUCK_AFTER = 3;
 export const STUCK_COOLDOWN = 6;
 export const STUN_SERVER = 'stun:stun.cloudflare.com:3478';

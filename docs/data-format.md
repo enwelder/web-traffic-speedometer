@@ -1,10 +1,11 @@
 # Exported session format
 
-`format: "wts/session"`, `version: 3`. One button per session writes one JSON file: session
+`format: "wts/session"`, `version: 4`. One button per session writes one JSON file: session
 metadata, environment, a rollup, every sample, every event. CSV, GPX or GeoJSON are a few
 lines to derive from it.
 
-Version 2 keyed grades by capability and reported a rate rather than a bound.
+Version 3 keyed grades by capability and reported a rate rather than a bound. Version 4 adds
+per-probe grades to every round.
 
 ## Rollup
 
@@ -13,8 +14,10 @@ percentiles and total bytes, and counts of skipped, paused and degraded rounds. 
 outage, and every figure is recomputable from the samples. It exists so a reader does not
 rebuild the same six aggregates every time.
 
-The scales and the purposes composed from them are copied in beside it, because a file read a
-year later has to say which version graded its rows.
+The scales, the purposes composed from them, and which scale reads each probe
+(`summary.probe_scales`) are copied in beside it, because a file read a year later has to say
+which version graded its rows. `summary.grades` and `summary.grades_by_probe` tally the grades
+the run actually produced.
 
 ## Every attempt is recorded
 
@@ -66,7 +69,8 @@ screen. Silent data loss is the one failure this tool cannot have.
 | `wake_lock` | whether the screen was held awake |
 | `prev_round_ms` | how long the previous round took. A frozen tab suspends the abort timers, so a round can outlast every deadline in it; without this an overlap cannot be told from the app stalling |
 | `speed_derived` `speed_source` | speed computed from consecutive fixes, and whether the reported value is `gps` or `derived` |
-| `grades` | the three purpose grades this round produced, as shown |
+| `grades` | the three activity grades this round produced, as shown |
+| `pgrades` | the seven per-probe grades, as shown |
 | `first_packet_ms` | quickest first response in the round: the closest thing to the cost of waking the radio. Reported, never graded |
 
 ## Per probe, under `probes.<id>`

@@ -1,15 +1,9 @@
-// A probe whose connection has stopped carrying traffic fails every round while its peers
-// succeed. Safari cannot be told to open a fresh connection, so the probe is stood down for
-// a few rounds and the browser retires the connection on idle.
-//
 // `seq` in both calls is the number the next round will take, so a rest ends STUCK_COOLDOWN
 // rounds after the one that scheduled it.
 
 import {PROBES, STUCK_AFTER, STUCK_COOLDOWN} from './probe.js';
 
-// The failures a fresh connection can fix. A parse failure means the connection delivered a
-// body (a captive portal answering for Cloudflare) and an HTTP status means the server
-// replied; resting hides both and repairs neither.
+// The failures a fresh connection can fix.
 const WEDGE_FAILS = new Set(['timeout', 'network', 'stalled']);
 
 export function createStuckTracker({onNotice} = {}) {

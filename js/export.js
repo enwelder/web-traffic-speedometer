@@ -1,5 +1,4 @@
-// JSON export. It is the only lossless shape for the nested per-probe records; CSV, GPX and
-// GeoJSON are derived from it downstream.
+// JSON export.
 
 import {PROBES} from './probe.js';
 import {APP_VERSION} from './session.js';

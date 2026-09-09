@@ -163,33 +163,114 @@ Coarse.
 
 ## Grading
 
-Each of the three tiles grades a purpose, not a probe, by reading several measurements and
-taking the worst.
+Two things are graded, on the same four colours and the same scales: each probe's own
+measurement, and each activity composed from several of them.
 
-| purpose | terms |
+### The scales
+
+Every edge is absolute. Nothing consults the session's own statistics, so a connection is not
+good merely because it is no worse than the rest of the journey.
+
+| scale | green | yellow | orange | red | from |
+|---|---|---|---|---|---|
+| `round_trip` | <100 ms | <200 ms | <400 ms | ≥400 ms | ITU-T G.114 |
+| `ttfb` | <800 ms | <1800 ms | <3000 ms | ≥3000 ms | web.dev TTFB |
+| `article` | <2.5 s | <4 s | <8 s | ≥8 s | Core Web Vitals LCP |
+| `rate` | >10 Mb/s | >5 Mb/s | >1.5 Mb/s | ≤1.5 Mb/s | Netflix tiers |
+| `call_rate` | >300 kb/s | >100 kb/s | >30 kb/s | ≤30 kb/s | Opus, RFC 6716 |
+| `dns_delta` | <250 ms | <500 ms | <1000 ms | ≥1000 ms | derived — below |
+
+| source | | |
+|---|---|---|
+| G.114 | <https://www.itu.int/rec/T-REC-G.114> | 150 ms one-way preferred, 400 unusable |
+| TTFB | <https://web.dev/articles/ttfb> | covers DNS, TCP, TLS, first byte |
+| LCP | <https://web.dev/articles/lcp> | 2.5 s good, 4 s poor |
+| Netflix | <https://help.netflix.com/en/node/306> | 3 Mb/s 720p, 5 1080p, 15 4K |
+| Opus | <https://www.rfc-editor.org/info/rfc6716> | 6-510 kb/s, 9-14 for wideband speech |
+
+Where the edges depart from their source:
+
+- `round_trip` — G.114 budgets mouth-to-ear one-way. Codec, packetisation and the jitter
+  buffer take 80-120 ms of it, leaving ~100 ms of round trip to the edge.
+- `ttfb` — defined over a site's 75th percentile, applied here to a single round.
+- `rate` — 4K is not the bar; it asks 15 Mb/s and buys nothing on a phone screen.
+- `call_rate` — catches a link carrying nothing, not slow ones. A call is latency-bound.
+
+A value exactly on an edge takes the worse side. Anything that is not a finite, non-negative
+number is not graded at all.
+
+### Per probe
+
+| probe | scale | graded on |
+|---|---|---|
+| `ip6` `ip4` `dns_ctl` `web` `udp` | `round_trip` | `ms`, the median of its samples |
+| `down` | `rate` | `bps_min` |
+| `dns` | `dns_delta` | the gap to `dns_ctl` |
+
+A probe reports before it grades. Four states carry no colour, because in none of them did
+the probe measure the link:
+
+| state | when |
 |---|---|
-| calls & live audio | UDP path · route · round trip · throughput for a call |
-| opening an article | lookup not on a retry timer · lookup · known host · throughput · TTFB · modelled article time |
-| video & downloads | throughput · rate |
+| `absent` | the path is known missing — IPv4 after the preflight, UDP without WebRTC |
+| `resting` | the recorder stood the probe down to clear a wedged connection |
+| `refused` | the far end turned the request away; a fact about the endpoint |
+| `none` | the round ran no such probe |
 
-A single probe's number does not describe what a person can do, and one failed requirement
-should sink a purpose however well the others read.
+Anything else that failed is red, and the row shows the failure reason in place of a number.
 
-Rules:
+`udp`'s milliseconds are graded on its own row but deliberately ignored by the calling
+activity, which reads only whether the path exists. A slow STUN exchange can therefore show
+orange on a row above a green call. Both are correct: ICE gathering rides on top of the round
+trip, so the number overstates the link.
 
-- Thresholds are absolute and cite their source in `js/grade.js`. Nothing is graded against
-  the session's own statistics; a connection is not good merely because it is no worse than
-  the rest of the journey.
-- A value exactly on a threshold takes the worse side.
-- Anything that is not a finite, non-negative number is not graded.
-- A term for a path that is gone shows text instead of a number: `no UDP`, `host gone`,
-  `no data`.
-- Grades are resolved once per round and stored in the file.
+### The DNS delta
+
+The fresh-lookup probe is graded on `dns.ms − dns_ctl.ms`, never on its own latency. Both
+requests go to the same host over the same path, so the difference removes everything they
+share.
+
+No standard covers this quantity, so the edges are fitted to the three committed journeys —
+259 rounds where both probes answered:
+
+| p50 | p80 | p90 | p95 | max | negative |
+|---|---|---|---|---|---|
+| 150 ms | 259 ms | 460 ms | 832 ms | 4164 ms | 3 rounds |
+
+Edges of 250 / 500 / 1000 ms split that corpus 206 / 31 / 12 / 10. `tests/replay.mjs` asserts
+that split, so moving an edge without re-deriving it fails.
+
+Three consequences worth stating:
+
+- A green here means "no worse than the floor", not "DNS is fast". Most of the gap is the far
+  end handling an unseen hostname, as the probe's own section above sets out.
+- The delta goes negative on noise, because `dns` is one sample and `dns_ctl` the median of
+  three. It is clamped at zero.
+- `retry_suspected` forces red whatever the delta says, since a lost first query is loss
+  rather than slowness. No committed recording exercises this path.
+
+### Per activity
+
+An activity reads several measurements and takes the worst, so one failed requirement sinks
+it however well the others read.
+
+| activity | terms |
+|---|---|
+| voice & video calling | UDP path · route · round trip · throughput for a call |
+| reading articles | lookup not on a retry timer · lookup · known host · throughput · TTFB · modelled article time |
+| streaming video | throughput · rate |
+
+A term for a path that is gone shows text instead of a number: `no UDP`, `host gone`,
+`no data`.
 
 Article time is modelled, not measured: `2 × lookup + 2 × known host + 500 kB / bound`. The
-500 kB is the critical path to a readable article, where HTML, CSS and fonts come to 221 kB
-at the mobile median and the largest image is what LCP waits for. It divides by the
-throughput bound, so the result is an upper bound on the wait.
+500 kB is the critical path to a readable article, where HTML, CSS and fonts come to 221 kB at
+the mobile median and the largest image is what LCP waits for
+(<https://almanac.httparchive.org/en/2025/page-weight>); the rest of the median 2,164 kB page
+arrives after the article can be read. It divides by the throughput bound, so the result is an
+upper bound on the wait.
+
+Grades are resolved once per round and stored in the file, per probe and per activity.
 
 ## Operator and connection type
 
@@ -205,9 +286,9 @@ One SIM is active at a time, so comparing operators means comparing journeys.
 
 ## iOS limits
 
-**Position quality varies within a journey.** `coords.speed` is filled only sporadically, and
-accuracy swings between a few metres and a tower estimate; one journey spent 30 of 74 rounds
-at exactly 1414 m. `enableHighAccuracy` is the only control a browser has. So fixes are never
+**Position quality varies within a journey.** `coords.speed` is filled on 0, 2 and 51 of the
+158, 75 and 243 rounds of three recorded journeys, and accuracy swings between a few metres
+and a tower estimate; one journey spent 30 of 74 rounds at exactly 1414 m. `enableHighAccuracy` is the only control a browser has. So fixes are never
 served from cache, a speed is derived from consecutive fixes only when both are under 100 m,
 and `accuracy_class` lets a consumer filter without reimplementing the threshold. Deriving
 from coarse fixes produced 682 km/h on a train, because two tower estimates hundreds of

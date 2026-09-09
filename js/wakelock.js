@@ -1,8 +1,5 @@
-// The screen wake lock, and the two ways it goes wrong.
-//
-// The system reclaims the lock without the page ever becoming hidden — Low Power Mode
-// engaging, a call arriving, the screen locking. The sentinel stays non-null with `released`
-// set, so whether the lock is held is decided by that flag as well as by the release event.
+// The sentinel stays non-null with `released` set when the system reclaims the lock, so
+// whether it is held is decided by that flag as well as by the release event.
 //
 // `acquire` is called from the round loop, from visibilitychange and from the release
 // handler, so a request in flight is tracked: two concurrent requests orphan a sentinel

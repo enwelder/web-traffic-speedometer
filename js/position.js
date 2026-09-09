@@ -1,8 +1,4 @@
 // Where the device is, how fast it is moving, and how much either figure is worth.
-//
-// iOS fills coords.speed only sporadically — on 0, 2 and 51 of 158, 75 and 243 rounds across
-// three journeys — so speed is derived from consecutive fixes, and every row records which
-// source its figure came from.
 
 const EARTH_M = 6371000;
 
