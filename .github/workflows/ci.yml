@@ -26,12 +26,18 @@ jobs:
         run: node tests/run.mjs unit stuck wakelock position
       - name: grading, and replay against real recordings
         run: node tests/run.mjs grading replay regressions
-      # --with-deps runs apt-get update, which fails on the Google Chrome repository the runner
-      # image ships preconfigured whenever its index and Release file disagree. Nothing here
-      # needs that repository, so it goes before apt is asked to read it.
+      # --with-deps runs apt-get update, and the runner image ships third-party repositories
+      # this project does not need. Google's has been serving an index whose hash does not
+      # match its own Release file, which fails the whole update and so the whole step. Drop
+      # any source that mentions it — the file is .list on some images and .sources on others —
+      # and list what is left, so a future failure here names its own cause.
       - name: install browsers
         run: |
-          sudo rm -f /etc/apt/sources.list.d/google-chrome.list
+          grep -rlE 'dl\.google\.com|google-chrome' /etc/apt/sources.list.d/ 2>/dev/null \
+            | xargs -r sudo rm -f
+          [ -f /etc/apt/sources.list ] && sudo sed -i '/dl\.google\.com/d' /etc/apt/sources.list
+          echo "remaining apt sources:"; ls -1 /etc/apt/sources.list.d/ || true
+          sudo apt-get update
           npx playwright install --with-deps chromium webkit
       - name: end to end in a browser
         run: node tests/run.mjs browser
