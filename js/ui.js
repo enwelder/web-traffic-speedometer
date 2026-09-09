@@ -1,7 +1,7 @@
 // DOM rendering. Nothing here is persisted.
 
 import {PROBES} from './probe.js';
-import {CAPABILITIES, PURPOSES, GRADES, gradeRound, worse, capabilityValue} from './grade.js';
+import {CAPABILITIES, GRADES, gradeRound, worse, capabilityReading} from './grade.js';
 import {countsAsFailure} from './export.js';
 
 const STRIP_BARS = 48;
@@ -54,26 +54,33 @@ export function classify(sample) {
 // Shown in place of a tile's value while that tile is tapped. Each names the measurements the
 // purpose is judged on, since no purpose reads a single probe any more.
 const EXPLAIN = {
-  voice:     'Round trip to Cloudflare by IP address, the UDP path being open at all, and enough throughput to carry a call. Live audio breaks on any of the three.',
-  news:      'Resolving a hostname never seen before and reaching it, then the time an article of average weight would take over this link. Both have to hold.',
+  voice:     'Round trip to Cloudflare by address, the UDP path being open at all, and enough throughput to carry a call. Live audio breaks on any of the three, and the tile shows whichever is worst.',
+  news:      'Resolving a hostname never seen before, reaching a host already known, and the time an article of average weight would take over this link. The tile shows whichever of them decides.',
   streaming: 'What the bytes that arrived prove the link carries. A floor, not a top speed: enough to answer whether video will play, which is the question.'
 };
 
-function displayValue(cap, value) {
-  if (value == null) return '—';
-  return PURPOSES[cap].unit === 'bps' ? `≥${rate(value)}` : String(Math.round(value));
+// The measurement that decided the grade, so the tile's number and its colour describe the
+// same thing. A term with no number — a path that is gone — says so in place of one.
+function displayReading(r) {
+  if (!r || (r.note == null && r.value == null)) return '—';
+  if (r.note) return r.note;
+  return r.unit === 'bps' ? `≥${rate(r.value)}` : String(Math.round(r.value));
 }
+
+// `rate` writes its own unit, and a term reporting a gone path has none.
+const displayUnit = r => (r && !r.note && r.value != null && r.unit === 'ms' ? 'ms' : '');
 
 // Colour and number both come from the round passed in, so a tile describes one moment.
 // History is the strip's job.
 export function setSignals(sample) {
-  const grades = sample && !sample.skipped ? (sample.grades || gradeRound(sample)) : null;
+  const live = sample && !sample.skipped;
   for (const cap of CAPABILITIES) {
     const cell = $(`cap-${cap}`);
     cell.classList.remove(...GRADES);
-    if (grades?.[cap]) cell.classList.add(grades[cap]);
-    $(`val-${cap}`).textContent = sample && sample.skipped
-      ? '–' : displayValue(cap, capabilityValue(cap, sample));
+    const reading = live ? capabilityReading(cap, sample) : null;
+    if (reading?.grade) cell.classList.add(reading.grade);
+    $(`val-${cap}`).textContent = sample && sample.skipped ? '–' : displayReading(reading);
+    $(`unit-${cap}`).textContent = displayUnit(reading);
   }
   renderExplanations();
 }
