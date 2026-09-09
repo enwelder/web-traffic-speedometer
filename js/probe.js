@@ -6,14 +6,8 @@ export const DOWN_MAX_BYTES = 4000000;
 // rather than by a fixed time: a fixed 300 ms never opened at all on a link that delivered
 // 4 MB in 80 ms, and still contained ramp on one that took a second.
 export const RAMP_SHARE = 0.5;
-// How long the measured request should take. Half of it is ramp and half is the window, so
-// this is about 200 ms of measurement — enough to time, and far less than a fixed ceiling
-// costs on a link that does not need it.
-export const DOWN_TARGET_MS = 400;
-export const DOWN_MIN_BYTES = 256000;
 export const MIN_WINDOW_MS = 4;
 export const DOWNLOAD_REQUEST_BYTES = 625000;   // what a 10 Mb/s link needs for the target
-export const WARMUP_REQUEST_BYTES = 96000;
 export const DEFAULT_DOWN_BUDGET_MS = 2000;
 // Added to a duration taken from the wall clock, which brackets more than the body. Resource
 // timing reports the body's own span, and is charged nothing.
@@ -372,36 +366,19 @@ async function whoRefused(probe, opts) {
 // the limit from the first packet — so there the first request is the measurement and the
 // second is skipped, which is also what keeps a slow round cheap.
 // What to ask for so the body lasts about the target at the rate the warm-up just saw.
-// The size of the next measured request, from the rate the last one saw. Sizing from a 96 kB
-// warm-up read only the ramp and shrank every round; sizing from a measured rate cannot,
-// because a small request still reports the link's rate once the ramp is cut out of it.
-export function nextDownloadBytes(bps, max = DOWN_MAX_BYTES) {
-  if (!Number.isFinite(bps) || bps <= 0) return max;
-  const wanted = Math.round((bps / 8) * (DOWN_TARGET_MS / 1000));
-  return Math.max(DOWN_MIN_BYTES, Math.min(max, wanted));
-}
-
+// One request, asking for the ceiling, read for as long as the budget allows. What the grade
+// needs is a floor high enough to settle the question, and only a transfer that ran for the
+// whole budget can produce one.
+//
+// A 96 kB warm-up ran first for a while, to open the congestion window on a fresh connection.
+// It was removed: every recorded round reports `reused: true`, so there was no fresh
+// connection to open, an idle gap between rounds resets the window regardless, it spent part
+// of the budget the measurement needed, and when it short-circuited the round its own 96 kB
+// rate became the measurement — six of ten sub-green rounds in one session were that.
 async function measureDownload(probe, opts) {
   const budgetMs = opts.download?.budgetMs ?? DEFAULT_DOWN_BUDGET_MS;
-  const deadline = opts.timeoutMs ?? TIMEOUT_MS;
-  const started = performance.now();
-  const warm = await runOnce({...probe, id: 'down_warmup', bytes: WARMUP_REQUEST_BYTES},
-                             {...opts, download: {...opts.download, budgetMs}});
-  const spent = performance.now() - started;
-  // Both requests share the probe's deadline and its read budget. Charging each of them the
-  // full amount would let the download alone outlast the round and collide with the next one.
-  const budgetLeft = budgetMs - spent;
-  const timeLeft = deadline - spent;
-  if (!warm.ok || budgetLeft <= 0 || timeLeft < MIN_TIMEOUT_MS || spent > budgetMs * 0.4) {
-    warm.warmup_only = true;
-    return warm;
-  }
-  // Ask for the ceiling every time and let the budget decide how much of it arrives. Sizing
-  // the request from the warm-up measured a 320 Mb/s link at 6 Mb/s: 96 kB is spent inside
-  // slow start, so it always understated, and each undersized request confirmed the last.
   const bytes = opts.download?.maxBytes ?? DOWN_MAX_BYTES;
-  return runOnce({...probe, bytes}, {...opts, timeoutMs: timeLeft,
-                                     download: {...opts.download, budgetMs: budgetLeft}});
+  return runOnce({...probe, bytes}, {...opts, download: {...opts.download, budgetMs}});
 }
 
 // A probe that asks for samples is run repeatedly inside one deadline; `ms` becomes the

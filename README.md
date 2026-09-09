@@ -280,6 +280,12 @@ The measured rate also rises with the size of the request — 10.6, 18.4 and 44.
 1-2 MB, 2-3.5 MB and ≥3.5 MB transfers in one KPN session — which is the signature of a
 transfer that ends before its window opens.
 
+**So the figure is a floor on one connection, and a video player does not use one
+connection.** A floor of 9 Mb/s does not mean a stream will stall; it means one flow carried
+at least that much while six other probes shared the radio. The grade is right when the floor
+clears the green edge and merely unproven when it does not, and the scale below was written
+for link capacity rather than for one flow's share of it.
+
 What the reference tests do instead, and what it costs on a 320 Mb/s link:
 
 | test | streams | duration | reports | data per test |

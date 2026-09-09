@@ -159,66 +159,21 @@ d.test('a body too short to rate still bounds the link', async () => {
   }
 });
 
-d.test('the connection is opened before the measured request, unless the link is slow', async () => {
-  // A fresh connection delivers its first bytes at the congestion window's pace. A 5G cell a
-  // reference test clocked at 350 Mb/s measured 7 Mb/s through one request, because the whole
-  // transfer fitted inside the ramp.
+d.test('one request, read for as long as the budget allows', async () => {
+  // A 96 kB warm-up ran first for a while, to open the congestion window. Every recorded
+  // round reports the connection as reused, so there was none to open; it spent budget the
+  // measurement needed; and when it short-circuited the round, its own 96 kB became the
+  // measurement. Six of ten sub-green rounds in one KPN session were that, on a link that
+  // streams video in the highest quality.
   const sizes = [];
   globalThis.fetch = async url => {
     sizes.push(Number(new URL(url).searchParams.get('bytes')));
     return {ok: true, status: 200, body: bodyOf(200), headers: {get: () => null}};
   };
-  await probe.runProbe(P.down, {timeoutMs: 8000, download: {budgetMs: 2000}});
-  assert.equal(sizes.length, 2, 'one request to open the window, one to measure over it');
-  assert.equal(sizes[0], probe.WARMUP_REQUEST_BYTES, 'the small one first');
-  assert.equal(sizes[1], probe.DOWN_MAX_BYTES, 'then one that asks for the ceiling');
-
-  // On a link too slow to finish the first request quickly there is no window to escape, so
-  // the second is skipped and the round stays cheap.
-  sizes.length = 0;
-  globalThis.fetch = async url => {
-    sizes.push(Number(new URL(url).searchParams.get('bytes')));
-    return {ok: true, status: 200, headers: {get: () => null},
-            body: stream(Array.from({length: 40}, () => ({after: 50, bytes: 2000})))};
-  };
-  const slow = await probe.runProbe(P.down, {timeoutMs: 8000, download: {budgetMs: 600}});
-  assert.equal(sizes.length, 1, `a slow link is measured by the first request alone: ${sizes}`);
-  assert.equal(slow.warmup_only, true, 'and the row says so');
-  assert.ok(slow.bps_min > 0, 'it is still a measurement');
+  const r = await probe.runProbe(P.down, {timeoutMs: 8000, download: {budgetMs: 2000}});
+  assert.deepEqual(sizes, [probe.DOWN_MAX_BYTES], 'one request, for the ceiling');
+  assert.equal(r.warmup_only, undefined, 'there is no warm-up left to fall back to');
 });
-
-d.test('the next request is sized from the rate the last one measured', () => {
-  // Not from a 96 kB warm-up, which reads only the ramp: that shrank the request every round
-  // and reported a 320 Mb/s cell at 6 Mb/s. A rate taken after the ramp cannot understate the
-  // link, so a small request cannot talk the next one smaller.
-  const mb = bps => probe.nextDownloadBytes(bps) / 1e6;
-  assert.equal(mb(1e6), probe.DOWN_MIN_BYTES / 1e6, 'a slow link is not made to pay for bytes');
-  assert.ok(mb(30e6) > 1 && mb(30e6) < 2, `30 Mb/s asks for ${mb(30e6)} MB`);
-  assert.equal(mb(320e6), probe.DOWN_MAX_BYTES / 1e6, 'a fast one reaches the ceiling');
-  assert.equal(probe.nextDownloadBytes(null), probe.DOWN_MAX_BYTES,
-               'with nothing measured yet, ask for the ceiling');
-  assert.equal(probe.nextDownloadBytes(0), probe.DOWN_MAX_BYTES);
-});
-
-d.test('the measured request asks for what the caller sized it to', async () => {
-  // Sizing the request from the warm-up made the measurement decide its own size: 96 kB is
-  // spent inside the ramp, so it always read low, and a low read asked for less next time. A
-  // 320 Mb/s cell measured 6 Mb/s that way. The budget, not the size, bounds a slow link.
-  for (const mbps of [0.5, 10, 300]) {
-    const sizes = [];
-    const per = Math.max(1, Math.round((mbps * 1e6 / 8) * 0.02));
-    globalThis.fetch = async url => {
-      const want = Number(new URL(url).searchParams.get('bytes'));
-      sizes.push(want);
-      return {ok: true, status: 200, headers: {get: () => null},
-              body: stream(Array.from({length: Math.ceil(want / per)}, () => ({after: 20, bytes: per})))};
-    };
-    await probe.runProbe(P.down, {timeoutMs: 20000, download: {budgetMs: 20000}});
-    assert.equal(sizes[1], probe.DOWN_MAX_BYTES,
-                 `${mbps} Mb/s asked for ${sizes[1]} bytes, not what it was given`);
-  }
-});
-
 d.test('the rate is measured after the ramp, not across it', async () => {
   // The whole-transfer figure is dragged down by however long the connection took to open,
   // which depends on the client and on whether it reused a connection. Reading only what
@@ -280,7 +235,7 @@ d.test('a refused download says which side refused it', async () => {
     return {ok: true, status: 200, body: bodyOf(1000), headers: {get: () => null}};
   };
   await probe.runProbe(P.down, {timeoutMs: 3000, download: {budgetMs: 500}});
-  assert.equal(calls, 2, 'a working download costs its two requests and no more');
+  assert.equal(calls, 1, 'a working download costs one request and no more');
 });
 
 d.test('the body ends on its own, or the budget ends it', async () => {
