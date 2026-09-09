@@ -1,37 +1,31 @@
-// Grades capabilities rather than probes: each capability has its own scale, because the
-// probes feeding them measure different work. The fresh-lookup probe costs about 200 ms on a
-// perfect link, since a real lookup of a cold hostname is part of what it measures.
-//
-// Every threshold below is absolute; none consults the session's own statistics.
+// Purposes are graded, not probes: what a person is doing reads several measurements, and no
+// single probe decides one.
 
 export const GRADES = ['green', 'yellow', 'orange', 'red'];
 const RANK = Object.fromEntries(GRADES.map((g, i) => [g, i]));
 
-// Each scale is absolute — none consults the session — and cites where its edges come from.
+// The scales. Every edge is absolute; none consults the session.
 //
-// round_trip: ITU-T G.114 (https://www.itu.int/rec/T-REC-G.114) puts one-way mouth-to-ear
-// delay under 150 ms in the preferred range, 150-400 ms in the acceptable one and over
-// 400 ms in the unacceptable one. Codec, packetisation and the jitter buffer account for
-// 80-120 ms of that, which leaves about 100 ms of round trip to the edge inside the
-// preferred range.
+//   scale       green       yellow      orange      red         from
+//   ------------------------------------------------------------------------------
+//   round_trip  <100 ms     <200 ms     <400 ms     ≥400 ms     G.114
+//   ttfb        <800 ms     <1800 ms    <3000 ms    ≥3000 ms    web.dev TTFB
+//   article     <2.5 s      <4 s        <8 s        ≥8 s        Core Web Vitals LCP
+//   rate        >10 Mb/s    >5 Mb/s     >1.5 Mb/s   ≤1.5 Mb/s   Netflix tiers
+//   call_rate   >300 kb/s   >100 kb/s   >30 kb/s    ≤30 kb/s    Opus, RFC 6716
 //
-// ttfb: https://web.dev/articles/ttfb — good 800 ms, needs improvement to 1800 ms, poor
-// beyond. It covers DNS, TCP, TLS and the first response byte, which is what the fresh-lookup
-// probe measures for a hostname no resolver has seen. web.dev defines it over a site's 75th
-// percentile; applied here to a single round, so a round is judged more harshly than a site.
+//   G.114     https://www.itu.int/rec/T-REC-G.114     150 ms one-way preferred, 400 unusable
+//   TTFB      https://web.dev/articles/ttfb           covers DNS, TCP, TLS, first byte
+//   LCP       https://web.dev/articles/lcp            2.5 s good, 4 s poor
+//   Netflix   https://help.netflix.com/en/node/306    3 Mb/s 720p, 5 1080p, 15 4K
+//   Opus      https://www.rfc-editor.org/info/rfc6716 6-510 kb/s, 9-14 for wideband speech
 //
-// article: the Core Web Vitals thresholds for Largest Contentful Paint — good 2.5 s, poor
-// 4 s (https://web.dev/articles/lcp). Held against a modelled time, not a measured one.
-//
-// rate: Netflix asks 3 Mb/s for 720p, 5 Mb/s for 1080p and 15 Mb/s for 4K
-// (https://help.netflix.com/en/node/306). Green is 1080p with headroom, yellow meets the
-// 1080p figure, orange is below the 720p one. 4K is not the bar: it buys nothing on a phone.
-//
-// call_rate: a call is latency-bound, not bandwidth-bound, so this term exists to catch a
-// link carrying almost nothing rather than to rank fast links. Opus runs wideband speech at
-// 9-14 kb/s and scales from 6 kb/s to 510 kb/s (https://www.rfc-editor.org/info/rfc6716/), so
-// 30 kb/s is already several times what speech needs once RTP and IP overhead are counted;
-// green additionally carries a video call.
+// Where the edges depart from the source:
+//   round_trip  G.114 budgets mouth-to-ear one-way; codec, packetisation and the jitter
+//               buffer take 80-120 ms of it, leaving ~100 ms of round trip to the edge.
+//   ttfb        defined over a site's 75th percentile, applied here to a single round.
+//   rate        4K is not the bar; it asks 15 Mb/s and buys nothing on a phone screen.
+//   call_rate   catches a link carrying nothing, not slow ones — a call is latency-bound.
 export const SCALES = {
   round_trip: {unit: 'ms',  dir: 'low',  edges: [100, 200, 400]},
   ttfb:       {unit: 'ms',  dir: 'low',  edges: [800, 1800, 3000]},
@@ -40,13 +34,20 @@ export const SCALES = {
   call_rate:  {unit: 'bps', dir: 'high', edges: [0.3e6, 0.1e6, 0.03e6]}
 };
 
-// What a person is trying to do, and every measurement that has to hold for it. A purpose is
-// the worst of its terms, so one requirement failing sinks it however well the others read:
-// a call with a fast round trip and no UDP path is still a call that will not connect.
+// What each purpose is judged on. A purpose is the worst of its terms, so one requirement
+// failing sinks it however well the others read: a call with a fast round trip and no UDP
+// path is still a call that will not connect.
+//
+//   purpose    terms, in the order the tile prefers to report them
+//   ------------------------------------------------------------------------------
+//   voice      UDP path · route · round_trip · call_rate
+//   news       lookup not on a retry timer · lookup · known host · throughput
+//              · ttfb · article
+//   streaming  throughput · rate
 export const PURPOSES = {
-  voice:     {label: 'calls & live audio', unit: 'ms',  scales: ['round_trip', 'call_rate']},
-  news:      {label: 'opening an article', unit: 'ms',  scales: ['ttfb', 'article']},
-  streaming: {label: 'video & downloads',  unit: 'bps', scales: ['rate']}
+  voice:     {label: 'calls & live audio', scales: ['round_trip', 'call_rate']},
+  news:      {label: 'opening an article', scales: ['ttfb', 'article']},
+  streaming: {label: 'video & downloads',  scales: ['rate']}
 };
 
 export const CAPABILITIES = Object.keys(PURPOSES);
@@ -73,8 +74,6 @@ export function gradeValue(scale, value) {
 
 export const worse = (a, b) => (a == null ? b : b == null ? a : (RANK[a] >= RANK[b] ? a : b));
 
-const worstOf = (...grades) => grades.reduce(worse, null);
-
 // A resting probe has reported nothing about the network, so it must not grade the purpose it
 // feeds as red for the whole cool-down.
 const failed = r => !!r && r.ok === false && !r.expected && r.fail !== 'resting';
@@ -95,30 +94,63 @@ export function articleMs(probes) {
   return Math.round(2 * dns + 2 * web + (ARTICLE_BYTES * 8000) / rate);
 }
 
-// Every purpose reads several probes, so no single probe failing decides one on its own.
+// A term either measures something on a scale or reports a path being gone, which has a grade
+// but no number. Loss beats latency for a call, so either path gone is red however fast the
+// other answers; a STUN exchange carries ICE gathering on top of a round trip, so only whether
+// its path exists is read, never its milliseconds.
+const TERMS = {
+  voice: ({p, rate}) => [
+    {note: 'no UDP', grade: failed(p.udp) ? 'red' : null},
+    {note: 'no route', grade: failed(p.ip6) ? 'red' : null},
+    {scale: 'round_trip', value: p.ip6?.ok ? p.ip6.ms : null},
+    {scale: 'call_rate', value: rate}
+  ],
+  news: ({p, noThroughput}) => [
+    {note: 'lookup lost', grade: p.dns?.retry_suspected ? 'red' : null},
+    {note: 'no lookup', grade: failed(p.dns) ? 'red' : null},
+    {note: 'host gone', grade: failed(p.web) ? 'red' : null},
+    {note: 'no data', grade: noThroughput},
+    {scale: 'ttfb', value: p.dns?.ok ? p.dns.ms : null},
+    {scale: 'article', value: articleMs(p)}
+  ],
+  streaming: ({rate, noThroughput}) => [
+    {note: 'no data', grade: noThroughput},
+    {scale: 'rate', value: rate}
+  ]
+};
+
+function terms(capability, p) {
+  const rate = p.down?.ok ? p.down.bps_min : null;
+  // A download the far end refused is a fact about the endpoint, so it leaves the purposes
+  // that read it with one fewer term rather than with a red one.
+  const noThroughput = failed(p.down) && !ourFault(p.down) ? 'red' : null;
+  return TERMS[capability]?.({p, rate, noThroughput}) ?? [];
+}
+
+// A purpose's verdict and the measurement it came from. The tile shows this reading, so the
+// number and the colour always describe the same thing: a composed grade whose tile printed
+// one of its terms would show a 30 ms round trip under a red border when the UDP path was the
+// thing that had gone.
+export function capabilityReading(capability, sample) {
+  const graded = terms(capability, sample?.probes || {})
+    .map(t => ({...t, grade: t.grade ?? gradeValue(t.scale, t.value)}));
+  const grade = graded.reduce((a, t) => worse(a, t.grade), null);
+  const decided = grade == null ? null : graded.find(t => t.grade === grade);
+  return {
+    grade,
+    value: decided?.value ?? null,
+    unit: decided?.scale ? SCALES[decided.scale].unit : null,
+    note: decided?.note ?? null
+  };
+}
+
+// A purpose is the worst of its terms, so one requirement failing sinks it however well the
+// others read.
 export function gradeRound(sample) {
   if (!sample || sample.skipped) return null;
-  const p = sample.probes || {};
-  const rate = p.down?.ok ? p.down.bps_min : null;
-  // A throughput probe that failed for a reason of its own leaves the purposes that read it
-  // with one fewer term, rather than with a red one.
-  const downFailed = failed(p.down) && !ourFault(p.down) ? 'red' : null;
-
-  return {
-    // Real-time traffic breaks on loss before it breaks on latency, so either path failing is
-    // red however fast the other answers. A STUN exchange carries ICE gathering on top of a
-    // round trip, so its milliseconds are on a different scale and only its success counts.
-    voice: worstOf(failed(p.ip6) || failed(p.udp) ? 'red' : null,
-                   gradeValue('round_trip', p.ip6?.ok ? p.ip6.ms : null),
-                   gradeValue('call_rate', rate)),
-    // An article needs a cold origin resolved and a warm one reached, so either probe failing
-    // sinks it. A lookup returning on a resolver's retry timer is loss, not slowness.
-    news: worstOf(failed(p.dns) || failed(p.web) || p.dns?.retry_suspected ? 'red' : null,
-                  downFailed,
-                  gradeValue('ttfb', p.dns?.ok ? p.dns.ms : null),
-                  gradeValue('article', articleMs(p))),
-    streaming: worstOf(downFailed, gradeValue('rate', rate))
-  };
+  const out = {};
+  for (const cap of CAPABILITIES) out[cap] = capabilityReading(cap, sample).grade;
+  return out;
 }
 
 // Nearest rank: the smallest value at or above the quantile. Rounding the index down puts a
@@ -128,15 +160,7 @@ export function quantile(sorted, q) {
   return sorted[Math.min(sorted.length - 1, Math.max(0, Math.ceil(sorted.length * q) - 1))];
 }
 
-// The figure a purpose leads with, so the tile shows the number behind its colour rather
-// than a second opinion. A purpose reads several probes; this is the one a person would
-// recognise as the answer.
+// The figure a purpose leads with, which is the one that decided its grade.
 export function capabilityValue(capability, sample) {
-  const p = sample?.probes || {};
-  switch (capability) {
-    case 'voice':     return p.ip6?.ok ? p.ip6.ms : null;
-    case 'news':      return articleMs(p);
-    case 'streaming': return p.down?.ok ? p.down.bps_min : null;
-    default:          return null;
-  }
+  return capabilityReading(capability, sample).value;
 }

@@ -350,15 +350,21 @@ async function whoRefused(probe, opts) {
 // second is skipped, which is also what keeps a slow round cheap.
 async function measureDownload(probe, opts) {
   const budgetMs = opts.download?.budgetMs ?? DEFAULT_DOWN_BUDGET_MS;
+  const deadline = opts.timeoutMs ?? TIMEOUT_MS;
   const started = performance.now();
   const warm = await runOnce({...probe, id: 'down_warmup', bytes: WARMUP_REQUEST_BYTES},
                              {...opts, download: {...opts.download, budgetMs}});
   const spent = performance.now() - started;
-  if (!warm.ok || spent > budgetMs * 0.4) {
+  // Both requests share the probe's deadline and its read budget. Charging each of them the
+  // full amount would let the download alone outlast the round and collide with the next one.
+  const budgetLeft = budgetMs - spent;
+  const timeLeft = deadline - spent;
+  if (!warm.ok || budgetLeft <= 0 || timeLeft < MIN_TIMEOUT_MS || spent > budgetMs * 0.4) {
     warm.warmup_only = true;
     return warm;
   }
-  return runOnce(probe, {...opts, download: {...opts.download, budgetMs: budgetMs - spent}});
+  return runOnce(probe, {...opts, timeoutMs: timeLeft,
+                         download: {...opts.download, budgetMs: budgetLeft}});
 }
 
 // A probe that asks for samples is run repeatedly inside one deadline; `ms` becomes the
