@@ -93,11 +93,12 @@ function syncSetup() {
   const {intervalMs} = profile();
   const mb = projectedBytes(intervalMs, DOWNLOAD_DEFAULTS) / 1048576;
   const el = $('budget');
-  // The download pulls for a fixed span, so on a fast link it reaches its byte ceiling every
-  // round. Nothing caps the total; the running figure is on the readout.
-  el.textContent = `up to ≈ ${Math.round(mb)} MB for a 40-minute run on a fast link, ` +
-    `almost all of it the speed probe. Nothing caps it; the running total is shown while ` +
-    `recording.`;
+  // A round streams a ramp and then a window, and the window stops at a byte cap, so this is
+  // the worst case rather than a guess. A link slower than the ceiling costs less in proportion.
+  el.textContent = `up to ≈ ${Math.round(mb)} MB for a 40-minute run, almost all of it the ` +
+    `speed probe, and less on a link slower than ` +
+    `${Math.round(DOWNLOAD_DEFAULTS.ceilingBps / 1e6)} Mb/s — which is the fastest this can ` +
+    `report. The running total is shown while recording.`;
   // Past this the projected run is a noticeable share of a monthly data bundle.
   el.classList.toggle('warn', mb > 50);
 }

@@ -2,7 +2,8 @@
 // rounds that could not run: a failed attempt is a measurement, so it is never left out.
 
 import {PROBES, runRound, checkPaths, clearTimings, timeoutFor,
-        DEFAULT_DOWN_BUDGET_MS, DOWN_MAX_BYTES} from './probe.js';
+        DOWN_STREAMS, DOWN_WINDOW_MS, DOWN_CAP_BYTES, DOWN_CEILING_BPS,
+        DOWN_RAMP_BYTES} from './probe.js';
 import {gradeActivities, gradeProbes} from './grade.js';
 import {createStuckTracker} from './stuck.js';
 import {createWakeLock} from './wakelock.js';
@@ -21,7 +22,7 @@ const REFUSED_BYTES = 100;      // an IPv4 literal with no path never gets a con
 // STUN is UDP: no handshake to charge and no connection to resume.
 const cost = p => (WARM_BYTES[p.kind] * (p.samples || 1)) + (p.kind === 'stun' ? 0 : RESUMED_BYTES);
 
-export const APP_VERSION = '3.9.0';
+export const APP_VERSION = '3.10.0';
 
 // The download runs every round, so the interval is what controls data use.
 export const PROFILES = {
@@ -29,21 +30,23 @@ export const PROFILES = {
   coarse: {label: 'Coarse — every 30 s', intervalMs: 30000}
 };
 
+// What a round streams, and therefore what it can report. Copied into every export so a file
+// states its own saturation point rather than leaving a reader to infer one.
 export const DOWNLOAD_DEFAULTS = {
-  budgetMs: DEFAULT_DOWN_BUDGET_MS,
-  maxBytes: DOWN_MAX_BYTES
+  streams: DOWN_STREAMS,
+  windowMs: DOWN_WINDOW_MS,
+  capBytes: DOWN_CAP_BYTES,
+  ceilingBps: DOWN_CEILING_BPS
 };
 
 
-// The download costs its full size only on a link quick enough to deliver it inside the
-// budget; a slow one transfers less. This is therefore the worst case, and what a fast link
-// actually does.
+// A round streams the ramp and then the window, and the window stops at the cap. So the most
+// a round can cost is knowable in advance, and a link slower than the ceiling costs less in
+// proportion. This is the worst case, which a link at or above the ceiling actually pays.
 export function projectedBytes(intervalMs, settings = DOWNLOAD_DEFAULTS, minutes = 40) {
   const rounds = Math.round((minutes * 60000) / intervalMs);
   const small = PROBES.reduce((n, p) => n + cost(p), 0);
-  // Both download requests: the one that opens the connection and the one measured over it.
-  // The measured one is sized from the link, so this is the ceiling a fast one reaches.
-  return rounds * (small + settings.maxBytes);
+  return rounds * (small + DOWN_RAMP_BYTES + settings.capBytes);
 }
 
 export function environment(intervalMs, downloadSettings = DOWNLOAD_DEFAULTS) {
@@ -264,13 +267,16 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
     const row = baseRow(late, null);
     inPause = false;
     try {
-      row.probes = await runRound({
+      const round = await runRound({
         signal: abort.signal,
         download: session.download || DOWNLOAD_DEFAULTS,
         intervalMs: interval(),
         available: {ip6: session.ipv6_available, ip4: session.ipv4_available},
         resting: stuck.resting(seq)
       });
+      row.probes = round.probes;
+      row.loaded_rtt_ms = round.loaded_rtt_ms;
+      row.loaded_rtt_from = round.loaded_rtt_from;
     } catch (e) {
       row.round_error = String(e && e.message || e);
       for (const p of PROBES) {

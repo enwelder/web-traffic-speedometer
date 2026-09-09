@@ -5,7 +5,8 @@ import {stubBrowser, suite} from './helpers.mjs';
 
 stubBrowser();
 const g = await import('../js/grade.js');
-const {PROBES} = await import('../js/probe.js');
+const probe = await import('../js/probe.js');
+const {PROBES} = probe;
 
 const s = suite('grading');
 
@@ -15,7 +16,7 @@ const pick = r => ({state: r.state, grade: r.grade});
 const round = (over = {}) => ({probes: {
   ip6: ok(30), ip4: bad({expected: true}), dns: ok(190), dns_ctl: ok(60),
   web: ok(65), udp: ok(50),
-  down: {ok: true, ms: 300, bps_min: 40e6},
+  down: {ok: true, ms: 300, bps: 40e6},
   ...over
 }});
 
@@ -45,11 +46,11 @@ s.test('a activity is only as good as its weakest requirement', () => {
   assert.equal(g.gradeActivities(round()).voice, 'green', 'all three hold');
   assert.equal(g.gradeActivities(round({udp: bad()})).voice, 'red', 'no UDP path');
   assert.equal(g.gradeActivities(round({ip6: ok(500)})).voice, 'red', 'round trip too long');
-  assert.equal(g.gradeActivities(round({down: {ok: true, bps_min: 20e3}})).voice, 'red',
+  assert.equal(g.gradeActivities(round({down: {ok: true, bps: 20e3}})).voice, 'red',
                'a link carrying less than speech needs');
   // The term is there to catch a dead link, not to rank live ones: speech is 9-14 kb/s, so
   // anything a train cell actually delivers carries a call.
-  assert.equal(g.gradeActivities(round({down: {ok: true, bps_min: 500e3}})).voice, 'green',
+  assert.equal(g.gradeActivities(round({down: {ok: true, bps: 500e3}})).voice, 'green',
                'half a megabit is ample for a call');
   assert.equal(g.gradeActivities(round({ip6: ok(10), udp: bad()})).voice, 'red',
                'loss beats a fast answer: calls break on loss before latency');
@@ -63,7 +64,7 @@ s.test('a activity is only as good as its weakest requirement', () => {
 s.test('opening an article reads the lookup and the bytes together', () => {
   assert.equal(g.gradeActivities(round()).news, 'green');
   // A fast lookup does not save an article that cannot be pulled down.
-  const crawling = g.gradeActivities(round({dns: ok(120), down: {ok: true, bps_min: 300e3}}));
+  const crawling = g.gradeActivities(round({dns: ok(120), down: {ok: true, bps: 300e3}}));
   assert.equal(crawling.news, 'red', 'a fast cold origin over a link that carries nothing');
   // And a quick link does not save a slow lookup: 2.5 s of cold origin is past the point
   // web.dev calls poor, and 3.5 s is past the point an article is worth waiting for.
@@ -241,16 +242,17 @@ s.test('no route means every family is gone, not merely one', () => {
                   'no route');
 });
 
-s.test('throughput is what the transfer carried, and nothing else is voted in', () => {
-  // Cloudflare's own rate for the connection looks like a second opinion and is not one:
-  // headers precede the payload, so the figure stapled to a transfer describes the socket as
-  // the previous one ended. A window-limited flow is never flagged app-limited either, so it
-  // reports the same W/RTT number for the same reason and agreeing proves nothing.
+s.test('throughput is what the round streamed over its window', () => {
   const down = over => ({ok: true, ms: 300, ...over});
-  assert.equal(g.throughput(down({bps: 30e6, bps_server: 78e6, bps_min: 22e6})), 22e6);
-  assert.equal(g.throughput(down({bps_min: 29e6})), 29e6);
-  assert.equal(g.throughput({ok: false, bps_min: 30e6}), null, 'a failed download measured nothing');
-  assert.equal(g.throughput(down({})), null);
+  assert.equal(g.throughput(down({bps: 22e6})), 22e6);
+  assert.equal(g.throughput({ok: false, bps: 30e6}), null, 'a failed download measured nothing');
+  assert.equal(g.throughput(down({})), null, 'and a window that never opened measured nothing');
+
+  // A saturated round proves the link carries at least the ceiling, which is above every edge.
+  const sat = {ok: true, bps: probe.DOWN_CEILING_BPS, saturated: true};
+  assert.equal(g.activityReading('streaming', {probes: {down: sat}}).grade, 'green');
+  assert.equal(g.activityReading('streaming', {probes: {down: sat}}).saturated, true,
+               'and the reading says so, so the screen can print a ≥');
 });
 
 await s.run();

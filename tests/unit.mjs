@@ -96,20 +96,20 @@ s.test('an absent address family is settled once and flagged, not rediscovered',
   // Either family can be the missing one. Networks that carry only IPv6 and networks that
   // carry only IPv4 are both ordinary, and neither absence is an outage.
   globalThis.fetch = async () => { throw netError(); };
-  const only6 = await probe.runRound({available: {ip6: true, ip4: false}});
+  const only6 = (await probe.runRound({available: {ip6: true, ip4: false}})).probes;
   assert.equal(only6.ip4.expected, true);
   assert.equal(only6.ip6.expected, undefined, 'the family that works is held to its result');
 
-  const only4 = await probe.runRound({available: {ip6: false, ip4: true}});
+  const only4 = (await probe.runRound({available: {ip6: false, ip4: true}})).probes;
   assert.equal(only4.ip6.expected, true, 'an IPv4-only network is not a broken one');
   assert.equal(only4.ip4.expected, undefined);
 
-  const dual = await probe.runRound({available: {ip6: true, ip4: true}});
+  const dual = (await probe.runRound({available: {ip6: true, ip4: true}})).probes;
   assert.equal(dual.ip4.expected, undefined, 'where a family exists, a failure is a failure');
   assert.equal(dual.ip6.expected, undefined);
 
   // Both gone is the network being down; exempting them would hide a total outage.
-  const none = await probe.runRound({available: {ip6: false, ip4: false}});
+  const none = (await probe.runRound({available: {ip6: false, ip4: false}})).probes;
   assert.equal(none.ip6.expected, undefined, 'a dead network is not two absent paths');
   assert.equal(none.ip4.expected, undefined);
 });
@@ -124,13 +124,13 @@ s.test('a literal refused while its family carries traffic is blocked, not broke
             headers: {get: h => (h === 'cf-meta-ip' ? '109.36.152.49' : null)},
             body: bodyOf(25000), text: async () => TRACE, signal: o?.signal};
   };
-  const round = await probe.runRound({available: {ip6: true, ip4: true}});
+  const round = (await probe.runRound({available: {ip6: true, ip4: true}})).probes;
   assert.equal(round.ip4.blocked, true, 'the round saw IPv4 carry traffic');
   assert.equal(round.ip4.expected, undefined, 'so the path is not absent');
 
   // With nothing reaching the far end, the same failure is the network.
   globalThis.fetch = async () => { throw netError(); };
-  const dead = await probe.runRound({available: {ip6: true, ip4: true}});
+  const dead = (await probe.runRound({available: {ip6: true, ip4: true}})).probes;
   assert.equal(dead.ip4.blocked, undefined, 'no egress this round, so nothing excuses it');
   assert.equal(dead.ip6.blocked, undefined);
 });
@@ -251,7 +251,7 @@ function pacedBody(chunks) {
   })};
 }
 
-s.test('the bound never claims more than the link delivered', async () => {
+s.test('the reading never claims more than the link delivered', async () => {
   // A ramp then a faster stretch: 100 kB over 500 ms, then 1 MB over 1000 ms.
   const chunks = [];
   for (let i = 0; i < 5; i++) chunks.push({after: 100, bytes: 20000});
@@ -259,63 +259,51 @@ s.test('the bound never claims more than the link delivered', async () => {
   globalThis.fetch = async () => ({ok: true, status: 200, body: pacedBody(chunks),
     headers: {get: () => null}});
 
-  const r = await probe.runProbe(P.down, {timeoutMs: 8000, download: {budgetMs: 5000}});
+  const r = await probe.runProbe(P.down, {timeoutMs: 8000,
+    download: {windowMs: 5000, rampMs: 0, streams: 1, capBytes: 1e9}});
   assert.equal(r.ok, true);
-  assert.equal(r.aborted_reason, 'eof', 'the body ends on its own, so nothing is aborted');
-  assert.equal(r.complete, true);
-
-  // The whole point of a bound: it is what the bytes prove over the time they took, so it can
-  // sit below the link's best stretch but never above the link.
-  const delivered = (r.bytes * 8) / (r.duration_ms / 1000);
-  assert.ok(r.bps_min > 0, `a bound is reported: ${r.bps_min}`);
-  assert.ok(r.bps_min <= delivered * 1.01,
-            `bound ${(r.bps_min / 1e6).toFixed(1)} must not exceed delivered ` +
-            `${(delivered / 1e6).toFixed(1)} Mb/s`);
+  assert.equal(r.aborted_reason, 'eof', 'the body ends on its own');
+  assert.ok(r.bps > 0, `a rate is reported: ${r.bps}`);
+  // The window is the fast stretch, so it may sit above the average of the whole transfer,
+  // but never above what the link actually delivered inside that window.
+  const inWindow = (r.window_bytes * 8) / (r.window_ms / 1000);
+  assert.ok(r.bps <= inWindow * 1.01,
+            `${(r.bps / 1e6).toFixed(1)} must not exceed ${(inWindow / 1e6).toFixed(1)} Mb/s`);
 });
 
-s.test('a body that outlasts the budget is stopped, and still bounds the link', async () => {
+s.test('a body that outlasts the window is stopped, and still measures the link', async () => {
   const forever = () => ({getReader: () => ({
-    read: async () => { await new Promise(r => setTimeout(r, 50)); return {done: false, value: new Uint8Array(200000)}; },
+    read: async () => { await new Promise(r => setTimeout(r, 50)); return {done: false, value: new Uint8Array(20000)}; },
     cancel: async () => {}
   })});
   globalThis.fetch = async () => ({ok: true, status: 200, body: forever(), headers: {get: () => null}});
 
-  const r = await probe.runProbe(P.down, {timeoutMs: 8000, download: {budgetMs: 600}});
-  assert.equal(r.aborted_reason, 'time', 'the budget is the only thing that stops a read early');
-  assert.equal(r.complete, false, 'and the row says the body did not arrive whole');
-  assert.ok(r.duration_ms < 900, `stopped near the budget: ${r.duration_ms} ms`);
-  assert.ok(r.bps_min > 0, 'a partial body still proves a floor');
+  const r = await probe.runProbe(P.down, {timeoutMs: 8000,
+    download: {windowMs: 600, rampMs: 0, streams: 1, capBytes: 1e9}});
+  assert.equal(r.aborted_reason, 'done', 'the window is what stops a read that would not end');
+  assert.ok(r.window_ms < 900, `stopped near the window: ${r.window_ms} ms`);
+  assert.ok(r.bps > 0, 'and the window is the measurement');
 });
 
-// The warmup rule has to hold at both extremes: the byte ceiling binds on a fast link and
-// the byte threshold is unreachable on a slow one.
-s.test('every link in range produces a bound, and none of them an inflated one', async () => {
-  // A body of exactly what the probe asks for, delivered in 20 ms chunks at the given rate.
+s.test('every link in range is measured, and none of them flattered', async () => {
   const paced = mbps => {
     const per = Math.max(1, Math.round((mbps * 1e6 / 8) * 0.02));
-    const chunks = Math.ceil(probe.DOWNLOAD_REQUEST_BYTES / per);
+    const chunks = Math.ceil(probe.DOWN_REQUEST_BYTES / per);
     return pacedBody(Array.from({length: chunks}, () => ({after: 20, bytes: per})));
   };
   for (const mbps of [0.4, 1.5, 5, 10, 50, 500]) {
     globalThis.fetch = async () => ({ok: true, status: 200, body: paced(mbps), headers: {get: () => null}});
-    const r = await probe.runProbe(P.down, {timeoutMs: 8000, download: {budgetMs: 2000}});
-    assert.ok(r.bps_min > 0, `${mbps} Mb/s must produce a bound, got ${r.bps_min}`);
-    // The property the whole design rests on. A bound above the true rate would grade a link
-    // better than it is, and no amount of jitter or slow start may cause that.
-    assert.ok(r.bps_min <= mbps * 1e6 * 1.15,
-              `${mbps} Mb/s: bound ${(r.bps_min / 1e6).toFixed(2)} Mb/s claims more than the link`);
+    const r = await probe.runProbe(P.down, {timeoutMs: 8000,
+      download: {windowMs: 1000, rampMs: 0, streams: 1}});
+    assert.ok(r.bps > 0, `${mbps} Mb/s must produce a reading, got ${r.bps}`);
+    // A reading above the true rate would grade a link better than it is, and nothing —
+    // jitter, a ramp, a saturated round — may cause that.
+    const claimed = r.saturated ? probe.DOWN_CEILING_BPS : r.bps;
+    assert.ok(claimed <= Math.max(mbps * 1e6, probe.DOWN_CEILING_BPS) * 1.15,
+              `${mbps} Mb/s: read ${(claimed / 1e6).toFixed(2)} Mb/s claims more than the link`);
   }
 });
 
-s.test('a short body still bounds the link rather than reporting nothing', async () => {
-  globalThis.fetch = async () => ({ok: true, status: 200,
-    body: pacedBody([{after: 20, bytes: 30000}]), headers: {get: () => null}});
-  const r = await probe.runProbe(P.down, {timeoutMs: 4000, download: {budgetMs: 2000}});
-  // The old ramp rule produced no grade at all here, and did the same to a real 0.5 Mb/s
-  // cell where the warmup gate ate 84% of the transfer.
-  assert.ok(r.bps_min > 0, 'a bound, not a blank');
-  assert.ok(r.bytes > 0, 'the bytes are recorded');
-});
 
 s.test('a resolver retry timer is flagged as loss rather than latency', () => {
   assert.equal(probe.looksLikeRetry(2207), true, 'the cluster seen in a journey');
@@ -335,7 +323,7 @@ s.test('every latency probe is sampled the same way', () => {
                'except the fresh-lookup probe: each sample would be a different hostname');
 });
 
-s.test('the old fixed-size download reported the ramp', async () => {
+s.test('a round runs every probe and keeps what the far end saw', async () => {
   globalThis.fetch = async () => ({
     ok: true, status: 200, body: bodyOf(250000),
     headers: {get: k => k === 'server-timing'
@@ -347,13 +335,14 @@ s.test('the old fixed-size download reported the ramp', async () => {
     async setLocalDescription() { setTimeout(() => this.onicecandidate({candidate: null}), 1); }
     close() {}
   };
-  const round = await probe.runRound({});
+  const round = (await probe.runRound({})).probes;
   delete globalThis.RTCPeerConnection;
   const d = round.down;
   assert.equal(Object.keys(round).length, probe.PROBES.length, 'every probe runs every round');
-  assert.equal(d.bytes, 250000);
-  assert.equal(d.bps, undefined, 'no unlabelled rate survives');
-  assert.equal(d.bps_transfer, undefined, 'and no whole-transfer rate either');
+  // Three streams share one 250 kB stub between them.
+  assert.equal(d.bytes, 250000 * probe.DOWN_STREAMS);
+  assert.equal(d.bps_transfer, undefined, 'no whole-transfer rate survives');
+  assert.equal(d.bps_min, undefined, 'nor the old whole-transfer floor');
   assert.deepEqual([d.server.retrans, d.server.cwnd], [3, 53], "Cloudflare's own TCP view is kept");
 });
 
@@ -378,7 +367,7 @@ function recorder(store, opts = {}) {
 
 const session = () => ({id: 's1', name: 't', operator: 'KPN', connection: 'cellular',
                         intervalMs: 100, started: Date.now(),
-                        download: {budgetMs: 60},
+                        download: {windowMs: 60, rampMs: 0, streams: 1},
                         ipv4_available: null, ipv4_check: null});
 
 l.test('a blocked literal does not make its path absent', async () => {
@@ -509,7 +498,7 @@ l.test('the interval decides what a session costs', async () => {
   // The cost is rounds times the byte ceiling, so halving the interval doubles it.
   assert.ok(Math.abs(fine - coarse * 2) < coarse * 0.02,
             `twice the rounds costs twice as much: ${(fine / 1e6) | 0} vs ${(coarse / 1e6) | 0} MB`);
-  assert.ok(fine > 40 * DOWNLOAD_DEFAULTS.maxBytes,
+  assert.ok(fine > 40 * DOWNLOAD_DEFAULTS.capBytes,
             'and a 40-minute run is priced in hundreds of megabytes, not tens');
 
   const ten = projectedBytes(PROFILES.fine.intervalMs, DOWNLOAD_DEFAULTS, 10);
@@ -558,8 +547,10 @@ l.test('a resumed session keeps counting from what it has already spent', async 
 
 l.test('the environment block makes a session self-describing', () => {
   const env = environment(10000);
-  assert.ok(env.download.budgetMs > 0 && env.download.maxBytes > 0,
+  assert.ok(env.download.streams > 0 && env.download.windowMs > 0 && env.download.capBytes > 0,
             'the download settings travel with the session');
+  assert.equal(env.download.ceilingBps, probe.DOWN_CEILING_BPS,
+               'including the fastest it can ever report, so a file states its own limit');
   assert.equal(env.probes.length, probe.PROBES.length);
   assert.ok(Object.values(env.timeouts_ms).every(t => t < 10000), 'every deadline fits inside a round');
   assert.ok(env.timeouts_ms.ip6 >= 8000, 'and slow-but-working rounds are not cut off');
@@ -575,7 +566,7 @@ const OK = (ms = 20, extra = {}) => ({ok: true, ms, fail: null, ...extra});
 const BAD = (extra = {}) => ({ok: false, ms: 20, fail: 'network', ...extra});
 const healthy = () => ({ip6: OK(30), ip4: BAD({expected: true}), dns: OK(190), dns_ctl: OK(60),
                         web: OK(65), udp: OK(50),
-                        down: {ok: true, bps_min: 40e6}});
+                        down: {ok: true, bps: 40e6}});
 
 c.test('an expected failure colours nothing and counts as nothing', () => {
   assert.equal(ui.counts(BAD({expected: true})), false);

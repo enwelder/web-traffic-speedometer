@@ -1,6 +1,6 @@
 # Exported session format
 
-`format: "wts/session"`, `version: 6`. One button per session writes one JSON file: session
+`format: "wts/session"`, `version: 7`. One button per session writes one JSON file: session
 metadata, environment, a rollup, every sample, every event. CSV, GPX or GeoJSON are a few
 lines to derive from it.
 
@@ -10,6 +10,7 @@ lines to derive from it.
 | 4 | every round carries its per-probe grades beside its activity grades |
 | 5 | either address family can be flagged `expected`; the session records both |
 | 6 | throughput is graded on the largest of `bps`, `bps_server` and `bps_min`, rather than on the whole-transfer floor alone |
+| 7 | throughput is streamed on several connections for a fixed window and saturates at a stated ceiling; `bps_min`, `bps_server` and `warmup_only` are gone |
 
 Version 5 matters to a reader counting failures: before it, `expected` appeared only on `ip4`,
 so an `ip6` failure was always a real one. On a network carrying no IPv6 it now marks a path
@@ -26,7 +27,7 @@ Everything the run was told or settled once, rather than measured per round.
 | `profile` `intervalMs` `download` | the settings in force |
 | `ipv6_available` `ipv4_available` | whether each address family answered the preflight. A network carrying only one is ordinary; failures of the absent family are flagged `expected` and stay out of every tally |
 | `ipv6_check` `ipv4_check` | the evidence behind each verdict: time to answer, and the failure reason if it did not |
-| `environment` | app version, user agent, language, timezone, screen, and the deadlines in force |
+| `environment` | app version, user agent, language, timezone, screen, the deadlines in force, and `download` — the streams, window, cap and ceiling the run measured with |
 | `exportedAt` | null until the session has been written out; never-exported sessions are flagged on screen |
 
 ## Rollup
@@ -91,6 +92,7 @@ screen. Silent data loss is the one failure this tool cannot have.
 | `wake_lock` | whether the screen was held awake |
 | `prev_round_ms` | how long the previous round took. A frozen tab suspends the abort timers, so a round can outlast every deadline in it; without this an overlap cannot be told from the app stalling |
 | `speed_derived` `speed_source` | speed computed from consecutive fixes, and whether the reported value is `gps` or `derived` |
+| `loaded_rtt_ms` `loaded_rtt_from` | a round trip taken while the download was running, and which probe took it — the same one that answered idle, so the pair is one measurement made twice. The gap between them is what this link queues under load |
 | `grades` | the three activity grades this round produced, as shown |
 | `pgrades` | the seven per-probe grades |
 | `first_packet_ms` | quickest first response in the round: the closest thing to the cost of waking the radio. Reported, never graded |
@@ -110,10 +112,12 @@ screen. Silent data loss is the one failure this tool cannot have.
 | `host` | `dns` `dns_ctl` | the hostname used: random each round for `dns`, constant for `dns_ctl` |
 | `retry_suspected` | `dns` | the answer arrived within 300 ms of a resolver retry timer (2 s or 5 s), so the first query was lost. Loss, not slowness, and red regardless of the number |
 | `bytes` `duration_ms` `ttfb_ms` | `down` | bytes counted, how long the read ran, time to first byte |
-| `bps_min` `complete` | `down` | the whole-transfer floor, and whether the body arrived whole |
-| `bps` | `down` | the rate over the measured window, which opens once the ramp is past. This is the figure graded. Null when the transfer was too short to hold a window |
-| `window_bytes` `window_ms` | `down` | the bytes and time `bps` was computed over |
-| `bps_server` | `down` | Cloudflare's own rate for the same transfer, from `tcpi_delivery_rate`. Measured at the far end, so it owes nothing to this page's clock |
+| `bps` | `down` | the rate over the window, across every stream. The figure that is graded |
+| `saturated` | `down` | the window hit its byte cap first, so `bps` is the ceiling and the link carries at least that. The screen prints a `≥` |
+| `ceiling_bps` | `down` | the fastest this round could have reported |
+| `streams` | `down` | how many connections carried it |
+| `window_bytes` `window_ms` | `down` | what `bps` was computed over |
+| `ramp_ms` | `down` | how long was streamed before the window opened, and discarded |
 | `warmup_only` | `down` | the link was too slow for a second request; the warm-up is the measurement |
 | `refused_by` | `down` | on a `network` failure: `server` or `connection` |
 | `aborted_reason` | `down` | how the read ended: `eof`, `time`, `aborted` or `network` |

@@ -42,6 +42,12 @@ const failed = r => !!r && r.ok === false && !r.expected && !r.blocked && r.fail
 // transfer — a refused connection, a stall, a timeout — is the network.
 const ourFault = r => r?.refused_by === 'server';
 
+// What the round's streams carried over its window. A saturated round reached the byte cap
+// before the window closed, so it proved the link carries at least the ceiling and the reading
+// is that ceiling — which sits above every edge, so it grades green either way.
+export const throughput = down => (down?.ok && Number.isFinite(down.bps) ? down.bps : null);
+
+
 export function articleMs(probes) {
   const dns = probes.dns?.ok ? probes.dns.ms : null;
   const web = probes.web?.ok ? probes.web.ms : null;
@@ -93,13 +99,6 @@ const TERMS = {
   ]
 };
 
-// What one TCP flow carried, which is the window in flight divided by the round trip, not the
-// capacity of the link. `bps_server` is not a second opinion on that: response headers are
-// written ahead of the payload, so the rate Cloudflare stamps on a transfer describes the socket
-// as the previous one ended, and a receive-window-limited flow is never flagged app-limited,
-// so it reports the same W/RTT figure for the same reason. It stays in the file as a
-// diagnostic and grades nothing.
-export const throughput = down => (down?.ok && Number.isFinite(down.bps_min) ? down.bps_min : null);
 
 function terms(activity, p) {
   const rate = throughput(p.down);
@@ -121,7 +120,9 @@ export function activityReading(activity, sample) {
     value: decided?.value ?? null,
     unit: decided?.scale ? SCALES[decided.scale].unit : null,
     note: decided?.note ?? null,
-    scale: decided?.scale ?? null
+    scale: decided?.scale ?? null,
+    // The download is the only term that can saturate, and only it prints a ≥.
+    saturated: decided?.scale === 'rate' && sample?.probes?.down?.saturated === true
   };
 }
 
@@ -162,7 +163,8 @@ export function probeReading(id, sample) {
     : {scale: PROBE_SCALES[id], value: id === 'down' ? throughput(r) : r.ms};
   return {
     state, grade: m.grade ?? gradeValue(m.scale, m.value), value: m.value ?? null,
-    unit: m.scale ? SCALES[m.scale].unit : null, note: m.note ?? null, scale: m.scale ?? null
+    unit: m.scale ? SCALES[m.scale].unit : null, note: m.note ?? null, scale: m.scale ?? null,
+    saturated: r.saturated === true
   };
 }
 

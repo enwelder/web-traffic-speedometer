@@ -71,8 +71,9 @@ function gradeTally(ran, keys, field) {
   return grades;
 }
 
-// 6: throughput is graded on the post-ramp rate `bps`, not the whole-transfer floor.
-const FORMAT_VERSION = 6;
+// 7: throughput is streamed on several connections for a fixed window, and saturates at a
+// stated ceiling rather than reporting a single flow's whole-transfer floor.
+const FORMAT_VERSION = 7;
 
 export function summarise(samples) {
   const ran = samples.filter(s => !s.skipped && !s.round_error);

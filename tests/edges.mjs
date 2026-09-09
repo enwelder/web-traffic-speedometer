@@ -16,7 +16,7 @@ const PROBE_IDS = probe.PROBES.map(p => p.id);
 
 const session = () => ({id: 's1', name: 't', operator: 'KPN', connection: 'cellular',
                         intervalMs: 80, started: Date.now(),
-                        download: {budgetMs: 40, maxBytes: 20000},
+                        download: {windowMs: 40, rampMs: 0, streams: 1, maxBytes: 20000, capBytes: 20000},
                         ipv4_available: true, ipv4_check: null});
 
 function stubStun({srflx = true, block = false} = {}) {
@@ -116,7 +116,7 @@ const stream = chunks => ({getReader() {
 const download = async (chunks, opts = {}) => {
   globalThis.fetch = async () => ({ok: true, status: 200, body: stream(chunks),
                                    headers: {get: () => null}});
-  return probe.runProbe(P.down, {timeoutMs: 8000, download: {budgetMs: 400, maxBytes: 1e6, ...opts}});
+  return probe.runProbe(P.down, {timeoutMs: 8000, download: {windowMs: 400, rampMs: 0, streams: 1, maxBytes: 1e6, capBytes: 1e6, ...opts}});
 };
 
 d.test('a body that never arrives is a stalled cell, not a broken connection', async () => {
@@ -142,73 +142,66 @@ d.test('a stream cut mid-flight keeps what arrived', async () => {
   assert.equal(r.truncated, true);
 });
 
-d.test('a body too short to rate still bounds the link', async () => {
+d.test('a body too small to fill a window reports nothing rather than a guess', async () => {
+  // A single buffered chunk arriving in 2 ms once claimed 7.5 Gb/s through a whole-transfer
+  // bound. A window that never opened has measured nothing.
   for (const [name, chunks] of [['one tiny chunk', [{after: 2, bytes: 10}]],
                                 ['one buffered chunk', [{after: 2, bytes: 5e6}]],
                                 ['a stall after one chunk', [{after: 2, bytes: 1000}, {stall: true}]]]) {
     const r = await download(chunks);
-    // A bound is defined wherever bytes arrived, so these produce a grade where the ramp
-    // rule produced none. The slack charged to a wall-clock duration is what stops a single
-    // buffered chunk from claiming 7.5 Gb/s.
-    if (r.bytes > 0) {
-      assert.ok(r.bps_min > 0, `${name}: bytes arrived, so a bound exists`);
-      assert.ok(r.bps_min <= (r.bytes * 8) / (r.duration_ms / 1000) * 1.01,
-                `${name}: the bound may not exceed what arrived over the time it took`);
-    }
+    if (r.bps != null) assert.ok(r.bps <= probe.DOWN_CEILING_BPS, `${name}: never above the ceiling`);
     assert.ok(g.gradeActivities({probes: {down: r}}).streaming !== undefined, `${name}: graded either way`);
   }
 });
 
-d.test('one request, read for as long as the budget allows', async () => {
-  // A 96 kB warm-up ran first for a while, to open the congestion window. Every recorded
-  // round reports the connection as reused, so there was none to open; it spent budget the
-  // measurement needed; and when it short-circuited the round, its own 96 kB became the
-  // measurement. Six of ten sub-green rounds in one KPN session were that, on a link that
-  // streams video in the highest quality.
-  const sizes = [];
-  globalThis.fetch = async url => {
-    sizes.push(Number(new URL(url).searchParams.get('bytes')));
-    return {ok: true, status: 200, body: bodyOf(200), headers: {get: () => null}};
+d.test('several connections are opened, and counted as one measurement', async () => {
+  // One TCP flow carries its receive window divided by its round trip and no more. A single
+  // request read 41 Mb/s on a cell a three-stream reference test read 320 Mb/s on, and the
+  // same code read 230-560 Mb/s on a desktop only because the round trip there is shorter.
+  let opened = 0;
+  globalThis.fetch = async () => {
+    opened++;
+    return {ok: true, status: 200, headers: {get: () => null},
+            body: stream(Array.from({length: 200}, () => ({after: 10, bytes: 20000})))};
   };
-  const r = await probe.runProbe(P.down, {timeoutMs: 8000, download: {budgetMs: 2000}});
-  assert.deepEqual(sizes, [probe.DOWN_MAX_BYTES], 'one request, for the ceiling');
-  assert.equal(r.warmup_only, undefined, 'there is no warm-up left to fall back to');
-});
-d.test('the rate is measured after the ramp, not across it', async () => {
-  // The whole-transfer figure is dragged down by however long the connection took to open,
-  // which depends on the client and on whether it reused a connection. Reading only what
-  // arrives after the ramp removes that dependency.
-  const slowStart = Array.from({length: 8}, () => ({after: 50, bytes: 500}));
-  const atSpeed = Array.from({length: 30}, () => ({after: 10, bytes: 200000}));
-  globalThis.fetch = async () => ({ok: true, status: 200, headers: {get: () => null},
-                                   body: stream([...slowStart, ...atSpeed])});
-  const r = await probe.runProbe(P.down, {timeoutMs: 20000, download: {budgetMs: 20000}});
-  assert.ok(r.window_ms >= probe.MIN_WINDOW_MS, `a window opened: ${r.window_ms} ms`);
-  assert.ok(r.bps > r.bps_min * 1.4,
-            `the post-ramp rate leaves the whole-transfer floor behind: ${r.bps} vs ${r.bps_min}`);
-  assert.ok(r.window_bytes < r.bytes, 'and it is measured over part of the transfer');
+  const r = await probe.runProbe(P.down, {timeoutMs: 8000});
+  assert.equal(opened, probe.DOWN_STREAMS, 'one request per stream');
+  assert.equal(r.streams, probe.DOWN_STREAMS, 'and the row says how many carried it');
+  assert.ok(r.window_bytes > 0, 'their bytes are summed against one clock');
 });
 
-d.test('a transfer too short to hold a window still reports its floor', async () => {
+d.test('reaching the cap saturates at the ceiling rather than guessing past it', async () => {
+  // A window this short cannot tell 25 Mb/s from 300. What it can prove is that the link
+  // carries at least the ceiling, so that is what it reports, and the row is flagged.
   globalThis.fetch = async () => ({ok: true, status: 200, headers: {get: () => null},
-                                   body: stream([{after: 5, bytes: 40000}])});
-  const r = await probe.runProbe(P.down, {timeoutMs: 8000, download: {budgetMs: 2000}});
-  assert.equal(r.bps, null, 'one chunk is not a measurement, so there is no rate to report');
-  assert.ok(r.bps_min > 0, 'the floor still stands');
+    body: stream(Array.from({length: 400}, () => ({after: 1, bytes: 250000})))});
+  const r = await probe.runProbe(P.down, {timeoutMs: 8000});
+  assert.equal(r.saturated, true);
+  assert.equal(r.bps, probe.DOWN_CEILING_BPS, 'the reading is the ceiling, not an extrapolation');
+  assert.ok(r.window_ms < probe.DOWN_WINDOW_MS, 'the cap ended it before the clock did');
+  assert.ok(r.bytes <= probe.DOWN_RAMP_BYTES + probe.DOWN_CAP_BYTES * 1.5,
+            `what a round costs is knowable in advance: ${r.bytes} bytes`);
 });
 
-d.test('the window opens however fast the body arrives', async () => {
-  // A fixed time cut never opened on a link delivering 4 MB in 80 ms, so 124 rounds of a real
-  // session reported no rate at all and fell back to the whole-transfer floor. Cutting by
-  // share of the bytes has no such blind spot.
-  for (const [label, chunk, after] of [['fast', 400000, 1], ['slow', 20000, 60]]) {
-    globalThis.fetch = async () => ({ok: true, status: 200, headers: {get: () => null},
-      body: stream(Array.from({length: 10}, () => ({after, bytes: chunk})))});
-    const r = await probe.runProbe(P.down, {timeoutMs: 20000, download: {budgetMs: 20000}});
-    assert.ok(r.bps > 0, `${label}: a rate was measured (${r.bps})`);
-    assert.ok(r.window_bytes >= chunk * 4 && r.window_bytes <= chunk * 6,
-              `${label}: about half the bytes are in the window, got ${r.window_bytes}`);
-  }
+d.test('a link below the ceiling is measured, not saturated', async () => {
+  globalThis.fetch = async () => ({ok: true, status: 200, headers: {get: () => null},
+    body: stream(Array.from({length: 400}, () => ({after: 30, bytes: 10000})))});
+  const r = await probe.runProbe(P.down, {timeoutMs: 8000});
+  assert.equal(r.saturated, false);
+  assert.ok(r.bps > 5e6 && r.bps < probe.DOWN_CEILING_BPS, `${r.bps} bps is the link's own rate`);
+  assert.ok(Math.abs(r.window_ms - probe.DOWN_WINDOW_MS) < 400, 'the clock ended it');
+});
+
+d.test('the ramp is discarded, so what opened the connection is not the measurement', async () => {
+  // RMBT spends two seconds here and says what for: to get the radio into an active state so
+  // a result does not depend on what the connection was doing beforehand.
+  const slow = Array.from({length: 30}, () => ({after: 20, bytes: 500}));
+  const fast = Array.from({length: 300}, () => ({after: 10, bytes: 20000}));
+  const r = await download([...slow, ...fast], {rampMs: 600, streams: 1});
+  assert.ok(r.ramp_ms > 0, 'a ramp was served');
+  assert.ok(r.window_bytes < r.bytes, 'and it is not in the window');
+  const whole = Math.round((r.bytes * 8) / ((r.ramp_ms + r.window_ms) / 1000));
+  assert.ok(r.bps > whole, `the window beats the whole transfer: ${r.bps} vs ${whole}`);
 });
 
 d.test('a refused download says which side refused it', async () => {
@@ -234,39 +227,38 @@ d.test('a refused download says which side refused it', async () => {
     calls++;
     return {ok: true, status: 200, body: bodyOf(1000), headers: {get: () => null}};
   };
-  await probe.runProbe(P.down, {timeoutMs: 3000, download: {budgetMs: 500}});
+  await probe.runProbe(P.down, {timeoutMs: 3000, download: {windowMs: 500, rampMs: 0, streams: 1}});
   assert.equal(calls, 1, 'a working download costs one request and no more');
 });
 
-d.test('the body ends on its own, or the budget ends it', async () => {
-  // The request asks for exactly what will be read, so a link quick enough to deliver it
-  // reaches the end and nothing is aborted — which is what stops the connection being torn
-  // down every round.
-  const whole = await download([{after: 2, bytes: 200000}], {budgetMs: 2000});
-  assert.equal(whole.aborted_reason, 'eof');
-  assert.equal(whole.complete, true);
+d.test('the window ends the read, or the far end does', async () => {
+  const short = await download([{after: 2, bytes: 200000}], {windowMs: 2000, rampMs: 0, streams: 1});
+  assert.equal(short.aborted_reason, 'eof', 'the body ran out first');
+  assert.equal(short.ok, true);
 
   const cut = await download(Array.from({length: 400}, () => ({after: 5, bytes: 20000})),
-                             {budgetMs: 300});
-  assert.equal(cut.aborted_reason, 'time', 'the budget is the only early stop left');
-  assert.equal(cut.complete, false);
-  assert.ok(cut.duration_ms < 600, `stopped near the budget: ${cut.duration_ms} ms`);
-  assert.equal(cut.ok, true, 'a read stopped by its own budget is a measurement, not a failure');
+                             {windowMs: 300, rampMs: 0, streams: 1});
+  assert.equal(cut.aborted_reason, 'done', 'the window closed it');
+  assert.ok(cut.window_ms < 600, `stopped near the window: ${cut.window_ms} ms`);
+  assert.equal(cut.ok, true, 'a read stopped by its own window is a measurement, not a failure');
 });
 
-d.test('the bound holds across four orders of magnitude of link', async () => {
-  // 20 ms chunks at the given rate, a body of what the probe asks for.
-  for (const mbps of [200, 133, 50, 10, 1.5, 0.4]) {
+d.test('the reading holds across four orders of magnitude of link', async () => {
+  // Above the ceiling the reading saturates and says so; below it the number has to land in
+  // the right band, since a reading that is merely true decides nothing.
+  for (const mbps of [200, 50, 10, 1.5, 0.4]) {
     const per = Math.max(1, Math.round((mbps * 1e6 / 8) * 0.02));
-    const chunks = Math.ceil(probe.DOWNLOAD_REQUEST_BYTES / per);
+    const chunks = Math.ceil(probe.DOWN_REQUEST_BYTES / per);
     const r = await download(Array.from({length: chunks}, () => ({after: 20, bytes: per})),
-                             {budgetMs: 1000});
-    assert.ok(r.bps_min > 0, `${mbps} Mb/s produces a bound`);
-    assert.ok(r.bps_min <= mbps * 1e6 * 1.15,
-              `${mbps} Mb/s: bound ${(r.bps_min / 1e6).toFixed(2)} claims more than the link`);
-    // The bound decides a band, so it has to land in the right one rather than merely be
-    // true: a bound of 1 kb/s is honest and useless.
-    const band = g.gradeValue('rate', r.bps_min);
+                             {windowMs: 1000, rampMs: 0, streams: 1, capBytes: probe.DOWN_CAP_BYTES});
+    assert.ok(r.bps > 0, `${mbps} Mb/s produces a reading`);
+    if (mbps * 1e6 > probe.DOWN_CEILING_BPS) {
+      assert.equal(r.saturated, true, `${mbps} Mb/s is above the ceiling and says so`);
+      continue;
+    }
+    assert.ok(r.bps <= mbps * 1e6 * 1.15,
+              `${mbps} Mb/s: read ${(r.bps / 1e6).toFixed(2)} claims more than the link`);
+    const band = g.gradeValue('rate', r.bps);
     const truth = g.gradeValue('rate', mbps * 1e6);
     assert.ok(band === truth || g.GRADES.indexOf(band) === g.GRADES.indexOf(truth) + 1,
               `${mbps} Mb/s graded ${band}, the link itself is ${truth}`);
@@ -604,7 +596,7 @@ e.test('a session in which everything failed still describes itself', () => {
   assert.equal(s.degraded, 5);
   assert.equal(s.probes.ip6.fails.timeout, 5);
   assert.equal(s.probes.ip6.ms_p50, null, 'a median of failures is not a latency');
-  assert.equal(s.probes.down.bps_min_p50, null, 'nor is a median of failures a rate');
+  assert.equal(s.probes.down.bps_p50, null, 'nor is a median of failures a rate');
 });
 
 e.test('a session of nothing but skipped rounds is not counted as measurement', () => {
@@ -777,12 +769,12 @@ h.test('a grade belongs to the round whose number produced it', () => {
   // while printing the current number paints a round measured at 35.5 Mb/s red because a
   // round three back was slow.
   const rows = [3.4e6, 3.2e6, 33.6e6, 1.1e6, 35.5e6, 12.0e6, 9.2e6, 48.5e6].map((bps, seq) => ({
-    seq, skipped: null, probes: {down: {ok: true, bps_min: bps}}
+    seq, skipped: null, probes: {down: {ok: true, bps}}
   }));
   for (const row of rows) {
     const grades = g.gradeActivities(row);
     assert.equal(grades.streaming, g.gradeValue('rate', g.activityValue('streaming', row)),
-                 `${(row.probes.down.bps_min / 1e6).toFixed(1)} Mb/s: the colour is this ` +
+                 `${(row.probes.down.bps / 1e6).toFixed(1)} Mb/s: the colour is this ` +
                  `round's, taken from the number that produced it`);
   }
   assert.equal(g.gradeActivities(rows[4]).streaming, 'green', '35.5 Mb/s is green, whatever came before it');
@@ -795,11 +787,11 @@ h.test('the strip and the activity grades cannot disagree', async () => {
   // so the two cannot describe different rounds.
   const rows = [
     {probes: {ip6: {ok: true, ms: 30}, web: {ok: true, ms: 30}, dns: {ok: true, ms: 30},
-              down: {ok: true, bps_min: 50e6}}},
+              down: {ok: true, bps: 50e6}}},
     {probes: {ip6: {ok: true, ms: 30}, web: {ok: true, ms: 30}, dns: {ok: true, ms: 2500},
-              down: {ok: true, bps_min: 50e6}}},
+              down: {ok: true, bps: 50e6}}},
     {probes: {ip6: {ok: false, fail: 'timeout'}, web: {ok: true, ms: 30}, dns: {ok: true, ms: 30},
-              down: {ok: true, bps_min: 50e6}}}
+              down: {ok: true, bps: 50e6}}}
   ];
   for (const row of rows) {
     const grades = g.gradeActivities(row);

@@ -169,11 +169,11 @@ latency of 96 ms.
 
 ## Data usage
 
-The two download requests are almost the whole cost; the six small probes total ~12 kB per
-round. The projection assumes the 4 MB ceiling every round: **~630 MB for 40 minutes on Fine**,
-the default, or ~310 MB on Coarse. A slow link costs far less, because the measured request is sized
-from what the warm-up saw. Both figures are shown before a run and tracked during it. Nothing
-stops a run partway.
+The download is almost the whole cost; the six small probes total ~12 kB per round. A round
+streams a ramp and then a window that stops at a byte cap, so the worst case is exact rather
+than assumed: **up to 914 MB for 40 minutes on Fine**, the default, or 457 MB on Coarse. A link
+slower than the 25 Mb/s ceiling costs less in proportion — 10 Mb/s is about a third of it. The
+projection is shown before a run and the running total during it.
 
 ## Design notes
 
@@ -260,51 +260,41 @@ or a completed negotiation, and none is ever created. Its milliseconds are grade
 row but ignored by the calling activity, which reads only whether the path exists: gathering
 rides on top of the round trip, so the number overstates the link.
 
-**The download measures one TCP flow, which is not the link.** A flow carries its window
-divided by its round trip, and one `fetch` gets one window. On a recorded KPN 5G session
-Cloudflare reported a congestion window of 106-126 segments — about 180 kB — against an
-app-level round trip near 39 ms:
+**The download follows RMBT, at a fraction of its size.** One TCP flow carries its receive
+window divided by its round trip and no more. Cloudflare reported a window of 106-126 segments
+— about 180 kB — against a ~39 ms round trip on a KPN 5G cell, and one request read 41 Mb/s
+where RTR's three-stream test read 320:
 
 ```
-180 kB / 39 ms  =  37 Mb/s        this probe read 41
-320 Mb/s x 39 ms = 1.56 MB        what one flow would need in flight
-1.56 MB / 180 kB =  8.7x          the gap to a multi-stream reference test
+180 kB / 39 ms   =  37 Mb/s     what one flow can carry there
+320 Mb/s x 39 ms = 1.56 MB      what one flow would need in flight
+1.56 MB / 180 kB =  8.7x        the gap, and it is not slow start
 ```
 
-The same code on a desktop over Wi-Fi reads 230-560 Mb/s from the identical 4 MB request,
-because the round trip there is ~5 ms and 180 kB / 5 ms is ~290 Mb/s. **Same window, eight
-times the round trip, eight times the answer.** The number this probe reports therefore tracks
-latency as much as capacity, and it is a floor on the link, never a measurement of it.
+The same code read 230-560 Mb/s on a desktop from the identical request, because the round
+trip there is ~5 ms. So a single flow measures latency as much as capacity. RTR's Open-RMBT
+opens three connections for exactly this reason, and this now does the same:
 
-The measured rate also rises with the size of the request — 10.6, 18.4 and 44.9 Mb/s for
-1-2 MB, 2-3.5 MB and ≥3.5 MB transfers in one KPN session — which is the signature of a
-transfer that ends before its window opens.
+| phase | what happens | why |
+|---|---|---|
+| ramp | three connections stream for 300 ms or 1 MB, discarded | RMBT spends 2 s here to get the radio into an active state, so a result does not depend on what the connection was doing beforehand |
+| window | 1.5 s, all streams counted against one clock | a fixed window makes rounds comparable with each other |
+| cap | the window also ends at 4.7 MB | what a round costs is then knowable before it runs |
 
-**So the figure is a floor on one connection, and a video player does not use one
-connection.** A floor of 9 Mb/s does not mean a stream will stall; it means one flow carried
-at least that much while six other probes shared the radio. The grade is right when the floor
-clears the green edge and merely unproven when it does not, and the scale below was written
-for link capacity rather than for one flow's share of it.
+**The cap is a stated ceiling.** A window of `T` that stops at `B` bytes can never report more
+than `B × 8 ÷ T`, which here is **25 Mb/s**. Reaching it proves the link carries at least that
+and says nothing about how much more, so the reading saturates there, the row prints `≥`, and
+the round is flagged `saturated` in the file. Below the ceiling the number is the link's own.
 
-What the reference tests do instead, and what it costs on a 320 Mb/s link:
+That is a deliberate trade. It answers "is this connection good enough" — 25 Mb/s is two and a
+half times the edge video is graded on, so a healthy link is always provably green — and it
+cannot answer "how fast is this cell". A run costs up to 914 MB for 40 minutes on Fine and
+proportionally less on a link slower than the ceiling.
 
-| test | streams | duration | reports | data per test |
-|---|---|---|---|---|
-| Open-RMBT (RTR) | 3 | 7 s, after a 2 s pre-test | mean over the window | ~280 MB |
-| Cloudflare | 1, sequential, escalating to 250 MB | until a request exceeds 1 s | 90th percentile | ~470 MB |
-| NDT7 | 1, with BBR | up to 10 s | mean | — |
-| librespeed | 6 | 15 s, first 1.5 s discarded | mean | — |
-
-Cloudflare say it plainly: "transfers smaller than 10 MB can't utilize the full bandwidth of
-this connection". Every one of them also runs its phases one at a time; this tool runs seven
-probes together, which additionally makes its latency figures *loaded* latency rather than
-idle.
-
-`bps_server` — Cloudflare's `tcpi_delivery_rate` — is recorded but grades nothing. It is not
-a second opinion: headers are written ahead of the payload, so the figure stapled to a
-transfer describes the socket as the previous one ended, and a receive-window-limited flow is
-never flagged app-limited, so it reports the same window-over-round-trip number for the same
-reason. Two measurements of one capped flow agreeing says nothing about the link.
+Phases run one at a time, as RMBT's do. Latency, DNS and UDP go first with the link otherwise
+idle; the download follows alone, with one round trip sampled across it. That second figure is
+`loaded_rtt_ms`, and the gap between the two is what this link queues under load — which is
+felt as much as throughput is.
 
 **Deadlines and scheduling.** Every TCP probe gets 8 s, capped at the interval minus half a
 second; `udp` gets 3 s, since a STUN binding answers within a round trip or not at all. Eight

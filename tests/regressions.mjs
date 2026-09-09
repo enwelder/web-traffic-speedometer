@@ -25,8 +25,12 @@ function stubStun(ok = true) {
   };
 }
 
+// A round streams for a window and then samples latency across it, so a suite driving many
+// rounds has to shrink both or it measures the clock rather than the code.
 const session = (over = {}) => ({id: 's', name: 't', operator: 'KPN', connection: 'cellular',
                                  intervalMs: 100, downloadBytes: 1000, started: Date.now(),
+                                 download: {windowMs: 30, rampMs: 0, streams: 1,
+                                            maxBytes: 20000, capBytes: 20000},
                                  ipv4_available: true, ipv4_check: null, ...over});
 
 // Adding one interval to a due time already further behind than that leaves it in the past,

@@ -65,7 +65,9 @@ async function context(extra = {}) {
     if (u.hostname === '1.1.1.1') return route.abort('connectionfailed');
     if (state.mode === 'fail') return route.abort('connectionfailed');
     if (u.hostname === 'speed.cloudflare.com') return route.fulfill({
-      status: 200, body: Buffer.alloc(Number(u.searchParams.get('bytes')) || 250000),
+      // The probe asks for more than any link could deliver in its window; serving that in
+      // full would allocate it in the browser for no benefit to the test.
+      status: 200, body: Buffer.alloc(Math.min(Number(u.searchParams.get('bytes')) || 250000, 2e6)),
       headers: {'access-control-allow-origin': '*', 'timing-allow-origin': '*',
                 'access-control-expose-headers': 'server-timing, cf-meta-colo',
                 'cf-meta-colo': 'AMS',
@@ -154,12 +156,13 @@ b.test('the projection says what the run will cost before Start', async () => {
   await page.selectOption('#f-profile', 'fine');
   const fine = await read();
 
-  // The download runs to its ceiling every round, so the interval determines the projected
-  // cost.
+  // A round streams a window that stops at a byte cap, so the interval decides the cost and
+  // the figure is a worst case rather than a guess.
   const mb = t => Number(t.match(/≈ (\d+) MB/)[1]);
   assert.ok(Math.abs(mb(fine) - mb(coarse) * 2) < mb(coarse) * 0.1,
             `halving the interval doubles the bill: ${mb(coarse)} then ${mb(fine)} MB`);
-  assert.match(fine, /Nothing caps it/, 'and it says the total is the operator to watch');
+  assert.match(fine, /fastest this can report/,
+               'and it names the ceiling, since that is what the cost buys');
   assert.equal(await page.$eval('#budget', e => e.classList.contains('warn')), true,
                'a run in the hundreds of megabytes is flagged, not just stated');
   await ctx.close();

@@ -148,7 +148,7 @@ r.test('nothing derived from a real journey is a number that cannot exist', () =
       for (const [id, probe] of Object.entries(s.probes || {})) {
         if (!probe) continue;
         for (const k of ['ms', 'ms_min', 'ms_max', 'bytes', 'duration_ms', 'ttfb_ms',
-                         'bps_min', 'bps_transfer', 'bps_end_to_end']) {
+                         'bps', 'bps_transfer', 'bps_end_to_end']) {
           nonNegative(probe[k], `${at}.${id}.${k}`);
         }
         if (probe.ms_samples) {
@@ -191,15 +191,15 @@ r.test('every impossible speed in the recordings comes from a fix the rules now 
 });
 
 r.test('the recordings cannot yet speak for the throughput probe', () => {
-  // Every committed recording predates the bound, so its rows carry whole-transfer figures
-  // and no `bps_min`; streaming is graded only against the synthetic streams in
-  // tests/edges.mjs. Adding a recording that carries a bound fails this test, which is when
-  // it should become an assertion about the rate itself.
+  // Every committed recording predates the windowed measurement, so its rows carry
+  // whole-transfer figures and no `bps`; streaming is graded only against the synthetic
+  // streams in tests/edges.mjs. Adding a recording that carries one fails this test, which is
+  // when it should become an assertion about the rate itself.
   const rated = Object.values(journeys)
     .flatMap(j => j.samples)
-    .filter(s => s.probes?.down?.bps_min != null);
+    .filter(s => s.probes?.down?.bps != null);
   assert.equal(rated.length, 0,
-               `a journey now carries a throughput bound (${rated.length} rounds): grade it ` +
+               `a journey now carries a measured rate (${rated.length} rounds): grade it ` +
                `here instead of trusting the synthetic streams`);
 });
 

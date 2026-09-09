@@ -3,6 +3,7 @@
 import {PROBES} from './probe.js';
 import {ACTIVITY_IDS, GRADES, ACTIVITIES, gradeActivities, worse, probeReading,
         activeRoute} from './grade.js';
+import {DOWN_CEILING_BPS} from './probe.js';
 import {countsAsFailure} from './export.js';
 
 const STRIP_BARS = 48;
@@ -71,6 +72,7 @@ const ROUTE_EXPLAIN = 'GET to an address literal, no lookup. Whichever family is
 // Where a row's number would be read as something it is not. Both are argued in the README.
 const PROBE_CAVEATS = {
   dns: 'Graded against the cached-name control, not on its own: most of this gap is the far end handling a hostname it has not seen.',
+  down: `Three connections read together for a fixed window. Reads up to ${Math.round(DOWN_CEILING_BPS / 1e6)} Mb/s and says ≥ at that point, which is all a window this size can prove.`,
   udp: 'ICE gathering rides on top of the round trip, so this reads slower than the link is.'
 };
 
@@ -79,7 +81,9 @@ const PROBE_CAVEATS = {
 function displayReading(r) {
   if (!r || (r.note == null && r.value == null)) return '—';
   if (r.note) return r.note;
-  if (r.unit === 'bps') return `≥${rate(r.value)}`;
+  // A rate reads as itself unless the round saturated, where all that was proved is the
+  // ceiling and the ≥ says so.
+  if (r.unit === 'bps') return (r.saturated ? '≥' : '') + rate(r.value);
   // A difference prints as one, so nobody reads it as a latency.
   return (r.scale === 'dns_delta' ? '+' : '') + Math.round(r.value);
 }
