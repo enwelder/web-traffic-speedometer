@@ -59,7 +59,11 @@ s.test('the DNS probe never reuses a hostname; its control never changes one', a
     return {type: 'opaque', ok: false, status: 0};
   };
   for (let i = 0; i < 5; i++) { await probe.runProbe(P.dns); await probe.runProbe(P.dns_ctl); }
-  assert.equal(new Set(seen.dns).size, 5, 'a name the resolver cannot have cached, every round');
+  // Every sample too, not merely every round: a repeat under the same name would be answered
+  // from a cache and would stop being a first contact.
+  assert.ok(seen.dns.length >= 5 * P.dns.samples, `every sample asked: ${seen.dns.length}`);
+  assert.equal(new Set(seen.dns).size, seen.dns.length,
+               'and no name is ever asked for twice');
   assert.equal(new Set(seen.dns_ctl).size, 1, 'the control holds its name so it stays cached');
   assert.ok(seen.dns.every(h => /^[0-9a-f]{16}\.github\.io$/.test(h)), seen.dns[0]);
   assert.ok(seen.dns_ctl[0].endsWith('.github.io'), 'both sit on the same destination');
@@ -153,19 +157,24 @@ s.test('a literal refused while its family carries traffic is blocked, not broke
 });
 
 s.test('a repeated probe reports the median and keeps every sample', async () => {
-  const times = [10, 50, 90];   // median 50, last 90, so the two are distinguishable
+  // A slow sample in the middle, so the median and the last differ.
+  const times = [10, 90, 50];
   let i = 0;
   globalThis.fetch = async () => {
     const wait = times[i++ % times.length];
     await new Promise(r => setTimeout(r, wait));
     return {ok: true, status: 200, text: async () => TRACE};
   };
-  const r = await probe.runProbe(P.ip6, {timeoutMs: 3000});
-  assert.equal(r.samples_ok, 3, 'all three samples fitted the budget');
-  assert.equal(r.ms_samples.length, 3, 'and every one is kept');
+  const r = await probe.runProbe(P.ip6, {timeoutMs: 8000});
+  assert.equal(r.samples_ok, P.ip6.samples, 'every sample fitted the budget');
+  assert.equal(r.ms_samples.length, P.ip6.samples, 'and every one is kept');
   const sorted = [...r.ms_samples].sort((a, b) => a - b);
-  assert.equal(r.ms, sorted[1], `ms is the median, not the last: ${r.ms} of ${r.ms_samples}`);
-  assert.ok(r.ms < sorted[2], 'so one slow sample cannot drag the round');
+  const mid = sorted.length % 2 ? sorted[(sorted.length - 1) / 2]
+    : Math.round((sorted[sorted.length / 2 - 1] + sorted[sorted.length / 2]) / 2);
+  assert.equal(r.ms, mid, `ms is the median, not the last: ${r.ms} of ${r.ms_samples}`);
+  assert.ok(r.ms < sorted.at(-1), 'so one slow sample cannot drag the round');
+  assert.deepEqual([r.ms_min, r.ms_max], [sorted[0], sorted.at(-1)],
+                   'and the spread is kept, since a median alone hides it');
 });
 
 s.test('repetition stops at the first failure rather than spending the round on it', async () => {
@@ -331,13 +340,19 @@ s.test('a resolver retry timer is flagged as loss rather than latency', () => {
   assert.equal(probe.looksLikeRetry(null), false);
 });
 
-s.test('every latency probe is sampled the same way', () => {
-  const sampled = probe.PROBES.filter(p => p.samples > 1).map(p => p.id).sort();
-  assert.deepEqual(sampled, ['dns_ctl', 'ip6', 'udp', 'web'],
-                   'one probe discarding a cold first sample while others kept theirs made ' +
-                   'their medians incomparable');
-  assert.equal(probe.PROBES.find(p => p.id === 'dns').samples, undefined,
-               'except the fresh-lookup probe: each sample would be a different hostname');
+s.test('every probe that reports a latency is sampled', () => {
+  // One round trip is not a measurement, and an unsampled probe beside sampled ones is worse
+  // than either: the IPv4 literal ran once while IPv6 ran three times, so on a network where
+  // IPv4 was the route, the same row carried a single noisy sample instead of a median.
+  for (const p of probe.PROBES) {
+    if (p.kind === 'download') continue;
+    assert.ok(p.samples > 1, `${p.id} takes more than one sample`);
+  }
+  const counts = new Set(probe.PROBES.filter(p => p.kind !== 'download' && p.id !== 'dns')
+    .map(p => p.samples));
+  assert.equal(counts.size, 1, 'and the comparable ones take the same number');
+  assert.ok(probe.PROBES.find(p => p.id === 'dns').samples < [...counts][0],
+            'the first-contact probe takes fewer: every sample of it is a new connection');
 });
 
 s.test('a round runs every probe and keeps what the far end saw', async () => {

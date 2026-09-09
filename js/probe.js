@@ -43,19 +43,32 @@ export const PREFLIGHT_RETRY_MS = 1500;
 // `label` names the test performed, not what it is used for: a probe measures one thing and
 // the activities in grade.js decide what that means. It travels in the recording so a reader
 // does not have to infer the test from a URL.
+// One round trip is not a measurement: a cold connection, a retransmission or a scheduling
+// delay moves it by an order of magnitude. RMBT takes between 10 and 200 samples and reports
+// the median; ten puts this in the same range, and a latency sample is about 1.2 kB against
+// the megabytes the download already spends.
+const LATENCY_SAMPLES = 10;
+
+// Each of these opens a connection to a host never used before, so a sample costs a full
+// first contact — around a second on a mobile link, against tens of milliseconds for the
+// others. Fewer of them, for the same round.
+const FIRST_CONTACT_SAMPLES = 5;
+
 export const PROBES = [
   // Probes with `samples` run repeatedly within the round; `ms` is the median of the
   // samples that fit in the budget and every sample is kept.
-  {id: 'ip6',     label: 'GET to an IPv6 literal, no lookup',   kind: 'trace',  url: 'https://[2606:4700:4700::1111]/cdn-cgi/trace', samples: 3},
-  {id: 'ip4',     label: 'GET to an IPv4 literal, no lookup',   kind: 'trace',  url: 'https://1.1.1.1/cdn-cgi/trace'},
-  {id: 'dns',     label: 'HEAD to a name no resolver has seen', kind: 'opaque', url: 'https://%RANDOM%.github.io/',      method: 'HEAD'},
+  {id: 'ip6',     label: 'GET to an IPv6 literal, no lookup',   kind: 'trace',  url: 'https://[2606:4700:4700::1111]/cdn-cgi/trace', samples: LATENCY_SAMPLES},
+  {id: 'ip4',     label: 'GET to an IPv4 literal, no lookup',   kind: 'trace',  url: 'https://1.1.1.1/cdn-cgi/trace', samples: LATENCY_SAMPLES},
+  // A different name every sample, so no repeat is answered from a cache and every one of
+  // them is what it claims to be: a host never contacted before.
+  {id: 'dns',     label: 'HEAD to a name no resolver has seen', kind: 'opaque', url: 'https://%RANDOM%.github.io/',      method: 'HEAD', samples: FIRST_CONTACT_SAMPLES},
   // Sampled like the other latency probes, so their medians cover the same thing.
-  {id: 'dns_ctl', label: 'HEAD to that host under a cached name', kind: 'opaque', url: 'https://wts-dns-control.github.io/', method: 'HEAD', samples: 3},
-  {id: 'web',     label: 'HEAD to a host the phone knows',       kind: 'opaque', url: 'https://www.gstatic.com/generate_204', samples: 3},
+  {id: 'dns_ctl', label: 'HEAD to that host under a cached name', kind: 'opaque', url: 'https://wts-dns-control.github.io/', method: 'HEAD', samples: LATENCY_SAMPLES},
+  {id: 'web',     label: 'HEAD to a host the phone knows',       kind: 'opaque', url: 'https://www.gstatic.com/generate_204', samples: LATENCY_SAMPLES},
   {id: 'down',    label: 'parallel streams, read for a fixed window', kind: 'download', url: 'https://speed.cloudflare.com/__down', bytes: DOWN_REQUEST_BYTES},
   // The only probe over UDP, which is what streaming and calls use. A carrier can treat UDP
   // differently from TCP, and the address reported is the NAT mapping for that transport.
-  {id: 'udp',     label: 'STUN binding request over UDP',       kind: 'stun',   url: STUN_SERVER, samples: 3}
+  {id: 'udp',     label: 'STUN binding request over UDP',       kind: 'stun',   url: STUN_SERVER, samples: LATENCY_SAMPLES}
 ];
 
 const rand = () => {
