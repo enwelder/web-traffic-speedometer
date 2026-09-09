@@ -49,15 +49,21 @@ tests enforce it: nothing under `.dev/` may be tracked, and no committed file ma
 shape of a journey export, wherever it was put.
 
 ```
-npm ci          # playwright, the only development dependency
+npm ci          # playwright and eslint, development only
+npm run lint    # eslint, including a cognitive-complexity ceiling
 npm test        # every suite
 npm run test:unit / test:security / test:browser
 npm run serve   # http://localhost:8731
 ```
 
+No runtime dependencies. A security test fails the build if any appear.
+
 `tests/unit.mjs` exercises the probes, the round loop, classification and export with no
 browser and no network; the store is injected, so failure and retry paths are reachable.
-`tests/grading.mjs` covers the thresholds and what each capability is read from.
+`tests/grading.mjs` covers the scales and the terms each purpose is composed from.
+`tests/stuck.mjs`, `tests/wakelock.mjs` and `tests/position.mjs` drive the three modules the
+recorder delegates to, without running a recorder: a rest scheduled by round number, a wake
+lock the system reclaims, and a speed derived from consecutive fixes.
 `tests/replay.mjs` runs three anonymised real journeys — a good 5G run, a commute with pauses
 and coarse positions, and the one where a probe wedged for twenty rounds — through the
 grading and the rollup. Synthetic fixtures agree with whatever the code does; recordings do
@@ -71,8 +77,8 @@ wall clock that jumps backwards, and storage the system closed underneath a runn
 crash recovery, the service worker, downloads, the CSP and the phone layout — against a
 simulated IPv6-only network. `tests/security.mjs` is described below.
 
-Every push runs the functional and security suites; CodeQL runs on `main` and on pull
-requests. A push to `main` that passes publishes to GitHub Pages; if `package.json` has a new
+Every push runs the lint, functional and security suites; CodeQL runs the security and
+quality queries on `main` and on pull requests. A push to `main` that passes publishes to GitHub Pages; if `package.json` has a new
 version, that push is also tagged and released. The version is stated once in `package.json`,
 and a security test fails the build if `APP_VERSION` or the service worker cache name has
 drifted from it. Publishing files that changed since the last release under that same version
@@ -230,32 +236,54 @@ Every server-reflexive candidate is kept, because a dual-stack network reports o
 address family, and comparing them against the TCP egress in the same round shows whether
 the two transports leave by the same path.
 
-### The download is timed, not sized
+### The download reports a bound, not a rate
 
-A fixed payload cannot measure a link whose speed spans two orders of magnitude. A 250 kB
-body finishes inside TCP slow start, so the rate it implies describes the congestion window
-growing rather than what the connection carries: on real cellular it under-reported by 8.5×,
-putting 4 Mb/s on a 5G link.
+The bars need to know which band the link is in, not how fast it is, so the probe publishes a
+lower bound: what the bytes that arrived prove the link carries. A bound charged every
+uncertainty can only understate, so slow start, WebKit handing bodies over in lumps and clock
+jitter all move it the safe way, and none of them has to be corrected for.
 
-So the request asks for far more than will ever be read — 50 MB — and the read is bounded
-instead: it stops after 2 s or 5 MB, whichever comes first, and the stream is cancelled.
-Both limits are recorded, along with which one stopped it, in `aborted_reason`.
+Two requests per round, each read to its end:
 
-The ramp is then discarded and only what follows is rated. The gate adapts, because the
-rule has to hold at both extremes: at 133 Mb/s the ceiling arrives in 300 ms and a fixed
-500 ms warmup would leave nothing, while below 0.5 Mb/s the 128 kB threshold never arrives
-at all and the first quarter of the time is dropped instead. What survives is reported as:
+| request | size | purpose |
+|---|---|---|
+| warm-up | 96 kB | opens the congestion window |
+| measured | 128 kB – 4 MB | sized from the warm-up for ~500 ms of body |
 
-- `bps_steady` — the rate after the ramp. This is what the grade is taken on.
-- `bps_peak` — the fastest window inside the same stream, which says what the link reached
-  rather than what it sustained.
-- `warmup_ms` `warmup_bytes` — how much was discarded, so the judgement is checkable.
-- `insufficient_sample` — the steady phase was shorter than 100 ms. A sample too short to
-  rate is not a slow one, and the round is graded `null` rather than red.
+A fresh connection delivers its first bytes at the congestion window's pace rather than the
+link's, and iOS opens one every round — `reused` is false on every recorded download row.
+Measured over a Mac on a phone's 5G hotspot against a reference test reading 350 Mbit/s:
 
-A download stopped by its own budget is a measurement, not a failure, and `ok` stays true.
-One cut short by the 8 s deadline is a failure, with `truncated` recording that bytes did
-arrive first.
+| condition | measured |
+|---|---|
+| 625 kB, cold connection | 19.9 Mb/s |
+| 625 kB, warm connection | 177 Mb/s |
+| 4 MB, warm connection | 293 Mb/s |
+| 8 MB, warm connection | 291 Mb/s |
+
+Accuracy stops improving at 4 MB. A fixed 4 MB would take 32 s on a 1 Mb/s cell and be cut
+off every round, so the measured request is sized from the rate the warm-up saw.
+
+Fields:
+
+| field | meaning |
+|---|---|
+| `bps_min` | the bound; graded and displayed |
+| `bytes` `duration_ms` | the raw pair the bound comes from |
+| `complete` | the body arrived whole; false makes the bound a floor |
+| `aborted_reason` | `eof` \| `time` \| `aborted` \| `network` |
+| `warmup_only` | the link was too slow for a second request; the warm-up is the measurement |
+| `refused_by` | on a `network` failure: `server` \| `connection` |
+
+A download rejecting before any response is repeated once as an opaque request. A response
+this origin may not read still counts as one, so opaque success means the far end refused us
+and opaque failure means the connection never opened. A refusal by the server does not grade
+the link as bad.
+
+Per-round rates on a mobile link are volatile and cannot be made steadier by spending more:
+4 MB transfers spread 5.4× across passes, and three samples a round cost 2.7× the data for no
+improvement — 3.9× against 3.8×. The variation is between rounds rather than within them.
+Steadiness comes from aggregating a journey, not from one round.
 
 ### Deadlines and cadence
 
@@ -309,11 +337,13 @@ containing the session metadata, the environment, a descriptive rollup, every sa
 every event.
 
 The `summary` block holds per-probe p50, p90, max, ok and failure counts, the download's rate
-percentiles and total bytes, and counts of skipped, paused and degraded rounds. It defines no
-outage, and every figure in it is recomputable from the samples, which is what keeps the raw
-rows the only source of truth — it exists so a reader does not rebuild the same six aggregates
-every time. The grade thresholds are copied in beside it, because a file read a year later has
-to say which version's scale produced the colours stored on its rows. CSV, GPX or GeoJSON are
+bound percentiles and total bytes, and counts of skipped, paused and degraded rounds. It
+defines no outage, and every figure in it is recomputable from the samples, which is what keeps
+the raw rows the only source of truth — it exists so a reader does not rebuild the same six
+aggregates every time. The scales and the purposes composed from them are copied in beside it,
+because a file read a year later has to say which version graded its rows. `format` is
+`wts/session` at `version: 3`; version 2 keyed grades by capability and reported a rate
+rather than a bound. CSV, GPX or GeoJSON are
 a few lines to derive from it wherever the analysis happens.
 
 ### Per round
@@ -336,7 +366,7 @@ a few lines to derive from it wherever the analysis happens.
 | `wake_lock` | whether the screen was being held awake for this round |
 | `prev_round_ms` | how long the previous round actually took. A frozen tab suspends the abort timers too, so a round can outlast every deadline in it; without this an overlap cannot be told from the app stalling |
 | `speed_derived` `speed_source` | speed computed from consecutive fixes, and whether the reported value is `gps` or `derived` |
-| `grades` | the four capability grades this round produced, as they were shown |
+| `grades` | the three purpose grades this round produced, as they were shown |
 | `first_packet_ms` | the quickest first response in the round: the closest thing to the cost of waking the radio. Reported, never graded |
 
 ### Per probe, under `probes.<id>`
@@ -354,8 +384,9 @@ a few lines to derive from it wherever the analysis happens.
 | `host` | `dns` `dns_ctl` | the hostname used — random each round for `dns`, constant for `dns_ctl` |
 | `retry_suspected` | `dns` | the answer arrived within 300 ms of a resolver retry timer (2 s or 5 s), so the first query was lost. Loss, not slowness, and red regardless of the number |
 | `bytes` `duration_ms` `ttfb_ms` | `down` | bytes counted, how long the read ran, and time to first byte |
-| `bps_steady` `bps_peak` `warmup_ms` `warmup_bytes` `insufficient_sample` | `down` | the rates described above and the ramp that was discarded to get them |
-| `aborted_reason` | `down` | which limit stopped the read: `time`, `bytes` or `eof` |
+| `bps_min` `complete` | `down` | the bound, and whether the body arrived whole |
+| `warmup_only` `refused_by` | `down` | the link was too slow for a second request; which side refused |
+| `aborted_reason` | `down` | how the read ended: `eof`, `time`, `aborted` or `network` |
 | `truncated` | `down` | the 8 s deadline cut the body short. Unlike the budget, this is a failure |
 | `handshake` `reused` `protocol` `lookup_ms` `connect_ms` `tls_ms` | `down` | connection setup, phase by phase |
 | `server` | `down` | Cloudflare's `cfL4` view: `rtt_us`, `min_rtt_us`, `rtt_var_us`, `lost`, `retrans`, `delivery_rate`, `cwnd` |
@@ -374,49 +405,54 @@ round-trip samples. With a page-sized download every round they are populated; w
 or infrequent one the header can arrive before any samples exist. Read an all-zero `cfL4`
 block as *no data*, never as a measurement of zero.
 
-### Grades are capabilities, not probes
+### Purposes are graded, not probes
 
-A probe's number means nothing on its own. The fresh-lookup probe costs about 200 ms on a
-perfect link — a real lookup plus a hostname the edge has never seen are part of what it
-measures — so holding it to the same scale as a warm round trip marked a healthy afternoon
-yellow for hours. Each capability is graded on thresholds that belong to it:
+A probe's number means nothing on its own, and no single probe decides what a person can do.
+Each purpose reads several measurements and takes the worst of them, so one requirement
+failing sinks it however well the others read.
 
-| capability | read from | green | yellow | orange | red |
+| purpose | terms |
+|---|---|
+| calls & live audio | UDP path · route · round trip · throughput for a call |
+| opening an article | lookup not on a retry timer · lookup · known host · throughput · TTFB · modelled article time |
+| video & downloads | throughput · rate |
+
+Scales, all absolute:
+
+| scale | green | yellow | orange | red | source |
 |---|---|---|---|---|---|
-| calls & real-time | direct round trip; either transport failing | <100 ms | 100–200 | 200–400 | >400 or loss |
-| tapping a link | round trip to a known host | <300 ms | 300–1000 | 1000–3000 | >3000 |
-| opening a new site | fresh lookup and reach | <400 ms | 400–1200 | 1200–3000 | >3000 |
-| video & downloads | sustained rate after the ramp | >10 Mb/s | 5–10 | 1.5–5 | <1.5 |
+| round trip | <100 ms | <200 ms | <400 ms | ≥400 ms | ITU-T G.114 |
+| TTFB | <800 ms | <1800 ms | <3000 ms | ≥3000 ms | web.dev |
+| article | <2.5 s | <4 s | <8 s | ≥8 s | Core Web Vitals LCP |
+| rate | >10 Mb/s | >5 Mb/s | >1.5 Mb/s | ≤1.5 Mb/s | Netflix tiers |
+| call rate | >300 kb/s | >100 kb/s | >30 kb/s | ≤30 kb/s | Opus, RFC 6716 |
 
-Every edge is a constant in `THRESHOLDS`, tunable in one place, and a value sitting exactly
-on an edge takes the worse side. Nothing consults the session's own statistics: a connection
-is not good merely because it is no worse than the rest of the journey. Nothing that is not a
-finite, non-negative number is graded at all — a NaN from a division by zero is not a red
-connection, and a negative latency is not a green one.
+Each cites its source in `js/grade.js`. A value sitting exactly on an edge takes the worse
+side. Nothing consults the session's own statistics: a connection is not good merely because
+it is no worse than the rest of the journey. Nothing that is not a finite, non-negative number
+is graded at all.
 
-A capability with no usable input is graded `null` rather than guessed — a download too short
-to rate is not a slow one. UDP contributes whether the path exists, not how long it took: a
-STUN exchange carries ICE gathering on top of a round trip, and grading its milliseconds as
-the link's put a 33 ms connection in orange.
+Article time is modelled, not measured: `2 × lookup + 2 × known host + 500 kB / bound`. The
+500 kB is the critical path to a readable article — HTML, CSS and fonts are 221 kB at the
+mobile median and the largest image is what LCP waits for. It consumes the throughput bound,
+so the figure is an upper bound on the wait.
 
-The grades are resolved once per round and stored in the file, so what was on screen and what
-is in the export cannot disagree.
+The tile shows the term that decided the grade, with that term's unit, so the number and the
+colour describe the same thing. A term reporting a path being gone has no number and says so:
+`no UDP`, `host gone`, `no data`. Grades are resolved once per round and stored in the file.
 
 ### Reading it while travelling
 
-Four tiles, one per capability, each naming what it is about rather than which probe fed it:
-**calls & real-time**, **tapping a link**, **opening a new site**, **video & downloads**.
-That is what makes a failure placeable by reading down them — real-time alone in red is the
-UDP path, opening a new site alone in red is resolution, video alone in red is a congested
-cell while everything else answers promptly.
+Three tiles, one per purpose, each naming what a person is doing rather than which probe fed
+it: **calls & live audio**, **opening an article**, **video & downloads**. A failure is
+placeable by reading down them — calls alone in red is the UDP path, an article alone in red
+is resolution, video alone in red is a congested cell while everything else answers.
 
-A tile carries one status and nothing else: its name, the number, and the colour that number
-grades to. Both come from the same round, so they cannot describe different moments. The
-screen was previously smoothed over three rounds while printing the current round's figure,
-which put 35.5 Mb/s under a red border because a round three back had been slow. History
-belongs to the strip below, where every round is its own bar; the worst tile and the newest
-bar are the same colour by construction. Tapping a tile replaces its number with what it
-measures; the **?** in the header does that to all four at once.
+A tile carries one status: its name, the measurement that decided its grade, and the colour
+that measurement grades to. Both come from the same round and the same term, so they cannot
+describe different things. History belongs to the strips below, one row per purpose, where
+every round is its own bar. Tapping a tile replaces its number with what it measures; the
+**?** in the header does that to all three at once.
 
 Below them, two lamps show which paths are carrying traffic — IPv4 and UDP — lit, dim where a
 path is known absent, red where it has failed. The IPv4 verdict is written to the log once and
@@ -451,14 +487,15 @@ One SIM is active at a time, so comparing operators means comparing journeys.
 
 ## Data usage
 
-A time-boxed download in every round is almost the entire cost; the six small probes come to
-roughly 12 kB per round between them, of which each sampled latency probe is about 1.2 kB. The projection for the chosen settings is shown before a
-run starts and a running estimate during it, and the projection turns amber past 50 MB.
+The two download requests are almost the entire cost; the six small probes come to roughly
+12 kB per round between them, of which each sampled latency probe is about 1.2 kB. The
+projection for the chosen settings is shown before a run starts and a running estimate during
+it, and the projection turns amber past 50 MB.
 
-The download reaches its 5 MB byte ceiling every round on anything fast, so with the default
-2 s budget the cost is simply the number of rounds: about 800 MB for a 40-minute run on Fine,
-400 MB on Coarse. Nothing stops it partway — watching the total is the operator's job, which
-is why the running figure sits on the readout.
+The measured request is sized from the link, so a slow cell costs little and a fast one
+reaches the 4 MB ceiling. The projection assumes the ceiling every round: about 530 MB for a
+40-minute run on Fine, 270 MB on Coarse. Nothing stops it partway — watching the total is the
+operator's job, which is why the running figure sits on the readout.
 
 The interval sets both the cost and the resolution: a 30-second interval cannot locate the
 start of a dropout more precisely than 30 seconds. The estimate charges a TLS handshake per
