@@ -219,6 +219,10 @@ the probe measure the link:
 
 Anything else that failed is red, and the row shows the failure reason in place of a number.
 
+`absent` has not been seen on a live run. A Mac tethered to an iPhone gets a real IPv4 address
+because the phone runs CLAT for it, so the IPv6-only case only appears in Safari on the phone
+itself. Recorded journeys cover it; the current build does not.
+
 `udp`'s milliseconds are graded on its own row but deliberately ignored by the calling
 activity, which reads only whether the path exists. A slow STUN exchange can therefore show
 orange on a row above a green call. Both are correct: ICE gathering rides on top of the round
@@ -239,6 +243,10 @@ No standard covers this quantity, so the edges are fitted to the three committed
 
 Edges of 250 / 500 / 1000 ms split that corpus 206 / 31 / 12 / 10. `tests/replay.mjs` asserts
 that split, so moving an edge without re-deriving it fails.
+
+Two live runs since — a dual-stack Wi-Fi and a 5G hotspot, on different egress paths — put the
+minimum at 113 ms and 124 ms and the median at 126 ms and 143 ms. The floor holds across three
+independent networks, which is what places it at the destination rather than at any carrier.
 
 Three consequences worth stating:
 
