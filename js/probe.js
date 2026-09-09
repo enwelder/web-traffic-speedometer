@@ -16,7 +16,15 @@
 // clears the top grading edge over a 500 ms window, and nothing beyond it is ever read, so a
 // fast link pays for the whole body and a slow one stops at the budget having transferred
 // whatever it managed — the same measurement from fewer bytes.
-export const DOWNLOAD_REQUEST_BYTES = 625000;   // 10 Mb/s sustained for 500 ms
+// The measured request is sized from the warm-up so the body lasts about DOWN_TARGET_MS
+// whatever the link does: a cell at 1 Mb/s finishes a small one inside the budget instead of
+// being cut off, and a fast one gets enough bytes to be measured past its ramp. Accuracy stops
+// improving above the ceiling — 4 MB reads 293 Mb/s where 8 MB reads 291 — and below the floor
+// there is too little body to time.
+export const DOWN_TARGET_MS = 500;
+export const DOWN_MIN_BYTES = 128000;
+export const DOWN_MAX_BYTES = 4000000;
+export const DOWNLOAD_REQUEST_BYTES = 625000;   // what a 10 Mb/s link needs for the target
 // iOS opens a fresh connection for the download every round, and a fresh connection delivers
 // its first bytes at the congestion window's pace rather than the link's. This request is
 // spent opening that window so that the measured one sees the link. Without it a 5G cell a
@@ -348,6 +356,13 @@ async function whoRefused(probe, opts) {
 // too slow to finish the first one quickly has no window to escape, because the link itself is
 // the limit from the first packet — so there the first request is the measurement and the
 // second is skipped, which is also what keeps a slow round cheap.
+// What to ask for so the body lasts about the target at the rate the warm-up just saw.
+function sizeFrom(warm, max) {
+  const bytesPerSecond = (warm.bps_min ?? 0) / 8;
+  const wanted = Math.round(bytesPerSecond * (DOWN_TARGET_MS / 1000));
+  return Math.max(DOWN_MIN_BYTES, Math.min(max, wanted));
+}
+
 async function measureDownload(probe, opts) {
   const budgetMs = opts.download?.budgetMs ?? DEFAULT_DOWN_BUDGET_MS;
   const deadline = opts.timeoutMs ?? TIMEOUT_MS;
@@ -363,8 +378,9 @@ async function measureDownload(probe, opts) {
     warm.warmup_only = true;
     return warm;
   }
-  return runOnce(probe, {...opts, timeoutMs: timeLeft,
-                         download: {...opts.download, budgetMs: budgetLeft}});
+  const bytes = sizeFrom(warm, opts.download?.maxBytes ?? DOWN_MAX_BYTES);
+  return runOnce({...probe, bytes}, {...opts, timeoutMs: timeLeft,
+                                     download: {...opts.download, budgetMs: budgetLeft}});
 }
 
 // A probe that asks for samples is run repeatedly inside one deadline; `ms` becomes the
