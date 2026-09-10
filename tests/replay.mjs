@@ -127,6 +127,35 @@ r.test('assertClean MUST accept the fields format 11 adds WHEN an anonymised exp
   assert.doesNotThrow(() => assertClean(doc));
 });
 
+// One literal per text form the recorder, the position tracker and the wake lock emit, copied from
+// their sources.
+r.test('anonymise MUST keep each machine-written event text WHEN the recorder emits it', () => {
+  const texts = [
+    'IPv6 answered',
+    'IPv4 did not answer (network in 12 ms)',
+    'IPv4 unresolved (timeout in 3000 ms)',
+    'IPv4 carries traffic; its literal is blocked, not its path',
+    'IPv6 literal refused while IPv6 carries traffic. 2606:4700:4700::1111 is a public resolver ' +
+      'address; a VPN, filter or captive portal commonly intercepts it',
+    'IPv4 literal refused while IPv4 carries traffic. 1.1.1.1 is a public resolver address; a VPN, ' +
+      'filter or captive portal commonly intercepts it',
+    'no address literal answered, so the round trip has no instrument and calls cannot be graded',
+    'egress address changed over IPv6',
+    'location precise again (68 m)',
+    'location degraded to 102 m — speed and distance withheld',
+    'screen wake lock released',
+    'screen wake lock refused (NotAllowedError)',
+    'screen stays awake again'
+  ];
+  const doc = anonymise({
+    session: {started: 1700000000000, stopped: 1700000100000, name: 'x', note: ''},
+    samples: [{seq: 0, t: 1700000000000, probes: {}}],
+    events: texts.map((text, i) => ({t: 1700000000000 + i, mono: i, type: 'note', text}))
+  });
+  assert.deepEqual(doc.events.map(e => e.text), texts);
+  assert.doesNotThrow(() => assertClean(doc));
+});
+
 r.test('gradeActivities MUST return a known grade or null for every round WHEN replayed over each recording', () => {
   for (const [name, j] of Object.entries(journeys)) {
     let graded = 0;
