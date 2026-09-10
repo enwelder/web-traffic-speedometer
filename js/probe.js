@@ -241,6 +241,8 @@ function finishTrace(r, trace, url) {
   r.ok = true;
   r.egress_ip = trace.ip;
   r.colo = trace.colo;
+  // The HTTP version the server received the request over.
+  r.protocol = trace.http || null;
   return r;
 }
 
@@ -672,6 +674,12 @@ export async function runProbe(probe, opts = {}) {
   const out = {...(good[good.length - 1] ?? runs[runs.length - 1])};
   out.ms_samples = runs.map(r => r.ms);
   out.sample_starts_ms = starts;
+  // The trace endpoint reports the HTTP version per request, so each answered sample carries the
+  // transport it used.
+  if (probe.kind === 'trace') {
+    out.protocol_samples = runs.map(r => (r.ok ? r.protocol : null));
+    delete out.protocol;
+  }
   if (probe.kind === 'stun') {
     out.host_ms_samples = runs.map(r => r.host_ms);
     delete out.host_ms;

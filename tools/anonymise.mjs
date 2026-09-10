@@ -101,7 +101,7 @@ const KEYS = {
           'window_bytes', 'window_ms',
           'duration_ms', 'aborted_reason', 'public_ips',
           'candidates', 'per_stream', 'wall_ms', 'samples_end', 'stall_check', 'window_cut',
-          'samples_lost', 'sample_starts_ms', 'host_ms_samples', 'upload_bytes', 'rate_source',
+          'samples_lost', 'sample_starts_ms', 'host_ms_samples', 'upload_bytes', 'rate_source', 'protocol_samples',
           // Fields of recordings from releases up to 3.3.1, kept for replay.
           'bps_transfer', 'bps_end_to_end', 'bps_steady', 'bps_peak', 'warmup_ms',
           'warmup_bytes', 'insufficient_sample'],
@@ -122,6 +122,7 @@ const MACHINE_TEXT = [
   /^screen wake lock (released|refused \([A-Za-z]+\))$/,
   /^screen stays awake again$/,
   /^location (degraded|improved) to \d+ m$/,
+  /^no location \((denied|timeout|unavailable)\)$/,
   /^location (precise again \(\d+ m\)|degraded to \d+ m — speed and distance withheld)$/,
   /^[a-z_0-9]+ has failed \d+ rounds while the others answer; resting it for \d+ rounds to clear the connection\.$/,
   /^egress address changed( over IPv[46])?$/,

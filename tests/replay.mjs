@@ -127,6 +127,22 @@ r.test('assertClean MUST accept the fields format 11 adds WHEN an anonymised exp
   assert.doesNotThrow(() => assertClean(doc));
 });
 
+r.test('assertClean MUST accept the fields format 12 adds WHEN an anonymised export carries them', () => {
+  const doc = anonymise({
+    session: {started: 1700000000000, stopped: 1700000100000, name: 'x', note: ''},
+    samples: [{seq: 0, t: 1700000000000, phase_up_ms: 40, interrupted: 'wake_lock', suspended_ms: 4200,
+               reference: {ok: true, ms: 40, fail: null},
+               probes: {ip6: {ok: true, ms: 30, protocol_samples: ['http/2', null]},
+                        up: {ok: true, ms: 70, bps: 9e6, upload_bytes: 40000, bytes: 40000,
+                             rate_source: 'timing', ttfb_ms: 35, protocol: 'http/1.1',
+                             server: {proto: 'TCP', rtt_us: 8900}}}}],
+    events: [{t: 1700000015000, mono: 15000, type: 'pause', round: 0, text: '4.2s bridged'},
+             {t: 1700000016000, mono: 16000, type: 'note', text: 'no location (unavailable)'}]
+  });
+  assert.doesNotThrow(() => assertClean(doc));
+  assert.equal(doc.events[1].text, 'no location (unavailable)', 'the location note is machine-written');
+});
+
 // One literal per text form the recorder, the position tracker and the wake lock emit, copied from
 // their sources.
 r.test('anonymise MUST keep each machine-written event text WHEN the recorder emits it', () => {

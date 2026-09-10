@@ -47,6 +47,8 @@ export function createPositionTracker({onNote, onNotice, onChange} = {}) {
     watchId = navigator.geolocation.watchPosition(
       p => {
         lastPos = p;
+        // A fix ends the error, and the error's notice with it.
+        if (error) onNotice?.('');
         error = null;
         // Accuracy changes mid-journey (a tunnel, or a fallback to tower positioning) and
         // changes what the coordinates support, so each transition is reported.
@@ -60,7 +62,10 @@ export function createPositionTracker({onNote, onNotice, onChange} = {}) {
         onChange?.();
       },
       e => {
-        error = e.code === 1 ? 'denied' : e.code === 3 ? 'timeout' : 'unavailable';
+        const next = e.code === 1 ? 'denied' : e.code === 3 ? 'timeout' : 'unavailable';
+        // iOS repeats an error on every watch timeout while it holds no fix; one event per change.
+        if (next !== error) onNote?.(`no location (${next})`);
+        error = next;
         onNotice?.(`No location (${error}). Measurement continues without coordinates.`);
         onChange?.();
       },

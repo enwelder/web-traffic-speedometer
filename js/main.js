@@ -165,7 +165,7 @@ async function begin() {
   // A recovery offer on screen must not survive into a new session.
   dismissRecovery();
   resetReadout();
-  ui.notice('');
+  ui.clearNotice();
   writePrefs();
 
   // Blanked before the first round lands, or the previous session's colours stay for a whole

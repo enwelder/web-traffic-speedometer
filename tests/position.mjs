@@ -141,6 +141,29 @@ s.test('createPositionTracker MUST report denied on the row, the snapshot and th
   assert.match(notices[0], /No location \(denied\)/);
 });
 
+s.test('createPositionTracker MUST emit one note per change of error state WHEN the platform repeats an error', () => {
+  // iOS repeats "position unavailable" every watch timeout while it holds only tower estimates.
+  const geo = fakeGeolocation();
+  const {notes} = track();
+  geo.fail(2);
+  geo.fail(2);
+  geo.fail(3);
+  assert.deepEqual(notes, ['no location (unavailable)', 'no location (timeout)']);
+});
+
+s.test('createPositionTracker MUST clear its notice WHEN a fix follows an error', () => {
+  // Recorded 10 Sep: the notice stayed on screen at 19:08 while fixes had resumed.
+  const geo = fakeGeolocation();
+  const notices = [];
+  const {tracker} = track({onNotice: n => notices.push(n)});
+  geo.fail(2);
+  geo.send(51.9244, 4.4777, 1, {accuracy: 1414});
+  assert.deepEqual(notices, ['No location (unavailable). Measurement continues without coordinates.', '']);
+  assert.equal(tracker.read().pos_error, null);
+  geo.send(51.9245, 4.4777, 2, {accuracy: 1414});
+  assert.equal(notices.length, 2, 'a fix with no error before it writes nothing');
+});
+
 s.test('createPositionTracker.reset MUST return null speed_derived WHEN the fix pair spans two sessions', () => {
   const geo = fakeGeolocation();
   const {tracker} = track();

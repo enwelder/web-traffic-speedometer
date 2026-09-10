@@ -32,7 +32,20 @@ export function rate(bps) {
   return `${mb >= 100 ? Math.round(mb) : mb.toFixed(1)} Mb/s`;
 }
 
-export function notice(text) { $('notice').textContent = text || ''; }
+// One notice line with several writers. Each writer clears only its own text, so a recovered wake
+// lock leaves a location notice standing.
+let noticeOwner = null;
+
+export function notice(text, owner = 'page') {
+  if (!text && owner !== noticeOwner) return;
+  $('notice').textContent = text || '';
+  noticeOwner = text ? owner : null;
+}
+
+export function clearNotice() {
+  $('notice').textContent = '';
+  noticeOwner = null;
+}
 
 // One definition of failure, shared with the export, so the percentage on screen and the
 // count in the file agree.

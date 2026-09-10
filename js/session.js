@@ -217,11 +217,14 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
   const contacted = new Set();
   const pendingSamples = [];
   const pendingEvents = [];
-  const stuck = createStuckTracker({onNotice});
+  // Writers share one notice line; each is named so it clears only its own text.
+  const noticeFrom = owner => text => onNotice?.(text, owner);
+  const storageNotice = noticeFrom('storage');
+  const stuck = createStuckTracker({onNotice: noticeFrom('stuck')});
   // The event carries the position and the session id, so it is the recorder's to write.
-  const wake = createWakeLock({onNotice, onEvent: text => running && noteEvent(text),
+  const wake = createWakeLock({onNotice: noticeFrom('wake_lock'), onEvent: text => running && noteEvent(text),
                                onRelease: () => interrupt('wake_lock')});
-  const position = createPositionTracker({onNotice, onChange: () => emit(),
+  const position = createPositionTracker({onNotice: noticeFrom('position'), onChange: () => emit(),
                                           onNote: text => running && noteEvent(text)});
 
   const mono = () => performance.now() - t0;
@@ -265,11 +268,11 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
         await store.putEvents(batch);
         pendingEvents.splice(0, batch.length);
       }
-      if (writeFailed) { writeFailed = false; onNotice?.(''); }
+      if (writeFailed) { writeFailed = false; storageNotice(''); }
     } catch (e) {
       // Rows stay in the buffer and are retried next round.
       writeFailed = true;
-      onNotice?.(`Storage write failed (${e.message}). ${pendingSamples.length} rounds held in memory, retrying.`);
+      storageNotice(`Storage write failed (${e.message}). ${pendingSamples.length} rounds held in memory, retrying.`);
     } finally {
       emit();
     }

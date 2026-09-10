@@ -19,6 +19,18 @@ s.test('runProbe MUST report egress_ip, colo and status WHEN the trace body pars
   }
 });
 
+s.test('runProbe MUST record protocol_samples aligned with ms_samples and null for failed samples WHEN the trace body carries http=', async () => {
+  let call = 0;
+  globalThis.fetch = async () => {
+    if (call++ === 1) throw netError();
+    return {ok: true, status: 200, text: async () => `${TRACE}http=http/2\n`};
+  };
+  const r = await probe.runProbe(P.ip6, {timeoutMs: 2000});
+  assert.equal(r.protocol_samples.length, r.ms_samples.length);
+  assert.deepEqual(r.protocol_samples.slice(0, 3), ['http/2', null, 'http/2']);
+  assert.equal(r.protocol, undefined, 'the per-sample list replaces a single value');
+});
+
 s.test('runProbe MUST return fail network with a time-to-fail WHEN fetch throws', async () => {
   globalThis.fetch = async () => { throw netError(); };
   const r = await probe.runProbe(P.ip6);
@@ -1157,6 +1169,24 @@ const round = over => ({t: Date.parse('2026-09-09T12:00:00Z'), probes: {
   down: {ok: true, bps: 25066667, saturated: true, ceiling_bps: 25066667, streams: 3},
   ...over
 }});
+
+r.test('notice MUST clear only the text of its owner WHEN two owners write the notice line', () => {
+  const line = {textContent: ''};
+  const saved = globalThis.document;
+  globalThis.document = {...saved, getElementById: () => line};
+  try {
+    ui.notice('No location (timeout). Measurement continues without coordinates.', 'position');
+    ui.notice('', 'wake_lock');
+    assert.match(line.textContent, /No location/, 'a recovered wake lock leaves the location notice');
+    ui.notice('', 'position');
+    assert.equal(line.textContent, '');
+    ui.notice('Exported 3 rounds and 1 events.');
+    ui.clearNotice();
+    assert.equal(line.textContent, '', 'a new session clears every owner');
+  } finally {
+    globalThis.document = saved;
+  }
+});
 
 r.test('hatchesStrip MUST return false WHEN the pause event names an interrupted round', () => {
   // The interrupted row draws the hatch for that absence.
