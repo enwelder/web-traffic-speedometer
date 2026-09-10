@@ -14,8 +14,10 @@ import * as store from './store.js';
 
 // Probe failure predicate, shared by the screen and the export. Excluded: `resting` (no request
 // sent), `expected` (family absent), `blocked` and `unused` literals (address refused, or traffic
-// on the other family), `short` (span too brief to divide by) and `error` (the round threw).
-const NOT_THE_LINK = new Set(['resting', 'short', 'error']);
+// on the other family), `short` (span too brief to divide by, or an upload count the browser
+// could not read), `no_budget` (the round had no time left for the upload) and `error` (the round
+// threw).
+const NOT_THE_LINK = new Set(['resting', 'short', 'no_budget', 'error']);
 
 export const countsAsFailure = r =>
   !!r && r.ok === false && !r.expected && !r.blocked && !r.unused && !NOT_THE_LINK.has(r.fail);
@@ -42,7 +44,7 @@ function probeSummary(rs) {
   };
 }
 
-// The download probe alone reports a throughput bound.
+// The download and upload probes report a rate.
 function rateSummary(rs) {
   const ok = rs.filter(r => r.ok);
   const rates = ok.map(r => r.bps).filter(v => v != null).sort((a, b) => a - b);
@@ -83,7 +85,7 @@ export function summarise(samples, events = []) {
   const probes = {};
   for (const p of PROBES) {
     const rs = ran.map(s => s.probes[p.id]).filter(Boolean);
-    probes[p.id] = p.id === 'down'
+    probes[p.id] = p.id === 'down' || p.id === 'up'
       ? {...probeSummary(rs), ...rateSummary(rs)}
       : probeSummary(rs);
   }

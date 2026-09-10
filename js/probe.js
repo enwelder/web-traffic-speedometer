@@ -23,6 +23,9 @@ export const DOWN_REQUEST_BYTES = 8000000;
 // A window shorter than this holds no round trip and yields no rate. A window that reaches the
 // byte cap is exempt: the cap proves the ceiling.
 export const DOWN_MIN_SPAN_MS = 100;
+// Calls need about 100 kb/s upstream. 40 kB crosses the 0.3 Mb/s edge in 1.07 s and the 0.1 Mb/s
+// edge in 3.2 s, both inside the upload's budget.
+export const UP_BYTES = 40000;
 // A round trip under load runs long on a busy link: the timeout is twice the window.
 export const LOADED_RTT_MS = 2 * DOWN_WINDOW_MS;
 // Held back from the interval so a round returns before the next one is due.
@@ -60,6 +63,9 @@ export const PROBES = [
   // Sampled like the other latency probes, so the medians are comparable.
   {id: 'dns_ctl', label: 'HEAD to that host under a cached name', kind: 'opaque', url: 'https://wts-dns-control.github.io/', method: 'HEAD', samples: LATENCY_SAMPLES},
   {id: 'down',    label: 'parallel streams, read for a fixed window', kind: 'download', url: 'https://speed.cloudflare.com/__down', bytes: DOWN_REQUEST_BYTES},
+  // The only request with a body: a fixed count of zero bytes, timed to the response the server
+  // sends once the last byte arrived.
+  {id: 'up', label: 'POST of zero bytes, timed to the response', kind: 'upload', url: 'https://speed.cloudflare.com/__up', method: 'POST', bodyBytes: UP_BYTES},
   // The only UDP probe. Calls and streaming use UDP, and carriers can handle it apart from TCP;
   // the reported address is the UDP NAT mapping.
   {id: 'udp',     label: 'STUN binding request over UDP',       kind: 'stun',   url: STUN_SERVER, samples: LATENCY_SAMPLES}
@@ -94,9 +100,9 @@ function validateTrace(trace, url) {
   return null;
 }
 
-// Cloudflare's view of the connection: RTT in microseconds, retransmits, losses, delivery
-// rate and congestion window. Under congestion retrans and cwnd move while reachability
-// holds.
+// Cloudflare's view of the connection: transport, RTT in microseconds, retransmits, losses,
+// delivery rate and congestion window. Under congestion retrans and cwnd move while reachability
+// holds. `proto` is the transport the server terminated.
 function parseServerTiming(header) {
   if (!header) return null;
   const m = /cfL4;desc="([^"]*)"/.exec(header);
@@ -106,7 +112,7 @@ function parseServerTiming(header) {
   return {
     rtt_us: num('rtt'), min_rtt_us: num('min_rtt'), rtt_var_us: num('rtt_var'),
     lost: num('lost'), retrans: num('retrans'),
-    delivery_rate: num('delivery_rate'), cwnd: num('cwnd')
+    delivery_rate: num('delivery_rate'), cwnd: num('cwnd'), proto: q.get('proto')
   };
 }
 
@@ -167,10 +173,12 @@ function relayAbort(signal, ctl) {
   return () => signal.removeEventListener('abort', relay);
 }
 
-async function request(url, signal, verb, mode) {
+// A body is sent as text/plain, a CORS-safelisted type, so the upload needs no preflight.
+async function request(url, {signal, verb = 'GET', mode = 'cors', body = null}) {
   const res = await fetch(url, {
     method: verb, mode, cache: 'no-store', credentials: 'omit',
-    referrerPolicy: 'no-referrer', signal
+    referrerPolicy: 'no-referrer', signal, body,
+    headers: body ? {'Content-Type': 'text/plain'} : undefined
   });
   return res;
 }
@@ -193,8 +201,8 @@ async function runOnce(probe, {timeoutMs = TIMEOUT_MS, signal} = {}) {
   const elapsed = () => Math.round(performance.now() - t0);
 
   try {
-    const res = await request(url, ctl.signal, probe.method || 'GET',
-                              probe.kind === 'opaque' ? 'no-cors' : 'cors');
+    const res = await request(url, {signal: ctl.signal, verb: probe.method || 'GET',
+                                    mode: probe.kind === 'opaque' ? 'no-cors' : 'cors'});
 
     if (probe.kind === 'opaque') {
       // An opaque response has no readable status, so success means the request completed.
@@ -484,7 +492,7 @@ function dropBody(res) {
 async function openStream(url, ctl, {stat, elapsed, onOpen}) {
   let res;
   try {
-    res = await request(url, ctl.signal, 'GET', 'cors');
+    res = await request(url, {signal: ctl.signal});
   } catch (e) {
     stat.end ??= e?.name === 'AbortError' ? 'aborted' : 'network';
     return;
@@ -555,6 +563,62 @@ async function measureDownload(probe, opts) {
   }
 }
 
+// An abort controller that fires at `timeoutMs` or when `signal` aborts; `fail` names which one
+// ended a request.
+function deadline(signal, timeoutMs) {
+  const ctl = new AbortController();
+  let timedOut = false;
+  const timer = setTimeout(() => { timedOut = true; ctl.abort(); }, timeoutMs);
+  const unrelay = relayAbort(signal, ctl);
+  return {
+    ctl,
+    fail: e => (e?.name === 'AbortError' ? (timedOut ? 'timeout' : 'abort') : 'network'),
+    done() { clearTimeout(timer); unrelay(); }
+  };
+}
+
+// One POST of `bodyBytes` zero bytes. The server answers once the last byte arrived, so the span
+// from the request start to the response start holds the upload and one round trip. Resource
+// timing separates that span from connection setup; without an entry the span includes it.
+async function measureUpload(probe, {timeoutMs = TIMEOUT_MS, signal} = {}) {
+  const r = {ok: false, ms: null, status: null, fail: null, bytes: 0};
+  const d = deadline(signal, timeoutMs);
+  if (d.ctl.signal.aborted) { d.done(); return {...r, fail: 'abort', ms: 0}; }
+  const url = probeUrl(probe);
+  const t0 = performance.now();
+  try {
+    const res = await request(url, {signal: d.ctl.signal, verb: probe.method || 'GET',
+                                    body: new Uint8Array(probe.bodyBytes)});
+    r.ms = Math.round(performance.now() - t0);
+    r.status = res.status;
+    // Reading the body completes the load, which files the timing entry.
+    await res.text();
+    return await finishUpload(r, res, url, probe);
+  } catch (e) {
+    r.ms = Math.round(performance.now() - t0);
+    r.fail = d.fail(e);
+    return r;
+  } finally {
+    d.done();
+  }
+}
+
+async function finishUpload(r, res, url, probe) {
+  if (!res.ok) { r.fail = 'http'; return r; }
+  r.server = parseServerTiming(res.headers.get('server-timing'));
+  r.colo = res.headers.get('cf-meta-colo') || null;
+  r.upload_bytes = Number(res.headers.get('cf-meta-upload-bytes')) || 0;
+  r.bytes = r.upload_bytes;
+  Object.assign(r, await readTiming(url));
+  // A count the browser could not read, or a body cut short, gives no rate.
+  if (r.upload_bytes !== probe.bodyBytes) { r.fail = 'short'; return r; }
+  const timed = r.ttfb_ms > 0;
+  r.rate_source = timed ? 'timing' : 'fetch';
+  r.bps = Math.round((probe.bodyBytes * 8000) / (timed ? r.ttfb_ms : Math.max(r.ms, 1)));
+  r.ok = true;
+  return r;
+}
+
 // No stream opened. Failure precedence: `http`, `network`, `connect`, `abort`.
 function downFailed(perStream, ms) {
   const ends = perStream.map(s => s.end);
@@ -598,6 +662,7 @@ export async function runProbe(probe, opts = {}) {
     if (r.fail === 'network') r.refused_by = await whoRefused(probe, opts);
     return r;
   }
+  if (probe.kind === 'upload') return measureUpload(probe, opts);
   if (!probe.samples || probe.samples < 2) return runOnce(probe, opts);
 
   const started = performance.now();
@@ -775,7 +840,7 @@ export async function runRound({signal, download = {}, intervalMs = 5000,
                                 resting = null, pending = null} = {}) {
   const opts = p => ({signal, download, timeoutMs: timeoutFor(p, intervalMs)});
   const t0 = performance.now();
-  const idle = PROBES.filter(p => p.kind !== 'download');
+  const idle = PROBES.filter(p => p.kind !== 'download' && p.kind !== 'upload');
   const results = await Promise.all(idle.map(p =>
     tracked(pending, p.id, runOrRest(p, opts(p), resting))));
   const idleMs = Math.round(performance.now() - t0);
@@ -792,11 +857,13 @@ export async function runRound({signal, download = {}, intervalMs = 5000,
   const left = intervalMs - ROUND_SLACK_MS - (performance.now() - t0);
   const downOpts = {...opts(down),
                     timeoutMs: Math.max(MIN_TIMEOUT_MS, Math.min(timeoutFor(down, intervalMs), left))};
+  const up = PROBES.find(p => p.kind === 'upload');
   if (signal?.aborted) {
     out[down.id] = {ok: false, ms: null, status: null, fail: 'abort'};
+    out[up.id] = {ok: false, ms: null, status: null, fail: 'abort'};
     markLiterals(out);
     return {probes: out, loaded_rtt_ms: null, loaded_rtt_from: null,
-            phase_idle_ms: idleMs, phase_down_ms: null, reference: null};
+            phase_idle_ms: idleMs, phase_down_ms: null, phase_up_ms: null, reference: null};
   }
 
   const downT0 = performance.now();
@@ -811,12 +878,26 @@ export async function runRound({signal, download = {}, intervalMs = 5000,
                     {windowOpened, live: () => !downDone, pending, until: downT0 + downOpts.timeoutMs})
   ]);
   out[down.id] = downResult;
+  const phaseDownMs = Math.round(performance.now() - downT0);
+
+  // The upload follows the download, which keeps its budget.
+  const upT0 = performance.now();
+  out[up.id] = await tracked(pending, up.id, runUpload(up, {signal, intervalMs, t0, resting}));
+  const phaseUpMs = Math.round(performance.now() - upT0);
 
   markLiterals(out);
-  const phaseDownMs = Math.round(performance.now() - downT0);
   const reference = await checkReference(out, {signal, pending});
   return {probes: out, loaded_rtt_ms: loaded[0] ?? null, loaded_rtt_from: loaded[1] ?? null,
-          phase_idle_ms: idleMs, phase_down_ms: phaseDownMs, reference};
+          phase_idle_ms: idleMs, phase_down_ms: phaseDownMs, phase_up_ms: phaseUpMs, reference};
+}
+
+// The upload takes what the interval leaves after the idle and download phases. Below
+// MIN_TIMEOUT_MS it is not sent: a request without a fair budget records its overrun as a link
+// failure, and pushes the round past its slot.
+function runUpload(up, {signal, intervalMs, t0, resting}) {
+  const left = intervalMs - ROUND_SLACK_MS - (performance.now() - t0);
+  if (left < MIN_TIMEOUT_MS) return Promise.resolve({ok: false, ms: null, status: null, fail: 'no_budget'});
+  return runOrRest(up, {signal, timeoutMs: Math.min(timeoutFor(up, intervalMs), left)}, resting);
 }
 
 // One ungraded round trip during the download window, repeating the probe that answered idle, so

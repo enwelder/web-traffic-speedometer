@@ -3,7 +3,7 @@
 import {PROBES} from './probe.js';
 import {ACTIVITY_IDS, GRADES, ACTIVITIES, gradeActivities, worse, probeReading,
         activeRoute} from './grade.js';
-import {DOWN_CEILING_BPS} from './probe.js';
+import {DOWN_CEILING_BPS, UP_BYTES} from './probe.js';
 
 const STRIP_BARS = 48;
 
@@ -54,12 +54,12 @@ export function classify(sample) {
 
 // One row per reading; both address families share the route row, which shows the family
 // carrying traffic.
-const ROWS = ['route', 'dns', 'dns_ctl', 'udp', 'down'];
+const ROWS = ['route', 'dns', 'dns_ctl', 'udp', 'down', 'up'];
 
 // Row labels name the request, matching the probe table; PROBES holds the full label.
 const PROBE_LABELS = {
   ip6: 'GET IPv6', ip4: 'GET IPv4', dns: 'HEAD new host', dns_ctl: 'HEAD same host',
-  down: 'GET download', udp: 'STUN'
+  down: 'GET download', up: 'POST upload', udp: 'STUN'
 };
 // The row id a reading comes from, and the label it carries, both depend on the round.
 const rowProbe = (row, sample) =>
@@ -71,7 +71,8 @@ const ROUTE_EXPLAIN = 'GET to an address literal, no lookup. Whichever family is
 const PROBE_CAVEATS = {
   dns: 'The whole cost of reaching a host never contacted before: resolution, connection and handshake together. A page cannot separate them.',
   down: `Three connections read together for a fixed window. Reads up to ${Math.round(DOWN_CEILING_BPS / 1e6)} Mb/s and says ≥ at that point, which is all a window this size can prove.`,
-  udp: 'ICE gathering rides on top of the round trip, so this reads slower than the link is. Calls grade on it, since call audio travels over UDP.'
+  udp: 'ICE gathering rides on top of the round trip, so this reads slower than the link is. Calls grade on it, since call audio travels over UDP.',
+  up: `${UP_BYTES / 1000} kB of zero bytes, timed until the server confirms the last one. The time holds one round trip, so a fast link reads as a lower bound.`
 };
 
 // A row shows the measurement its colour graded. A reading without a value shows its note.

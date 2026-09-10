@@ -92,7 +92,7 @@ const KEYS = {
            'in_pause', 'wake_lock', 'prev_round_ms', 'intervalMs', 'lat', 'lon', 'accuracy',
            'accuracy_class', 'speed', 'speed_derived', 'speed_source', 'heading', 'pos_t',
            'pos_error', 'probes', 'grades', 'pgrades', 'first_packet_ms', 'loaded_rtt_ms', 'loaded_rtt_from',
-           'round_ms', 'phase_idle_ms', 'phase_down_ms', 'visible_end', 'reference'],
+           'round_ms', 'phase_idle_ms', 'phase_down_ms', 'phase_up_ms', 'visible_end', 'reference'],
   probe: ['ok', 'ms', 'status', 'fail', 'egress_ip', 'colo', 'ms_samples', 'samples_ok',
           'ms_min', 'ms_max', 'sample_fail', 'expected', 'blocked', 'unused', 'stuck', 'host', 'bytes', 'truncated', 'server',
           'ttfb_ms', 'transfer_ms', 'handshake', 'reused', 'protocol', 'lookup_ms',
@@ -101,7 +101,7 @@ const KEYS = {
           'window_bytes', 'window_ms',
           'duration_ms', 'aborted_reason', 'public_ips',
           'candidates', 'per_stream', 'wall_ms', 'samples_end', 'stall_check', 'window_cut',
-          'samples_lost', 'sample_starts_ms', 'host_ms_samples',
+          'samples_lost', 'sample_starts_ms', 'host_ms_samples', 'upload_bytes', 'rate_source',
           // Fields of recordings from releases up to 3.3.1, kept for replay.
           'bps_transfer', 'bps_end_to_end', 'bps_steady', 'bps_peak', 'warmup_ms',
           'warmup_bytes', 'insufficient_sample'],

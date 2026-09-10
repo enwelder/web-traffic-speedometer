@@ -5,9 +5,9 @@ import {PROBES, STUCK_AFTER, STUCK_COOLDOWN} from './probe.js';
 
 // The failures a fresh connection can fix.
 const WEDGE_FAILS = new Set(['timeout', 'network']);
-// `udp` and `down` failures hold no persistent connection to reset; resting either removes a
-// failing term from the activity it feeds.
-const NEVER_RESTED = new Set(['udp', 'down']);
+// `udp`, `down` and `up` failures hold no persistent connection to reset; resting any of them
+// removes a failing term from the activity it feeds.
+const NEVER_RESTED = new Set(['udp', 'down', 'up']);
 
 export function createStuckTracker({onNotice} = {}) {
   const consecutiveFails = {};

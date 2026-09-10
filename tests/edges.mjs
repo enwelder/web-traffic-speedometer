@@ -619,7 +619,7 @@ n.test('createRecorder MUST record a skip event naming what the running round wa
 
 n.test('countsAsFailure MUST return true for network reasons and false for resting, expected and unsupported WHEN given each failure reason', () => {
   const network = ['timeout', 'network', 'http', 'parse', 'abort', 'stalled', 'empty', 'no_srflx'];
-  const notNetwork = ['resting'];
+  const notNetwork = ['resting', 'short', 'no_budget'];
   for (const fail of network) {
     assert.equal(countsAsFailure({ok: false, fail}), true, `${fail} is a failure`);
   }

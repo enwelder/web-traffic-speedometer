@@ -56,6 +56,15 @@ export function netError() {
   return Object.assign(new TypeError('Load failed'), {name: 'TypeError'});
 }
 
+// The upload endpoint's answer: an empty body, the byte count the server received and its TCP view.
+export const upResponse = bytes => ({
+  ok: true, status: 200, text: async () => '',
+  headers: {get: h => ({
+    'cf-meta-upload-bytes': bytes == null ? null : String(bytes),
+    'server-timing': 'cfL4;desc="?proto=TCP&rtt=8911&min_rtt=8050&lost=0&retrans=0"'
+  })[h.toLowerCase()] ?? null}
+});
+
 
 // A minimal test runner: named cases, a count, and a non-zero exit code on any failure.
 export function suite(name) {

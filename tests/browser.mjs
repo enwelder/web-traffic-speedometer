@@ -66,6 +66,13 @@ async function context(extra = {}) {
     if (u.hostname === '127.0.0.1' || u.hostname === 'localhost') return route.continue();
     if (u.hostname === '1.1.1.1') return route.abort('connectionfailed');
     if (state.mode === 'fail') return route.abort('connectionfailed');
+    if (u.hostname === 'speed.cloudflare.com' && u.pathname === '/__up') return route.fulfill({
+      status: 200, body: '',
+      headers: {'access-control-allow-origin': '*', 'timing-allow-origin': '*',
+                'access-control-expose-headers': 'server-timing, cf-meta-colo, cf-meta-upload-bytes',
+                'cf-meta-upload-bytes': String(route.request().postDataBuffer()?.length ?? 0),
+                'server-timing': 'cfL4;desc="?proto=TCP&rtt=6212&min_rtt=6209&lost=0&retrans=0"'}
+    });
     if (u.hostname === 'speed.cloudflare.com') return route.fulfill({
       // The probe requests more bytes than a window reads; the stub caps the body at 2 MB.
       status: 200, body: Buffer.alloc(Math.min(Number(u.searchParams.get('bytes')) || 250000, 2e6)),
@@ -299,7 +306,8 @@ b.test('every probe MUST reach its endpoint with no policy violation logged WHEN
   const page = await ctx.newPage();
   const blocked = [];
   page.on('console', m => { if (/Content Security Policy|Refused to/.test(m.text())) blocked.push(m.text()); });
-  await page.goto(BASE, {waitUntil: 'networkidle'});
+  // A 2 s round leaves the upload no budget after the download; 6 s lets the first round send it.
+  await page.goto(`${PLAIN}?interval=6000`, {waitUntil: 'networkidle'});
   await page.click('#btn-start');
   await page.waitForTimeout(3000);
   await page.click('#btn-start');
@@ -310,7 +318,7 @@ b.test('every probe MUST reach its endpoint with no policy violation logged WHEN
   // complete round.
   const whole = db.samples.filter(s => !s.skipped && s.probes.down?.fail !== 'abort');
   const last = whole.at(-1).probes;
-  for (const id of ['ip6', 'dns', 'dns_ctl', 'down', 'udp']) {
+  for (const id of ['ip6', 'dns', 'dns_ctl', 'down', 'up', 'udp']) {
     assert.equal(last[id].ok, true, `${id} reached its endpoint under the policy`);
   }
   await ctx.close();

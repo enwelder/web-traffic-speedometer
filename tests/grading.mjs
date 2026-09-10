@@ -77,6 +77,29 @@ s.test('gradeActivities MUST add no UDP delay term WHEN udp is expected', () => 
   assert.deepEqual([r.grade, r.missing], ['green', []]);
 });
 
+s.test('gradeActivities MUST grade voice red with note no upload WHEN the upload failed on the link', () => {
+  const r = g.activityReading('voice', round({up: bad()}));
+  assert.deepEqual([r.grade, r.note], ['red', 'no upload']);
+});
+
+s.test('gradeActivities MUST grade voice on the upload rate WHEN the upload answered', () => {
+  // 50 kb/s upstream carries speech without video.
+  const r = g.activityReading('voice', round({up: ok(900, {bps: 50e3})}));
+  assert.deepEqual([r.grade, r.value, r.scale], ['orange', 50e3, 'call_rate']);
+});
+
+s.test('gradeActivities MUST add no upload term WHEN the round has no up result or the upload was short', () => {
+  for (const up of [undefined, bad({fail: 'short'}), bad({fail: 'no_budget'})]) {
+    const r = g.activityReading('voice', round({up}));
+    assert.deepEqual([r.grade, r.missing], ['green', []], JSON.stringify(up));
+  }
+});
+
+s.test('probeReading MUST return the upload rate graded on call_rate WHEN the upload answered', () => {
+  const r = g.probeReading('up', round({up: ok(60, {bps: 2e6})}));
+  assert.deepEqual([r.state, r.value, r.unit, r.grade], ['ok', 2e6, 'bps', 'green']);
+});
+
 s.test('gradeActivities MUST grade news on the cold lookup and the throughput together WHEN either term degrades', () => {
   assert.equal(g.gradeActivities(round()).news, 'green');
   // A fast lookup with near-zero throughput grades news red.

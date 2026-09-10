@@ -113,6 +113,12 @@ s.test('createStuckTracker MUST leave the UDP probe unrested WHEN it fails alone
   assert.equal(t.resting(99).size, 0);
 });
 
+s.test('createStuckTracker MUST leave the upload unrested WHEN it fails alone', () => {
+  const t = createStuckTracker({});
+  for (let seq = 0; seq < STUCK_AFTER + 3; seq++) feed(t, seq, {up: 'timeout'});
+  assert.equal(t.resting(99).size, 0);
+});
+
 s.test('gradeActivities MUST grade voice red in every round WHEN a carrier drops STUN for 27 rounds', () => {
   const t = createStuckTracker({});
   const voice = [];

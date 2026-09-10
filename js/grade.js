@@ -78,7 +78,7 @@ const routeMs = p => (p.ip6?.ok ? p.ip6.ms : p.ip4?.ok ? p.ip4.ms : null);
 // Any hostname probe that reached the network this round. Literals can be blocked or hijacked on
 // a working path: on one operator both literals failed every round while DNS and the download
 // answered.
-const reached = p => !!(p.down?.ok || p.dns?.ok || p.dns_ctl?.ok);
+const reached = p => !!(p.down?.ok || p.up?.ok || p.dns?.ok || p.dns_ctl?.ok);
 
 // The round trip failed: neither literal answered and one of them counts against the link. A
 // timed-out literal counts; absent, rested, blocked and unused literals do not.
@@ -102,6 +102,9 @@ const TERMS = {
     {scale: 'round_trip', value: routeMs(p)},
     // Call audio travels over UDP. A browser without WebRTC measures no UDP delay and adds no term.
     ...(p.udp?.ok ? [{scale: 'round_trip', value: p.udp.ms}] : []),
+    // A call sends as much as it receives. An upload the round could not time adds no term.
+    {note: 'no upload', grade: failed(p.up) ? 'red' : null},
+    ...(p.up?.ok ? [{scale: 'call_rate', value: p.up.bps}] : []),
     // A call carries about 100 kb/s over the path the round trip and the UDP probe measured, so a
     // failed bulk download drops the rate term and adds no red.
     ...(skipRate || noThroughput ? [] : [{scale: 'call_rate', value: rate}])
@@ -167,8 +170,11 @@ export function activityReading(activity, sample) {
 // Every probe in PROBES needs a scale; a probe without one shows an uncoloured value.
 export const PROBE_SCALES = {
   ip6: 'round_trip', ip4: 'round_trip', dns_ctl: 'round_trip',
-  udp: 'round_trip', down: 'rate', dns: 'ttfb'
+  udp: 'round_trip', down: 'rate', up: 'call_rate', dns: 'ttfb'
 };
+
+// Probes whose reading is a rate; every other probe reads milliseconds.
+const RATED = new Set(['down', 'up']);
 
 function probeState(r) {
   if (!r) return 'none';
@@ -199,7 +205,7 @@ export function probeReading(id, sample) {
             note: state === 'failed' ? r.fail : state === 'none' ? null : state, scale: null};
   }
   const m = id === 'dns' ? dnsMeasure(p)
-    : {scale: PROBE_SCALES[id], value: id === 'down' ? throughput(r) : r.ms};
+    : {scale: PROBE_SCALES[id], value: RATED.has(id) ? throughput(r) : r.ms};
   return {
     state, grade: m.grade ?? gradeValue(m.scale, m.value), value: m.value ?? null,
     unit: m.scale ? SCALES[m.scale].unit : null, note: m.note ?? null, scale: m.scale ?? null,

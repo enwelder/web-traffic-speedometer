@@ -1,6 +1,6 @@
 // Security tests. The site records location and network behaviour, so these properties are
-// enforced: network access limited to seven probe endpoints, no upload path, no dynamic code
-// execution, no third-party code.
+// enforced: network access limited to the probe endpoints and one reference host, one request
+// body of locally generated zero bytes, no dynamic code execution, no third-party code.
 import assert from 'node:assert';
 import {readFileSync, readdirSync} from 'node:fs';
 import {execFileSync} from 'node:child_process';
@@ -76,13 +76,48 @@ s.test('js/ MUST contain one fetch call, taking a URL built by probeUrl WHEN the
   }
 });
 
-s.test('the source files MUST contain no write method, request body, sendBeacon or persistent channel WHEN scanned', () => {
+// Lines of the shipped sources, comment lines excluded and response-body reads removed, that match
+// `re`, each prefixed with its file.
+const matching = re => sources.flatMap(([file, src]) => src.split('\n')
+  .filter(l => !/^\s*(\/\/|\*)/.test(l))
+  .map(l => l.replace(/res\.body|\.body\b/g, ''))
+  .filter(l => re.test(l))
+  .map(l => `${file}: ${l.trim()}`));
+
+s.test('PROBES MUST hold one write request, the up entry sending UP_BYTES to https://speed.cloudflare.com/__up WHEN imported', async () => {
+  const {PROBES, UP_BYTES} = await import('../js/probe.js');
+  const writes = PROBES.filter(p => p.method && !['GET', 'HEAD'].includes(p.method));
+  assert.deepEqual(writes.map(p => [p.id, p.method, p.url, p.bodyBytes]),
+                   [['up', 'POST', 'https://speed.cloudflare.com/__up', UP_BYTES]]);
+  assert.ok(Number.isInteger(UP_BYTES) && UP_BYTES > 0 && UP_BYTES <= 100000, `a small fixed body: ${UP_BYTES}`);
+});
+
+s.test('the source files MUST contain one write method, on the up entry of PROBES WHEN scanned', () => {
+  const writes = matching(/method:\s*['"](POST|PUT|PATCH|DELETE)['"]/i);
+  assert.equal(writes.length, 1, writes.join('\n'));
+  assert.match(writes[0], /^js\/probe\.js: \{id: 'up',.*url: 'https:\/\/speed\.cloudflare\.com\/__up'.*bodyBytes: UP_BYTES\}/);
+  assert.match(read('js/probe.js'), /^export const UP_BYTES = \d+;$/m, 'the body length is a numeric literal');
+});
+
+s.test('the source files MUST attach one request body, zero bytes of the probe length inside measureUpload, WHEN scanned', () => {
+  // A body can be named with a colon or passed by shorthand; each form appears once.
+  const named = matching(/\bbody\s*:/);
+  assert.equal(named.length, 1, named.join('\n'));
+  assert.match(named[0], /^js\/probe\.js: .*body: new Uint8Array\(probe\.bodyBytes\)/);
+  const shorthand = matching(/\bbody\s*[,}]/);
+  assert.deepEqual(shorthand, ["js/probe.js: referrerPolicy: 'no-referrer', signal, body,"]);
+  // A typed array built from anything but a numeric literal or the probe length could carry data.
+  for (const l of matching(/new Uint8Array\(/)) {
+    assert.match(l, /new Uint8Array\((\d+|probe\.bodyBytes)\)/, l);
+  }
+  const headers = matching(/\bheaders\s*:/);
+  assert.equal(headers.length, 1, headers.join('\n'));
+  assert.match(headers[0], /headers: body \? \{'Content-Type': 'text\/plain'\} : undefined/);
+});
+
+s.test('the source files MUST contain no computed method, sendBeacon or persistent channel WHEN scanned', () => {
   for (const [file, src] of sources) {
-    // The bare identifiers are banned too: the shorthand `{method, body}` carries the same
-    // meaning as `method: 'POST'`.
-    assert.ok(!/method:\s*['"](POST|PUT|PATCH)['"]/i.test(src), `${file} issues a write request`);
-    assert.ok(!/\bbody\s*[:,}]/.test(src.replace(/res\.body|\.body\b/g, '')),
-              `${file} attaches a request body`);
+    // The shorthand `{method}` passes a method assembled elsewhere.
     assert.ok(!/\bmethod\s*[,}]/.test(src), `${file} passes a method it computed`);
     assert.ok(!/navigator\.sendBeacon/.test(src), `${file} uses sendBeacon`);
     assert.ok(!/new\s+(WebSocket|EventSource)/.test(src), `${file} opens a persistent channel`);

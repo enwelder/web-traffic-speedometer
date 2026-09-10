@@ -18,7 +18,7 @@ const LITERAL_IPS = {ip6: '2606:4700:4700::1111', ip4: '1.1.1.1'};
 // resumed after. Each sample of a `fresh` probe reaches an uncontacted host and pays a full one.
 const FIRST_CONTACT_BYTES = 5000;
 const RESUMED_BYTES = 1500;
-const WARM_BYTES = {trace: 420, opaque: 220, download: 400, stun: 400};
+const WARM_BYTES = {trace: 420, opaque: 220, download: 400, upload: 400, stun: 400};
 const REFUSED_BYTES = 100;      // an IPv4 literal with no path never gets a connection up
 // STUN is UDP: no handshake to charge and no connection to resume.
 const handshakes = (probe, attempts, first) =>
@@ -26,7 +26,8 @@ const handshakes = (probe, attempts, first) =>
   : probe.fresh ? FIRST_CONTACT_BYTES * attempts
   : (first ? FIRST_CONTACT_BYTES : RESUMED_BYTES) + RESUMED_BYTES * (attempts - 1);
 // The projection is steady state: by the second round every origin has been contacted.
-const cost = p => (WARM_BYTES[p.kind] * (p.samples || 1)) + handshakes(p, p.samples || 1, false);
+const cost = p => (WARM_BYTES[p.kind] * (p.samples || 1)) + handshakes(p, p.samples || 1, false) +
+                  (p.bodyBytes || 0);
 
 export const APP_VERSION = '3.14.0';
 
@@ -78,10 +79,11 @@ function probeBytes(probe, r, contacted) {
   if (!r) return 0;
   // An IPv4 literal without a path opens no connection.
   if (r.expected && !r.ok) return REFUSED_BYTES;
-  // No request sent: the probe rested, or the round threw first.
-  if (r.fail === 'resting' || r.fail === 'error') return 0;
+  // No request sent: the probe rested, the round threw first, or the round left no budget.
+  if (r.fail === 'resting' || r.fail === 'error' || r.fail === 'no_budget') return 0;
   const attempts = r.ms_samples ? r.ms_samples.length : 1;
-  const n = WARM_BYTES[probe.kind] * attempts + (probe.kind === 'download' ? r.bytes || 0 : 0)
+  // A sent upload body is charged in full, whatever the server confirmed.
+  const n = WARM_BYTES[probe.kind] * attempts + (probe.kind === 'download' ? r.bytes || 0 : probe.bodyBytes || 0)
           + handshakes(probe, attempts, !contacted.has(probe.id));
   contacted.add(probe.id);
   return n;
@@ -254,12 +256,12 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
       in_pause: inPause,
       // Whether the screen was held awake for this round, which accounts for gaps.
       wake_lock: wake.held(),
-      // The round's own wall time and its two phases. A frozen tab suspends the abort timers,
-      // so a round can outlast every deadline in it; these separate a slow phase from a
-      // stalled app.
+      // The round's own wall time and its phases. A frozen tab suspends the abort timers, so a
+      // round can outlast every deadline in it; these separate a slow phase from a stalled app.
       round_ms: null,
       phase_idle_ms: null,
       phase_down_ms: null,
+      phase_up_ms: null,
       // The Google reference request, taken only when every Cloudflare instrument failed.
       reference: null,
       intervalMs: interval(),
@@ -352,6 +354,7 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
       row.loaded_rtt_from = round.loaded_rtt_from;
       row.phase_idle_ms = round.phase_idle_ms;
       row.phase_down_ms = round.phase_down_ms;
+      row.phase_up_ms = round.phase_up_ms;
       row.reference = round.reference;
     } catch (e) {
       // The round threw before measuring. 'error' excludes it from network tallies and the wedge

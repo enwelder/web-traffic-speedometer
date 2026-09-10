@@ -1,6 +1,6 @@
 // Functional tests for the measurement modules, with no browser and no network.
 import assert from 'node:assert';
-import {stubBrowser, fakeStore, TRACE, bodyOf, netError, sleep, suite} from './helpers.mjs';
+import {stubBrowser, fakeStore, TRACE, bodyOf, netError, sleep, suite, upResponse} from './helpers.mjs';
 
 stubBrowser();
 const probe = await import('../js/probe.js');
@@ -389,6 +389,87 @@ s.test('runProbe MUST take every STUN sample WHEN the first sample answers after
   }
 });
 
+s.test('runProbe MUST POST UP_BYTES zero bytes as text/plain with credentials omitted WHEN the up probe runs', async () => {
+  let sent;
+  globalThis.fetch = async (url, o) => { sent = {url: String(url), ...o}; return upResponse(probe.UP_BYTES); };
+  const r = await probe.runProbe(P.up, {timeoutMs: 1000});
+  assert.match(sent.url, /^https:\/\/speed\.cloudflare\.com\/__up\?/);
+  assert.deepEqual([sent.method, sent.credentials, sent.headers['Content-Type']], ['POST', 'omit', 'text/plain']);
+  assert.equal(sent.body.length, probe.UP_BYTES);
+  assert.ok(sent.body.every(b => b === 0), 'the body is zero bytes');
+  assert.deepEqual([r.ok, r.upload_bytes, r.server.proto], [true, probe.UP_BYTES, 'TCP']);
+});
+
+s.test('runProbe MUST compute bps from requestStart to responseStart WHEN the upload timing entry exists', async () => {
+  const saved = performance.getEntriesByName;
+  performance.getEntriesByName = name => (String(name).includes('__up')
+    ? [{requestStart: 100, responseStart: 1700, responseEnd: 1701, connectStart: 40, connectEnd: 40}] : []);
+  try {
+    globalThis.fetch = async () => upResponse(probe.UP_BYTES);
+    const r = await probe.runProbe(P.up, {timeoutMs: 1000});
+    assert.deepEqual([r.rate_source, r.ttfb_ms, r.bps], ['timing', 1600, 200000]);
+  } finally {
+    performance.getEntriesByName = saved;
+  }
+});
+
+s.test('runProbe MUST return rate_source fetch WHEN no upload timing entry exists', async () => {
+  globalThis.fetch = async () => { await sleep(20); return upResponse(probe.UP_BYTES); };
+  const r = await probe.runProbe(P.up, {timeoutMs: 1000});
+  assert.equal(r.rate_source, 'fetch');
+  assert.equal(r.bps, Math.round((probe.UP_BYTES * 8000) / r.ms));
+});
+
+s.test('runProbe MUST return fail short WHEN cf-meta-upload-bytes differs from UP_BYTES or is absent', async () => {
+  for (const echoed of [probe.UP_BYTES - 1000, null]) {
+    globalThis.fetch = async () => upResponse(echoed);
+    const r = await probe.runProbe(P.up, {timeoutMs: 1000});
+    assert.deepEqual([r.ok, r.fail], [false, 'short'], String(echoed));
+    assert.equal(ui.counts(r), false, 'a byte count the browser could not read is no link failure');
+  }
+});
+
+s.test('runProbe MUST return fail timeout WHEN the server confirms nothing within the deadline', async () => {
+  globalThis.fetch = (url, o) => new Promise((_, rej) => o.signal.addEventListener('abort',
+    () => rej(Object.assign(new Error('x'), {name: 'AbortError'})), {once: true}));
+  const r = await probe.runProbe(P.up, {timeoutMs: 80});
+  assert.deepEqual([r.ok, r.fail], [false, 'timeout']);
+});
+
+s.test('runRound MUST run the upload after the download WHEN a round runs', async () => {
+  const order = [];
+  globalThis.fetch = async (url, o) => {
+    const u = String(url);
+    if (u.includes('__up')) { order.push('up'); return upResponse(probe.UP_BYTES); }
+    if (u.includes('__down')) order.push('down');
+    return {ok: true, status: 200, type: 'opaque', headers: {get: () => null}, body: bodyOf(2000),
+            text: async () => TRACE, signal: o?.signal};
+  };
+  const round = await probe.runRound({intervalMs: 3000, download: {windowMs: 50, rampMs: 0, streams: 1}});
+  assert.equal(order.at(-1), 'up');
+  assert.ok(order.includes('down'));
+  assert.ok(round.phase_up_ms >= 0 && round.probes.up.ok, JSON.stringify(round.probes.up));
+});
+
+s.test('runRound MUST record the upload as no_budget WHEN the idle and download phases used the round', async () => {
+  // The IPv6 literal hangs through the idle phase, so the download takes the floor budget and the
+  // round has nothing left for the upload.
+  let posted = 0;
+  globalThis.fetch = async (url, o) => {
+    const u = String(url);
+    if (u.includes('[')) {
+      return new Promise((_, rej) => o.signal.addEventListener('abort',
+        () => rej(Object.assign(new Error('x'), {name: 'AbortError'})), {once: true}));
+    }
+    if (u.includes('__up')) { posted++; return upResponse(probe.UP_BYTES); }
+    return {ok: true, status: 200, type: 'opaque', headers: {get: () => null}, body: bodyOf(2000),
+            text: async () => TRACE, signal: o?.signal};
+  };
+  const round = await probe.runRound({intervalMs: 1600});
+  assert.deepEqual([round.probes.up.fail, posted], ['no_budget', 0]);
+  assert.equal(ui.counts(round.probes.up), false, 'an upload the round had no time for is no link failure');
+});
+
 // A body delivered in timed chunks, which separates the ramp from the steady portion.
 function pacedBody(chunks) {
   let i = 0;
@@ -469,12 +550,12 @@ s.test('looksLikeRetry MUST return true only for resolver retry timers WHEN give
 s.test('PROBES MUST give every latency probe more than one sample and the comparable ones one count WHEN the set is read', () => {
   // A single round trip is noise; an unsampled probe beside sampled ones reports one noisy value
   // among medians, possibly on the route row.
-  for (const p of probe.PROBES) {
-    if (p.kind === 'download') continue;
+  // The download and the upload are transfers, each one measurement per round.
+  const latency = probe.PROBES.filter(p => p.kind !== 'download' && p.kind !== 'upload');
+  for (const p of latency) {
     assert.ok(p.samples > 1, `${p.id} takes more than one sample`);
   }
-  const counts = new Set(probe.PROBES.filter(p => p.kind !== 'download' && p.id !== 'dns')
-    .map(p => p.samples));
+  const counts = new Set(latency.filter(p => p.id !== 'dns').map(p => p.samples));
   assert.equal(counts.size, 1, 'and the comparable ones take the same number');
   assert.ok(probe.PROBES.find(p => p.id === 'dns').samples < [...counts][0],
             'the first-contact probe takes fewer: every sample of it is a new connection');
@@ -537,7 +618,7 @@ s.test('runRound MUST hold every started probe in pending until it settles WHEN 
   const round = await probe.runRound({pending, intervalMs: 3000,
                                       download: {windowMs: 50, rampMs: 0, streams: 1}});
   clearInterval(watch);
-  assert.ok(['ip6', 'dns', 'dns_ctl', 'down'].every(id => seen.has(id)), `held: ${[...seen]}`);
+  assert.ok(['ip6', 'dns', 'dns_ctl', 'down', 'up'].every(id => seen.has(id)), `held: ${[...seen]}`);
   assert.equal(pending.size, 0, 'and none once the round returns');
   assert.ok(round.phase_idle_ms > 0 && round.phase_down_ms >= 0,
             `phases ${round.phase_idle_ms} and ${round.phase_down_ms} ms`);
@@ -636,7 +717,7 @@ const session = () => ({id: 's1', name: 't', operator: 'KPN', connection: 'cellu
 
 // A round is two phases. A listener added to a signal that has already aborted never fires,
 // so a stop landing between them has to reach the phase that has yet to start.
-l.test('createRecorder.stop MUST open no download connection and record fail abort WHEN stop lands between the two phases of a round', async () => {
+l.test('createRecorder.stop MUST open no download or upload connection and record fail abort WHEN stop lands during the idle phase of a round', async () => {
   const urls = [];
   globalThis.fetch = async (url) => {
     urls.push(String(url));
@@ -651,8 +732,9 @@ l.test('createRecorder.stop MUST open no download connection and record fail abo
   await rec.stop();
   const after = urls.filter(u => u.includes('speed.cloudflare')).length;
   const row = store.written.samples.find(x => !x.skipped);
-  assert.equal(after, 0, 'no download connection is opened after the stop');
+  assert.equal(after, 0, 'no download or upload connection is opened after the stop');
   assert.equal(row.probes.down.fail, 'abort', 'and the round records why it has no throughput');
+  assert.equal(row.probes.up.fail, 'abort');
 });
 
 l.test('createRecorder MUST fit both round phases inside the interval WHEN a dead literal holds its connection to its own deadline', async () => {
@@ -988,9 +1070,9 @@ l.test('createRecorder MUST record round_ms covering both phases and visible_end
   const row = store.written.samples.find(x => x.phase_down_ms != null);
   assert.ok(row, 'a round completed');
   // Each duration is rounded to a whole millisecond on its own, so the parts can exceed the
-  // rounded total by up to 2 ms.
-  assert.ok(row.round_ms >= row.phase_idle_ms + row.phase_down_ms - 2 && row.phase_idle_ms > 0,
-            `${row.round_ms} ms spans ${row.phase_idle_ms} + ${row.phase_down_ms} ms`);
+  // rounded total by up to 3 ms.
+  assert.ok(row.round_ms >= row.phase_idle_ms + row.phase_down_ms + row.phase_up_ms - 3 && row.phase_idle_ms > 0,
+            `${row.round_ms} ms spans ${row.phase_idle_ms} + ${row.phase_down_ms} + ${row.phase_up_ms} ms`);
   assert.equal(row.visible_end, true);
 });
 
@@ -1244,6 +1326,12 @@ e.test('filename MUST strip quotes, commas, newlines and backslashes WHEN the se
   assert.ok(!/["',\n\\]/.test(f), `filename is sanitised: ${f}`);
   assert.match(f, /^wts-20260903-\d{4}-k-p-n\.json$/, f);
   assert.deepEqual(JSON.parse(sessionJson(sess, [], [])).session.name, 'x", y\n\\');
+});
+
+e.test('summarise MUST report rate percentiles and bytes for up WHEN rows carry an upload rate', () => {
+  const rows = [1, 2, 3].map(i => ({seq: i, t: i, probes: {up: {ok: true, ms: 200, bps: i * 1e5, bytes: 40000}}}));
+  const up = summarise(rows).probes.up;
+  assert.deepEqual([up.bps_p50, up.rated, up.bytes_total], [2e5, 3, 120000]);
 });
 
 e.test('summarise MUST count rounds, failures, rests and percentiles WHEN given a session of rows', () => {
