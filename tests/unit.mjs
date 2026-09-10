@@ -154,6 +154,23 @@ s.test('runRound MUST set ip4.blocked WHEN the ip4 literal fails while the round
   assert.equal(dead.ip6.blocked, undefined);
 });
 
+s.test('runRound MUST leave a timed-out literal unflagged and counted as a failure WHEN the round egresses over its family', async () => {
+  // Recorded in two railway tunnels: the IPv6 literal hung for its whole deadline, and the download
+  // that ran after the stall egressed over IPv6.
+  const hang = o => new Promise((_, rej) => o.signal?.addEventListener('abort',
+    () => rej(Object.assign(new Error('x'), {name: 'AbortError'})), {once: true}));
+  globalThis.fetch = async (url, o) => {
+    if (String(url).includes('[')) return hang(o);
+    return {ok: true, status: 200, type: 'opaque', body: bodyOf(2000),
+            headers: {get: h => (h === 'cf-meta-ip' ? '2a02::1' : null)},
+            text: async () => TRACE, signal: o?.signal};
+  };
+  const r = (await probe.runRound({intervalMs: 1600})).probes;
+  assert.equal(r.ip6.fail, 'timeout');
+  assert.equal(r.ip6.blocked, undefined, 'a hung literal is a stalled path');
+  assert.equal(ui.counts(r.ip6), true, 'and the link is charged with it');
+});
+
 s.test('runProbe MUST return the median as ms and keep every sample with its spread WHEN the probe is sampled', async () => {
   // A slow sample in the middle, so the median and the last differ.
   const times = [10, 90, 50];

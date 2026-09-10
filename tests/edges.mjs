@@ -557,6 +557,23 @@ n.test('createRecorder MUST record one egress-change event WHEN the egress addre
   assert.equal(logged.length, 1, `one event, not one per round: ${logged.length}`);
 });
 
+const literal = url => String(url).includes('[2606') || String(url).includes('1.1.1.1');
+
+n.test('createRecorder MUST record the no-instrument note WHEN one literal is blocked and the other unused', async () => {
+  // Both literals refused fast while the download egresses over IPv4.
+  const egress4 = {...okResponse(), headers: {get: h => (h === 'cf-meta-ip' ? '109.36.152.49' : null)}};
+  const {events, rows} = await record(async url => { if (literal(url)) throw netError(); return egress4; }, 300);
+  assert.ok(rows.some(x => x.probes.ip4?.blocked && x.probes.ip6?.unused), 'the round classified both literals');
+  assert.equal(events.filter(e => /^no address literal answered/.test(e.text || '')).length, 1);
+});
+
+n.test('createRecorder MUST omit the no-instrument note WHEN a literal counts as a failure', async () => {
+  const {events, rows} = await record(async () => { throw netError(); }, 300);
+  assert.ok(rows.length > 0);
+  assert.ok(rows.every(x => x.grades.voice === 'red'), 'a failed round trip grades calls red');
+  assert.equal(events.filter(e => /^no address literal answered/.test(e.text || '')).length, 0);
+});
+
 n.test('createRecorder MUST record both colo values and keep grading WHEN the PoP changes mid-session', async () => {
   let colo = 'AMS';
   const {rows} = await record(async () => okResponse(trace('2a09:bac5::9', colo)), 0, {

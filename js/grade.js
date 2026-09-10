@@ -80,23 +80,33 @@ const routeMs = p => (p.ip6?.ok ? p.ip6.ms : p.ip4?.ok ? p.ip4.ms : null);
 // download answered.
 const reached = p => !!(p.web?.ok || p.down?.ok || p.dns?.ok || p.dns_ctl?.ok);
 
-// No route: no family carried traffic, at least one literal failed, and no hostname probe reached
-// the network. Absent, rested and blocked literals count as no failure.
-const roundTripFailed = p => !p.ip6?.ok && !p.ip4?.ok && (failed(p.ip6) || failed(p.ip4));
+// The round trip failed: neither literal answered and one of them counts against the link. A
+// timed-out literal counts; absent, rested, blocked and unused literals do not.
+export const roundTripFailed = p => !p.ip6?.ok && !p.ip4?.ok && (failed(p.ip6) || failed(p.ip4));
+// No route: the round trip failed and no hostname probe reached the network.
 const noRoute = p => roundTripFailed(p) && !reached(p);
+
+// The stall check runs while a download stream waits for headers. Losing the other host and UDP
+// together there means the link carried nothing. An abort and a browser without WebRTC lose
+// nothing.
+const lost = c => c?.ok === false && c.fail !== 'abort' && c.fail !== 'unsupported';
+const linkDown = p => lost(p.down?.stall_check?.other_host) && lost(p.down?.stall_check?.udp);
+const linkTerm = p => ({note: 'link down', grade: linkDown(p) ? 'red' : null});
 
 // Only whether the UDP path exists is read here; the row above grades its milliseconds.
 const TERMS = {
   voice: ({p, rate, noThroughput, skipRate}) => [
+    linkTerm(p),
     {note: 'no UDP', grade: failed(p.udp) ? 'red' : null},
     {note: 'no route', grade: noRoute(p) ? 'red' : null},
-    // A call carries about 100 kb/s over the path the round trip and the UDP probe measured in
-    // this round, so a failed bulk download reddens it only when the round trip failed with it.
-    {note: 'no data', grade: noThroughput && roundTripFailed(p) ? 'red' : null},
+    {note: 'round trip lost', grade: roundTripFailed(p) ? 'red' : null},
     {scale: 'round_trip', value: routeMs(p)},
+    // A call carries about 100 kb/s over the path the round trip and the UDP probe measured, so a
+    // failed bulk download drops the rate term and adds no red.
     ...(skipRate || noThroughput ? [] : [{scale: 'call_rate', value: rate}])
   ],
   news: ({p, noThroughput, skipRate}) => [
+    linkTerm(p),
     {note: 'lookup lost', grade: p.dns?.retry_suspected ? 'red' : null},
     {note: 'no lookup', grade: failed(p.dns) ? 'red' : null},
     {note: 'host gone', grade: failed(p.web) ? 'red' : null},
@@ -104,7 +114,8 @@ const TERMS = {
     {scale: 'ttfb', value: p.dns?.ok ? p.dns.ms : null},
     ...(skipRate ? [] : [{scale: 'article', value: articleMs(p)}])
   ],
-  streaming: ({rate, noThroughput, skipRate}) => [
+  streaming: ({p, rate, noThroughput, skipRate}) => [
+    linkTerm(p),
     {note: 'no data', grade: noThroughput},
     ...(skipRate ? [] : [{scale: 'rate', value: rate}])
   ]

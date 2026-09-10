@@ -717,20 +717,27 @@ function carriedFamilies(out) {
   return carried;
 }
 
+// A refused address fails fast. A literal that hung until its deadline or the round's abort
+// stalled on a path that carried traffic earlier or later in the round, as in a railway tunnel.
+const STALLED = new Set(['timeout', 'abort']);
+
 // Classifies a failing literal as `blocked`, `unused` or a failure, from this round only. A
-// literal counts as a failure only when no family carried traffic. A session-long absence verdict
-// misclassifies a network without a route to the IPv6 literal, a handover, and two blocked
-// literals.
+// literal counts as a failure when no family carried traffic, or when it stalled on its own
+// family. A session-long absence verdict misclassifies a network without a route to the IPv6
+// literal, a handover, and two blocked literals.
 function markLiterals(out) {
   const carried = carriedFamilies(out);
   for (const id of ['ip6', 'ip4']) {
     const r = out[id];
     if (!r || r.ok || r.fail === 'resting') continue;
-    // The family carried traffic, so the literal address is refused; public resolver addresses are
+    // The family carried traffic and the literal address was refused; public resolver addresses are
     // commonly intercepted.
-    if (carried.has(id)) r.blocked = true;
-    // The other family carried the traffic; the failure is recorded and excluded from tallies.
-    else if (carried.size) r.unused = true;
+    if (carried.has(id)) {
+      if (!STALLED.has(r.fail)) r.blocked = true;
+    } else if (carried.size) {
+      // The other family carried the traffic; the failure is recorded and excluded from tallies.
+      r.unused = true;
+    }
   }
 }
 

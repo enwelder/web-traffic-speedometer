@@ -260,10 +260,10 @@ s.test('activeRoute MUST return the family carrying traffic WHEN the two literal
   assert.equal(g.probeReading('ip6', {probes: dead}).grade, 'red');
 });
 
-s.test('gradeActivities MUST return identical grades WHEN the literal flags are stripped from a round that reached the network', () => {
-  // The flags describe the literal on the screen and in the file. A verdict about calling,
-  // reading or watching belongs to the probes a person waits on, so the flags must not move
-  // one.
+s.test('gradeActivities MUST move only the voice grade, to red, WHEN the literal flags are stripped from a round that reached the network', () => {
+  // The flags describe the literal on the screen and in the file. Reading and watching wait on
+  // other probes, so the flags move neither. A stripped flag turns a refused literal into a failed
+  // round trip, which is red for a call.
   const ok = ms => ({ok: true, ms});
   const bad = o => ({ok: false, ms: null, fail: 'network', ...o});
   const base = {dns: ok(180), dns_ctl: ok(30), web: ok(25), udp: ok(20), down: {ok: true, bps: 25e6}};
@@ -277,8 +277,48 @@ s.test('gradeActivities MUST return identical grades WHEN the literal flags are 
     for (const id of ['ip6', 'ip4']) {
       delete stripped[id].unused; delete stripped[id].blocked; delete stripped[id].expected;
     }
-    assert.deepEqual(g.gradeActivities({probes}), g.gradeActivities({probes: stripped}),
-                     `the flags moved a verdict: ${JSON.stringify(over)}`);
+    const flagged = g.gradeActivities({probes});
+    const plain = g.gradeActivities({probes: stripped});
+    assert.deepEqual([flagged.news, flagged.streaming], [plain.news, plain.streaming],
+                     `the flags moved reading or watching: ${JSON.stringify(over)}`);
+    assert.equal(plain.voice, 'red', `a failed round trip is red for a call: ${JSON.stringify(over)}`);
+  }
+  const refused = {...base, ip6: bad({unused: true}), ip4: bad({blocked: true})};
+  assert.equal(g.gradeActivities({probes: refused}).voice, null,
+               'a refused literal leaves the call without a round-trip instrument');
+});
+
+s.test('activityReading MUST return red with note round trip lost WHEN neither literal answered and one counts as a failure', () => {
+  // Rijswijk tunnel: the IPv6 literal hung for 8 s while the lookups, STUN and a later download
+  // answered.
+  const tunnel = round({ip6: bad(), ip4: bad({fail: 'network', unused: true})});
+  const r = g.activityReading('voice', tunnel);
+  assert.deepEqual([r.grade, r.note], ['red', 'round trip lost']);
+  assert.equal(g.gradeActivities(tunnel).streaming, 'green', 'the download measured after the stall');
+});
+
+s.test('activityReading MUST return red with note link down for voice, news and streaming WHEN the stall check lost the other host and UDP', () => {
+  const lostCheck = {same_host: {ok: false, ms: 6000, fail: 'timeout'},
+                     other_host: {ok: false, ms: 6000, fail: 'timeout'},
+                     udp: {ok: false, ms: null, fail: 'timeout'}};
+  // Round 116 of the 10 Sep session: every idle probe answered, then the link carried nothing.
+  const outage = round({down: {ok: false, fail: 'connect', bps: null, stall_check: lostCheck}});
+  for (const activity of g.ACTIVITY_IDS) {
+    const r = g.activityReading(activity, outage);
+    assert.deepEqual([r.grade, r.note], ['red', 'link down'], activity);
+  }
+});
+
+s.test('gradeActivities MUST omit link down WHEN the stall check reached UDP or its UDP result is unsupported or abort', () => {
+  const check = udp => ({same_host: {ok: false, ms: 6000, fail: 'timeout'},
+                         other_host: {ok: false, ms: 6000, fail: 'timeout'}, udp});
+  const withCheck = udp => round({down: {ok: false, fail: 'connect', bps: null, stall_check: check(udp)}});
+  for (const udp of [{ok: true, ms: 48, fail: null},
+                     {ok: false, ms: 0, fail: 'unsupported'},
+                     {ok: false, ms: 0, fail: 'abort'}]) {
+    const r = g.activityReading('voice', withCheck(udp));
+    assert.equal(r.grade, 'green', `UDP ${udp.fail || 'answered'}: the call path held`);
+    assert.notEqual(g.activityReading('streaming', withCheck(udp)).note, 'link down');
   }
 });
 

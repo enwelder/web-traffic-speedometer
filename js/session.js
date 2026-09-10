@@ -4,7 +4,7 @@
 import {PROBES, runRound, checkPaths, clearTimings, timeoutFor,
         DOWN_STREAMS, DOWN_WINDOW_MS, DOWN_CAP_BYTES, DOWN_CEILING_BPS,
         DOWN_RAMP_BYTES} from './probe.js';
-import {gradeActivities, gradeProbes} from './grade.js';
+import {gradeActivities, gradeProbes, roundTripFailed} from './grade.js';
 import {createStuckTracker} from './stuck.js';
 import {createWakeLock} from './wakelock.js';
 import {createPositionTracker} from './position.js';
@@ -303,7 +303,9 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
         `${label} literal refused while ${label} carries traffic. ${LITERAL_IPS[id]} is a ` +
         `public resolver address; a VPN, filter or captive portal commonly intercepts it`);
     }
-    if (!row.probes.ip6?.ok && !row.probes.ip4?.ok) {
+    // Refused or excluded literals leave calls without a round-trip value; a literal that failed on
+    // the link grades calls red.
+    if (!row.probes.ip6?.ok && !row.probes.ip4?.ok && !roundTripFailed(row.probes)) {
       noteOnce('no-round-trip',
         'no address literal answered, so the round trip has no instrument and calls cannot ' +
         'be graded');
