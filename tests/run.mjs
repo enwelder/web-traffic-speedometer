@@ -4,8 +4,7 @@ import {spawnSync} from 'node:child_process';
 
 const suites = ['unit', 'stuck', 'wakelock', 'position', 'grading', 'edges', 'replay', 'regressions', 'security', 'browser'];
 const only = process.argv.slice(2);
-// A mistyped name would otherwise select nothing and exit green, so a typo in the CI
-// workflow would pass without running a case.
+// An unknown suite name fails, so a mistyped name in the CI workflow cannot pass with zero cases.
 const unknown = only.filter(n => !suites.includes(n));
 if (unknown.length) {
   console.error(`unknown suite(s): ${unknown.join(', ')}\nknown: ${suites.join(', ')}`);
@@ -13,9 +12,8 @@ if (unknown.length) {
 }
 let failed = 0;
 
-// The browser suite runs once per engine. The app is opened in whatever browser someone has,
-// and the parts that differ between engines — streaming reads, connection reuse, storage, the
-// service worker — are what that suite covers.
+// The browser suite runs once per engine: streaming reads, connection reuse, storage and the
+// service worker differ between engines.
 const ENGINES = (process.env.WTS_ENGINES || 'chromium,webkit').split(',');
 
 for (const name of suites) {

@@ -44,7 +44,7 @@ self.addEventListener('activate', e => {
 
 self.addEventListener('fetch', e => {
   const url = new URL(e.request.url);
-  // Probes must reach the network untouched, or the tool measures itself.
+  // Probe requests bypass the worker, which keeps it out of every measurement.
   if (url.origin !== self.location.origin || e.request.method !== 'GET') return;
 
   e.respondWith(

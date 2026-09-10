@@ -6,6 +6,7 @@ import {stubBrowser, suite} from './helpers.mjs';
 stubBrowser();
 const {PROBES, STUCK_AFTER, STUCK_COOLDOWN} = await import('../js/probe.js');
 const {createStuckTracker} = await import('../js/stuck.js');
+const {gradeActivities} = await import('../js/grade.js');
 
 const s = suite('stuck probes');
 
@@ -104,6 +105,22 @@ s.test('createStuckTracker.reset MUST clear every rest WHEN a new session starts
   assert.equal(t.resting(STUCK_AFTER).size, 1, 'resting at the end of the first session');
   t.reset();
   assert.equal(t.resting(0).size, 0, 'and silent from the first round of the next');
+});
+
+s.test('createStuckTracker MUST leave the UDP probe unrested WHEN it fails alone', () => {
+  const t = createStuckTracker({});
+  for (let seq = 0; seq < STUCK_AFTER + 3; seq++) feed(t, seq, {udp: 'timeout'});
+  assert.equal(t.resting(99).size, 0);
+});
+
+s.test('gradeActivities MUST grade voice red in every round WHEN a carrier drops STUN for 27 rounds', () => {
+  const t = createStuckTracker({});
+  const voice = [];
+  for (let seq = 0; seq < 27; seq++) {
+    const r = feed(t, seq, t.resting(seq).has('udp') ? {udp: 'resting'} : {udp: 'timeout'});
+    voice.push(gradeActivities(r).voice);
+  }
+  assert.deepEqual([...new Set(voice)], ['red']);
 });
 
 await s.run();

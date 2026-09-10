@@ -38,7 +38,7 @@ const recorder = createRecorder({
     ui.setProbes(sample);
     const kind = ui.classify(sample);
     ui.pushStrip(sample);
-    // Only what changed. The first round states anything that is not already fine.
+    // Transitions only; the first round lists every probe state other than ok.
     for (const line of ui.changes(sample, lastSample)) {
       ui.pushLog(line, kind === 'green' || kind === 'yellow' ? '' : 'bad');
     }
@@ -113,7 +113,7 @@ function operatorName() {
   return sel === '__other' ? ($('f-operator-other').value.trim() || 'unknown') : sel;
 }
 
-// Generated from what is already known, so no typing is needed before Start.
+// Generated from operator, connection and start time.
 function generatedName(operator, connection, started) {
   const d = new Date(started);
   const month = d.toLocaleString('en', {month: 'short'});
@@ -149,8 +149,8 @@ function newSession() {
 
 /* ---- run control ---- */
 
-// Everything on screen that belongs to one session. Both ways into a session reset the
-// same set, so state added here cannot carry from one session into the next.
+// Session-scoped screen state. Start and resume both reset through here, so no state carries
+// into the next session.
 function resetReadout() {
   lastSample = null;
   ui.clearLog();

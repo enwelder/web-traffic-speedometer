@@ -3,9 +3,11 @@
 
 import {PROBES, STUCK_AFTER, STUCK_COOLDOWN} from './probe.js';
 
-// The failures a fresh connection can fix. A stalled read is a congested cell: resting the
-// download for six rounds would blank the throughput exactly while the congestion runs.
+// The failures a fresh connection can fix.
 const WEDGE_FAILS = new Set(['timeout', 'network']);
+// `udp` and `down` failures hold no persistent connection to reset; resting either removes a
+// failing term from the activity it feeds.
+const NEVER_RESTED = new Set(['udp', 'down']);
 
 export function createStuckTracker({onNotice} = {}) {
   const consecutiveFails = {};
@@ -22,7 +24,7 @@ export function createStuckTracker({onNotice} = {}) {
       if (!r || r.fail === 'resting') continue;
       if (r.ok) { consecutiveFails[p.id] = 0; delete restingUntil[p.id]; continue; }
       if (r.expected || r.blocked || r.unused) continue;
-      if (!WEDGE_FAILS.has(r.fail)) { consecutiveFails[p.id] = 0; continue; }
+      if (!WEDGE_FAILS.has(r.fail) || NEVER_RESTED.has(p.id)) { consecutiveFails[p.id] = 0; continue; }
       const n = consecutiveFails[p.id] = (consecutiveFails[p.id] || 0) + 1;
       if (isolated && n >= STUCK_AFTER && restingUntil[p.id] == null) {
         r.stuck = true;
@@ -44,8 +46,7 @@ export function createStuckTracker({onNotice} = {}) {
     return out;
   }
 
-  // One tracker lives for the page. A rest is scheduled by round number, so one left from a
-  // previous session would silence a probe through the whole of the next.
+  // One tracker per page. Rests are keyed by round number, so a new session clears them.
   function reset() {
     for (const k of Object.keys(consecutiveFails)) delete consecutiveFails[k];
     for (const k of Object.keys(restingUntil)) delete restingUntil[k];

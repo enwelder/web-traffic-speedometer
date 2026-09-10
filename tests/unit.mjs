@@ -59,8 +59,7 @@ s.test('runProbe MUST request a fresh hostname per dns sample and one fixed host
     return {type: 'opaque', ok: false, status: 0};
   };
   for (let i = 0; i < 5; i++) { await probe.runProbe(P.dns); await probe.runProbe(P.dns_ctl); }
-  // Every sample too, not merely every round: a repeat under the same name would be answered
-  // from a cache and would stop being a first contact.
+  // A new hostname per sample: a repeated name is answered from cache and is no first contact.
   assert.ok(seen.dns.length >= 5 * P.dns.samples, `every sample issued a request: ${seen.dns.length}`);
   assert.equal(new Set(seen.dns).size, seen.dns.length,
                'and no name is requested twice');
@@ -100,7 +99,7 @@ s.test('runRound MUST derive unused and blocked from the traffic of that round a
   const v6 = u => u.includes('[');
   const v4 = u => u.includes('1.1.1.1');
 
-  // A carrier with no IPv4 path: IPv6 carries, so the IPv4 literal costs nobody anything.
+  // A carrier without an IPv4 path: IPv6 carries traffic, so the IPv4 literal is `unused`.
   let r = await round(u => (v4(u) ? netError() : trace('2a02::1')));
   assert.equal(r.ip4.unused, true, 'nobody waited on IPv4');
   assert.equal(r.ip4.blocked, undefined);
@@ -110,7 +109,7 @@ s.test('runRound MUST derive unused and blocked from the traffic of that round a
   r = await round(u => (v6(u) ? netError() : trace('1.2.3.4')));
   assert.equal(r.ip6.unused, true, 'and none on IPv6');
 
-  // 1.1.1.1 refused while IPv4 carries the download: the address, not the path.
+  // 1.1.1.1 refused while IPv4 carries the download: the address is blocked.
   r = await round(u => (v4(u) ? netError() : trace('1.2.3.4')));
   assert.equal(r.ip4.blocked, true, 'IPv4 egress in this round proves the path');
 
@@ -125,7 +124,7 @@ s.test('runRound MUST derive unused and blocked from the traffic of that round a
   r = await round(u => (v6(u) ? {ok: false, status: 429, text: async () => ''} : trace('1.2.3.4')));
   assert.equal(r.ip6.blocked, true, 'a 429 is an answer, not an absent path');
 
-  // Nothing reached anything: no excuses, and the row is a real failure.
+  // No traffic on either family: both literals are failures.
   r = await round(() => netError());
   for (const id of ['ip6', 'ip4']) {
     assert.equal(r[id].unused, undefined, `${id} is not excused by a dead network`);
@@ -135,9 +134,9 @@ s.test('runRound MUST derive unused and blocked from the traffic of that round a
 
 
 s.test('runRound MUST set ip4.blocked WHEN the ip4 literal fails while the round egresses over IPv4', async () => {
-  // Recorded on two operators: the download egressed over IPv4 in the same round the IPv4
-  // literal failed. 1.1.1.1 is a public resolver and is a common thing to intercept, so the
-  // failure is about that address and not about the link.
+  // Recorded on two operators: the download egressed over IPv4 in the round the IPv4 literal
+  // failed. 1.1.1.1 is a commonly intercepted public resolver, so the failure belongs to that
+  // address.
   globalThis.fetch = async (url, o) => {
     if (String(url).includes('1.1.1.1')) throw netError();
     return {ok: true, status: 200, type: 'opaque',
@@ -148,7 +147,7 @@ s.test('runRound MUST set ip4.blocked WHEN the ip4 literal fails while the round
   assert.equal(round.ip4.blocked, true, 'the round saw IPv4 carry traffic');
   assert.equal(round.ip4.expected, undefined, 'so the path is not absent');
 
-  // With nothing reaching the far end, the same failure is the network.
+  // Without traffic on either family the same failure counts.
   globalThis.fetch = async () => { throw netError(); };
   const dead = (await probe.runRound({available: {ip6: true, ip4: true}})).probes;
   assert.equal(dead.ip4.blocked, undefined, 'no egress this round, so the failure is charged to the link');
@@ -201,15 +200,14 @@ s.test('runProbe MUST return inside its timeout budget WHEN every sample hangs',
 });
 
 s.test('runProbe MUST return ok with sample_fail set WHEN one sample of ten times out', async () => {
-  // KPN 5G, recorded: the first sample pays for waking the radio, the rest are the link.
-  // A tenth that never comes back is one lost packet, and the nine that answered measured
-  // the link; failing the probe on it reddens calls on a connection that carries them.
+  // KPN 5G recording: the first sample includes radio wake-up. One lost sample among ten is one
+  // lost packet, and the nine answers are the measurement.
   const ms = [216, 21, 19, 22, 20, 24, 19, 21, 20];
   let i = 0;
   globalThis.fetch = async (url, o) => {
     const wait = ms[i++];
     if (wait == null) {
-      // The tenth request hangs until its own deadline, as a lost SYN does.
+      // The tenth request hangs until the probe deadline, as a lost SYN does.
       return new Promise((res, rej) => o.signal?.addEventListener('abort',
         () => rej(Object.assign(new Error('x'), {name: 'AbortError'})), {once: true}));
     }
@@ -236,9 +234,8 @@ s.test('runProbe MUST return ok false with fail network WHEN every sample throws
 });
 
 s.test('runProbe MUST stop sampling early and report the samples it took WHEN the remaining budget cannot hold another', async () => {
-  // Five fresh hostnames at 1.5 s each: the fifth would be admitted with 2 s and time out on
-  // the budget rather than on the network, which is exactly the 2 s resolver retry timer the
-  // dns probe exists to recognise.
+  // Five fresh hostnames at 1.5 s each: the fifth, admitted with 2 s left, times out on the budget
+  // at the 2 s resolver retry timer the dns probe detects.
   let calls = 0;
   globalThis.fetch = async () => { calls++; await sleep(300); return {ok: true, status: 200, type: 'opaque'}; };
   const r = await probe.runProbe(P.dns, {timeoutMs: 1000});
@@ -368,8 +365,8 @@ s.test('runProbe MUST report a rate at or under the link rate WHEN the link runs
     const r = await probe.runProbe(P.down, {timeoutMs: 8000,
       download: {windowMs: 1000, rampMs: 0, streams: 1}});
     assert.ok(r.bps > 0, `${mbps} Mb/s must produce a reading, got ${r.bps}`);
-    // A reading above the true rate would grade a link better than it is, and nothing —
-    // jitter, a ramp, a saturated round — may cause that.
+    // A reading above the true rate overstates the link; jitter, the ramp and saturation must not
+    // produce one.
     const claimed = r.saturated ? probe.DOWN_CEILING_BPS : r.bps;
     assert.ok(claimed <= Math.max(mbps * 1e6, probe.DOWN_CEILING_BPS) * 1.15,
               `${mbps} Mb/s: read ${(claimed / 1e6).toFixed(2)} Mb/s claims more than the link`);
@@ -387,9 +384,8 @@ s.test('looksLikeRetry MUST return true only for resolver retry timers WHEN give
 });
 
 s.test('PROBES MUST give every latency probe more than one sample and the comparable ones one count WHEN the set is read', () => {
-  // One round trip is not a measurement, and one unsampled probe beside sampled ones is worse
-  // than either: whichever row it is, it carries a single noisy sample where its neighbours
-  // carry medians, and the route can be exactly that row.
+  // A single round trip is noise; an unsampled probe beside sampled ones reports one noisy value
+  // among medians, possibly on the route row.
   for (const p of probe.PROBES) {
     if (p.kind === 'download') continue;
     assert.ok(p.samples > 1, `${p.id} takes more than one sample`);
@@ -464,6 +460,78 @@ s.test('runRound MUST hold every started probe in pending until it settles WHEN 
             `phases ${round.phase_idle_ms} and ${round.phase_down_ms} ms`);
 });
 
+s.test('runProbe MUST continue past a lost sample and count it in samples_lost WHEN earlier samples answered', async () => {
+  let i = 0;
+  globalThis.fetch = async () => {
+    if (i++ === 2) throw netError();
+    await sleep(10);
+    return {ok: true, status: 200, text: async () => TRACE};
+  };
+  const r = await probe.runProbe(P.ip6, {timeoutMs: 8000});
+  assert.equal(r.ms_samples.length, 10, 'sampling went on after the loss');
+  assert.equal(r.samples_ok, 9);
+  assert.equal(r.samples_lost, 1);
+});
+
+s.test('runProbe MUST record a slow answer with its full time WHEN it follows a fast answer inside the budget', async () => {
+  const waits = [50, 1500];
+  let i = 0;
+  globalThis.fetch = async () => {
+    await sleep(waits[i++] ?? 10);
+    return {ok: true, status: 200, text: async () => TRACE};
+  };
+  const r = await probe.runProbe(P.ip6, {timeoutMs: 8000});
+  assert.ok(r.ms_samples[1] >= 1500, `the slow sample kept its time: ${r.ms_samples[1]} ms`);
+  assert.equal(r.samples_lost, 0);
+});
+
+s.test('runProbe MUST record when each sample began WHEN the probe is sampled', async () => {
+  globalThis.fetch = async () => { await sleep(10); return {ok: true, status: 200, text: async () => TRACE}; };
+  const r = await probe.runProbe(P.ip6, {timeoutMs: 8000});
+  assert.equal(r.sample_starts_ms.length, r.ms_samples.length);
+  assert.ok(r.sample_starts_ms[0] <= 1, `the first sample starts the probe: ${r.sample_starts_ms[0]}`);
+  assert.ok(r.sample_starts_ms.every((t, k) => k === 0 || t >= r.sample_starts_ms[k - 1] + r.ms_samples[k - 1] - 1),
+            JSON.stringify(r.sample_starts_ms));
+});
+
+s.test('runProbe MUST record when the first host candidate arrived for each STUN sample WHEN gathering reports one', async () => {
+  globalThis.RTCPeerConnection = class {
+    addTransceiver() {} async createOffer() { return {}; }
+    async setLocalDescription() {
+      setTimeout(() => this.onicecandidate({candidate: {type: 'host', address: '10.0.0.1'}}), 1);
+      setTimeout(() => this.onicecandidate({candidate: {type: 'srflx', address: '80.60.65.96'}}), 20);
+      setTimeout(() => this.onicecandidate({candidate: null}), 25);
+    }
+    close() {}
+  };
+  const r = await probe.runProbe(P.udp, {timeoutMs: 3000});
+  delete globalThis.RTCPeerConnection;
+  assert.equal(r.host_ms_samples.length, r.ms_samples.length);
+  assert.ok(r.host_ms_samples.every((h, k) => h < r.ms_samples[k]),
+            `host before srflx: ${r.host_ms_samples} / ${r.ms_samples}`);
+});
+
+s.test('runRound MUST end the loaded round trip by the download deadline WHEN the round trip hangs under load', async () => {
+  let downloading = false;
+  globalThis.fetch = async (url, o) => {
+    const u = String(url);
+    if (u.includes('speed.cloudflare')) {
+      downloading = true;
+      return {ok: true, status: 200, type: 'opaque', headers: {get: () => null},
+              body: pacedBody(Array.from({length: 150}, () => ({after: 20, bytes: 20000})))};
+    }
+    if (downloading && u.includes('[2606')) {
+      return new Promise((res, rej) => o.signal?.addEventListener('abort',
+        () => rej(Object.assign(new Error('x'), {name: 'AbortError'})), {once: true}));
+    }
+    return {ok: true, status: 200, type: 'opaque', headers: {get: () => null}, text: async () => TRACE};
+  };
+  const round = await probe.runRound({intervalMs: 2000,
+                                      download: {windowMs: 300, rampMs: 800, streams: 1, capBytes: 1e9}});
+  assert.ok(round.phase_down_ms < 1700, `the download phase ends with its budget: ${round.phase_down_ms} ms`);
+  assert.equal(round.loaded_rtt_ms, null);
+});
+
 await s.run();
 
 /* ---------------- the round loop ---------------- */
@@ -535,7 +603,7 @@ l.test('createRecorder MUST record round_error with null grades and fail error o
                                    headers: {get: () => null}, body: bodyOf(25000),
                                    text: async () => TRACE});
   const orig = globalThis.RTCPeerConnection;
-  // The round loop itself failing, rather than a request coming back badly.
+  // The round loop throws; every request succeeds.
   globalThis.RTCPeerConnection = class {
     addTransceiver() { throw new Error('round broke'); }
     close() {}
@@ -579,10 +647,9 @@ l.test('createRecorder MUST exclude a probe with zero successful samples from fi
 });
 
 l.test('createRecorder MUST set ipv4_available true WHEN a round egresses over IPv4 after the preflight literal failed', async () => {
-  // Recorded on two operators: the download egressed over IPv4 every round while the IPv4
-  // literal failed every round, because 1.1.1.1 is a public resolver that relays and filters
-  // intercept. Believing the literal alone marks a working path absent and then excuses every
-  // failure on it for the rest of the session.
+  // Recorded on two operators: the download egressed over IPv4 while the IPv4 literal failed every
+  // round, since relays and filters intercept the public resolver 1.1.1.1. The literal alone marks
+  // a working path absent and excludes its failures for the session.
   globalThis.fetch = async (url, o) => {
     if (String(url).includes('1.1.1.1')) throw netError();
     return {ok: true, status: 200, type: 'opaque',
@@ -807,8 +874,7 @@ l.test('createRecorder MUST record loaded_rtt_ms and loaded_rtt_from WHEN a roun
 });
 
 l.test('createRecorder MUST record null loaded_rtt_ms WHEN the body ends inside the ramp', async () => {
-  // A body that ends inside the ramp never opens a window, so there is no load to measure
-  // under and nothing is invented.
+  // A body that ends inside the ramp opens no window, so no loaded round trip is recorded.
   globalThis.fetch = async () => ({ok: true, status: 200, type: 'opaque',
                                    headers: {get: () => null}, body: bodyOf(1000),
                                    text: async () => TRACE});
@@ -935,8 +1001,7 @@ r.test('probeReading MUST return a value or a note for every probe and flag a sa
 });
 
 r.test('probeReading MUST return the dns time graded on the ttfb scale WHEN the lookup answered', () => {
-  // It was printed as "+190 ms extra" against a warm control that answers in 15 ms, on a scale
-  // tuned to a corpus. The absolute time is what a person waits for, and ttfb grades it.
+  // The new-host row shows the absolute first-contact time, graded on `ttfb`.
   const rd = grade.probeReading('dns', round({dns: shown(190)}));
   assert.equal(rd.scale, 'ttfb');
   assert.equal(rd.value, 190);
@@ -1039,8 +1104,8 @@ c.test('classify MUST return the stored grade WHEN the row carries grades', () =
   assert.equal(ui.classify(sample), 'red', 'the stored grade wins');
 });
 
-// Nothing else checks the wiring between the two modules: a function removed from ui.js
-// surfaces only when a session refuses to start.
+// Checks the ui.js functions main.js calls; a missing one fails only at session start in the
+// browser.
 c.test('ui.js MUST export every function main.js calls WHEN the call sites are read', async () => {
   const {readFileSync} = await import('node:fs');
   const main = readFileSync(new URL('../js/main.js', import.meta.url), 'utf8');
@@ -1178,6 +1243,7 @@ e.test('summarise MUST count each skip event as a skipped slot WHEN the session 
   const sum = summarise(rows, events);
   assert.equal(sum.skipped, 1);
   assert.equal(sum.ran, 2, 'a skip writes no row, so every row ran');
+  assert.equal(sum.slots, 3, 'two rounds and one slot that could not start');
 });
 
 await e.run();

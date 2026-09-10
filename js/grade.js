@@ -3,11 +3,17 @@ import {countsAsFailure} from './export.js';
 export const GRADES = ['green', 'yellow', 'orange', 'red'];
 const RANK = Object.fromEntries(GRADES.map((g, i) => [g, i]));
 
+// YouTube's recommended sustained speeds for 1080p, 720p and 480p, divided by 0.7: ExoPlayer and
+// hls.js select a rendition at no more than 70% of measured throughput, and one round's rate is a
+// single sample of that throughput.
+const PLAYER_BANDWIDTH_FRACTION = 0.7;
+const VIDEO_EDGES = [5e6, 2.5e6, 1.1e6].map(bps => Math.round(bps / PLAYER_BANDWIDTH_FRACTION));
+
 export const SCALES = {
   round_trip: {unit: 'ms',  dir: 'low',  edges: [100, 200, 400]},
   ttfb:       {unit: 'ms',  dir: 'low',  edges: [800, 1800, 3000]},
   article:    {unit: 'ms',  dir: 'low',  edges: [2500, 4000, 8000]},
-  rate:       {unit: 'bps', dir: 'high', edges: [10e6, 5e6, 1.5e6]},
+  rate:       {unit: 'bps', dir: 'high', edges: VIDEO_EDGES},
   call_rate:  {unit: 'bps', dir: 'high', edges: [0.3e6, 0.1e6, 0.03e6]}
 };
 
@@ -34,18 +40,16 @@ export function gradeValue(scale, value) {
 
 export const worse = (a, b) => (a == null ? b : b == null ? a : (RANK[a] >= RANK[b] ? a : b));
 
-// A resting probe has reported nothing about the network, so it must not grade the activity it
-// feeds as red for the whole cool-down.
+// A resting probe sends no request, so it adds no red to the activity it feeds during the
+// cool-down.
 const failed = countsAsFailure;
 
-// A download the far end turned away is a fact about the endpoint, so it must not be reported
-// as the person's connection being bad. Anything else that stops a transfer — a refused
-// connection, a stall, a timeout — is the network.
+// A server refusal describes the endpoint and is excluded from link grades. Every other transfer
+// failure (refused connection, stall, timeout) counts against the network.
 const ourFault = r => r?.refused_by === 'server';
 
-// What the round's streams carried over its window. A saturated round reached the byte cap
-// before the window closed, so it proved the link carries at least the ceiling and the reading
-// is that ceiling — which sits above every edge, so it grades green either way.
+// Window rate across the round's streams. A saturated round reached the byte cap before the
+// window closed; its reading is the ceiling, a lower bound above every edge.
 export const throughput = down => (down?.ok && Number.isFinite(down.bps) ? down.bps : null);
 
 
@@ -57,14 +61,10 @@ export function articleMs(probes) {
   return Math.round(2 * dns + 2 * web + (ARTICLE_BYTES * 8000) / rate);
 }
 
-// The route is whichever address family this network carries: the one carrying traffic, or
-// failing that the one that genuinely failed, since a merely absent family explains nothing.
-// A browser prefers IPv6 where both work, so it leads.
+// Route family by precedence: literal answered, family carried traffic with its literal refused,
+// literal failed, family absent. IPv6 leads when both qualify, matching browser preference.
 export function activeRoute(probes = {}) {
-  // In order of what the round can say about a family: its literal answered, or the family
-  // carried traffic while the literal was refused, or the literal genuinely failed. A family
-  // that is merely absent has said nothing and ranks last, so a network with no IPv6 reports
-  // the IPv4 carrying the traffic.
+  // An absent family ranks last, so a network without IPv6 reports the IPv4 family.
   const rank = [f => probes[f]?.ok, f => probes[f]?.blocked, f => failed(probes[f]),
                 f => probes[f] && !probes[f].expected];
   for (const better of rank) {
@@ -75,25 +75,26 @@ export function activeRoute(probes = {}) {
 }
 
 const routeMs = p => (p.ip6?.ok ? p.ip6.ms : p.ip4?.ok ? p.ip4.ms : null);
-// Anything that reached the network this round. An IP literal can be blocked or hijacked
-// where ordinary traffic is not: on one operator both literals failed every round while DNS,
-// the web probe and the download all answered.
+// Any hostname probe that reached the network this round. Literals can be blocked or hijacked on
+// a working path: on one operator both literals failed every round while DNS, gstatic and the
+// download answered.
 const reached = p => !!(p.web?.ok || p.down?.ok || p.dns?.ok || p.dns_ctl?.ok);
 
-// No route means no family is carrying traffic, at least one genuinely failed, and nothing
-// else got out either. A family that is merely absent, or rested, has reported nothing and
-// cannot condemn the link; neither can a blocked literal while the rest of the round succeeds.
-const noRoute = p =>
-  !p.ip6?.ok && !p.ip4?.ok && (failed(p.ip6) || failed(p.ip4)) && !reached(p);
+// No route: no family carried traffic, at least one literal failed, and no hostname probe reached
+// the network. Absent, rested and blocked literals count as no failure.
+const roundTripFailed = p => !p.ip6?.ok && !p.ip4?.ok && (failed(p.ip6) || failed(p.ip4));
+const noRoute = p => roundTripFailed(p) && !reached(p);
 
 // Only whether the UDP path exists is read here; the row above grades its milliseconds.
 const TERMS = {
   voice: ({p, rate, noThroughput, skipRate}) => [
     {note: 'no UDP', grade: failed(p.udp) ? 'red' : null},
     {note: 'no route', grade: noRoute(p) ? 'red' : null},
-    {note: 'no data', grade: noThroughput},
+    // A call carries about 100 kb/s over the path the round trip and the UDP probe measured in
+    // this round, so a failed bulk download reddens it only when the round trip failed with it.
+    {note: 'no data', grade: noThroughput && roundTripFailed(p) ? 'red' : null},
     {scale: 'round_trip', value: routeMs(p)},
-    ...(skipRate ? [] : [{scale: 'call_rate', value: rate}])
+    ...(skipRate || noThroughput ? [] : [{scale: 'call_rate', value: rate}])
   ],
   news: ({p, noThroughput, skipRate}) => [
     {note: 'lookup lost', grade: p.dns?.retry_suspected ? 'red' : null},
@@ -110,25 +111,23 @@ const TERMS = {
 };
 
 
-// A download the far end turned away, or one that never ran, measured no throughput. The term
-// is dropped: left in place with no value it reads as unrated, which blanks every activity
-// that consults it while the round trip and the UDP path were both measured.
+// A server refusal, a short span or a rest measures no throughput, so the rate terms are dropped:
+// an empty term marks the activity unrated. A network failure drops `call_rate` from voice and adds
+// red to news and streaming.
 function terms(activity, p) {
   const skipRate = ourFault(p.down) || !countsAsFailure(p.down) && p.down?.ok === false;
   const noThroughput = failed(p.down) && !skipRate ? 'red' : null;
   return TERMS[activity]?.({p, rate: throughput(p.down), noThroughput, skipRate}) ?? [];
 }
 
-// An activity's verdict and the measurement that decided it, so the number shown and the
-// colour beside it always describe the same thing.
+// An activity's grade and the term that set it, so the displayed value matches the colour.
 export function activityReading(activity, sample) {
   const graded = terms(activity, sample?.probes || {})
     .map(t => ({...t, grade: t.grade ?? gradeValue(t.scale, t.value)}));
   const grade = graded.reduce((a, t) => worse(a, t.grade), null);
 
-  // A term that measures something and got no measurement has to hold the worst-of open: a
-  // call graded on UDP and throughput alone claims a verdict while the round trip had no
-  // instrument at all. A failure already seen outranks it: red is known, unrated is not knowing.
+  // A scaled term without a measurement makes the activity unrated: a call graded on UDP and
+  // throughput alone ignores a missing round trip. A red term still sets red.
   const missing = graded.filter(t => t.scale && t.grade == null).map(t => t.scale);
   if (missing.length && grade !== 'red') {
     return {grade: null, value: null, unit: null, note: 'unrated', scale: null,
@@ -142,14 +141,13 @@ export function activityReading(activity, sample) {
     unit: decided?.scale ? SCALES[decided.scale].unit : null,
     note: decided?.note ?? null,
     scale: decided?.scale ?? null,
-    // The download is the only term that can saturate, and only it prints a ≥.
+    // Only the download rate saturates and prints ≥.
     saturated: decided?.scale === 'rate' && sample?.probes?.down?.saturated === true,
     missing: []
   };
 }
 
-// Every probe in PROBES needs an entry: one without a scale shows a number no colour ever
-// contradicts.
+// Every probe in PROBES needs a scale; a probe without one shows an uncoloured value.
 export const PROBE_SCALES = {
   ip6: 'round_trip', ip4: 'round_trip', dns_ctl: 'round_trip', web: 'round_trip',
   udp: 'round_trip', down: 'rate', dns: 'ttfb'
@@ -166,19 +164,15 @@ function probeState(r) {
   return r.ok ? 'ok' : 'none';
 }
 
-// What it costs to reach a host never contacted before: resolution, the connection and the
-// handshake together, measured as one figure — a page cannot separate them, because the
-// resource-timing phases come back zeroed cross-origin without Timing-Allow-Origin.
-//
-// The absolute time is what a person waits for when they open a link to somewhere new, which
-// is the wait `ttfb` grades. The cached-name control answers in about 15 ms on a warm
-// connection, so a difference against it carries the same figure on a scale of its own.
+// First-contact time to an uncontacted host: resolution, connect and TLS handshake as one value,
+// since resource-timing phases are zeroed cross-origin without Timing-Allow-Origin. Graded on
+// `ttfb`, the wait for a new host.
 function dnsMeasure(p) {
   if (p.dns?.retry_suspected) return {grade: 'red', note: 'lost'};
   return {scale: 'ttfb', value: p.dns.ms};
 }
 
-// What a probe measured this round, and the colour that measurement grades to.
+// A probe's measurement this round and its grade.
 export function probeReading(id, sample) {
   const p = sample && !sample.skipped ? (sample.probes || {}) : {};
   const r = p[id];
@@ -211,7 +205,7 @@ export function gradeProbes(sample) {
   return out;
 }
 
-// The figure an activity leads with, which is the one that decided its grade.
+// The value of the term that set an activity's grade.
 export function activityValue(activity, sample) {
   return activityReading(activity, sample).value;
 }

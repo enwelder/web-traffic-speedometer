@@ -24,24 +24,22 @@ const stop = () => { try { server.kill(); } catch { /* already gone */ } };
 process.on('exit', stop);
 await new Promise(r => setTimeout(r, 800));
 
-// The app runs on whatever browser someone opens it in, and the parts most likely to differ
-// between engines — streaming reads, connection reuse, storage, the service worker — are
-// exactly the parts this suite covers. WTS_ENGINE picks one; npm test runs each in turn.
+// Streaming reads, connection reuse, storage and the service worker differ between engines.
+// WTS_ENGINE selects one; npm test runs each.
 const ENGINES = {chromium, webkit, firefox};
 const engineName = process.env.WTS_ENGINE || 'chromium';
 const engine = ENGINES[engineName];
 if (!engine) throw new Error(`unknown WTS_ENGINE ${engineName}: ${Object.keys(ENGINES)}`);
 
-// CI installs Playwright's pinned browsers. Where that download is absent, fall back to an
-// installed Chrome, since the missing download is not a fault in the code.
+// CI installs Playwright's pinned browsers; without that download an installed Chrome runs the
+// suite.
 const browser = await (async () => {
   if (process.env.PW_CHANNEL) return chromium.launch({channel: process.env.PW_CHANNEL});
   try {
     return await engine.launch();
   } catch {
     if (engineName !== 'chromium') {
-      // Locally a missing engine is a note. On CI it is a hole: the workflow decides what is
-      // installed, so passing without running would report coverage that does not exist.
+      // A missing engine prints a note locally and fails on CI, where the workflow installs engines.
       if (process.env.CI) throw new Error(`${engineName} is not installed on this runner`);
       console.log(`  ..    ${engineName} is not installed; run npx playwright install ${engineName}`);
       process.exit(0);
@@ -69,8 +67,7 @@ async function context(extra = {}) {
     if (u.hostname === '1.1.1.1') return route.abort('connectionfailed');
     if (state.mode === 'fail') return route.abort('connectionfailed');
     if (u.hostname === 'speed.cloudflare.com') return route.fulfill({
-      // The probe asks for more than any link could deliver in its window; serving that in
-      // full would allocate it in the browser for no benefit to the test.
+      // The probe requests more bytes than a window reads; the stub caps the body at 2 MB.
       status: 200, body: Buffer.alloc(Math.min(Number(u.searchParams.get('bytes')) || 250000, 2e6)),
       headers: {'access-control-allow-origin': '*', 'timing-allow-origin': '*',
                 'access-control-expose-headers': 'server-timing, cf-meta-colo',
@@ -160,8 +157,8 @@ b.test('the budget projection MUST double WHEN the interval halves', async () =>
   await page.selectOption('#f-profile', 'fine');
   const fine = await read();
 
-  // A round streams a window that stops at a byte cap, so the interval decides the cost and
-  // the figure is an exact worst case.
+  // A round streams a byte-capped window, so the interval sets the cost and the projection is the
+  // exact worst case.
   const mb = t => Number(t.match(/≈ (\d+) MB/)[1]);
   assert.ok(Math.abs(mb(fine) - mb(coarse) * 2) < mb(coarse) * 0.1,
             `halving the interval doubles the bill: ${mb(coarse)} then ${mb(fine)} MB`);
@@ -179,8 +176,7 @@ b.test('a session MUST record, resume across a reload with a contiguous seq, and
   await page.selectOption('#f-operator', 'Odido');
   await page.click('#btn-start');
   await page.waitForTimeout(3000);
-  // The route row reports whichever family carries traffic; an absent IPv4 path never
-  // reaches it.
+  // The route row shows the family carrying traffic; the absent IPv4 path is excluded.
   assert.equal(await page.textContent('#pname-route'), 'GET IPv6');
   assert.match(await page.$eval('#probe-route', e => e.className), /green|yellow|orange/,
                'and the family that works is graded');
@@ -200,9 +196,8 @@ b.test('a session MUST record, resume across a reload with a contiguous seq, and
   assert.match(session.name, /^Odido · \d+ \w{3} \d{2}:\d{2}$/, `name generated: ${session.name}`);
   assert.equal(session.ipv4_available, false);
   assert.ok(session.ipv4_check.fail, 'with the evidence kept');
-  // The harness has no IPv4 path. In every round where something carried the traffic, the
-  // IPv4 literal failing cost nobody anything and is charged to nothing. In a round where
-  // nothing carried, it is a real failure — that is the whole rule.
+  // The harness has no IPv4 path. In rounds where another family carried traffic the IPv4 failure
+  // is `unused` and excluded; in rounds without traffic it counts as a failure.
   const carried = db.samples.filter(x => x.probes.ip6.ok);
   assert.ok(carried.length > 0, 'some round had IPv6 carrying');
   assert.ok(carried.every(x => x.probes.ip4.unused === true),
@@ -277,7 +272,7 @@ b.test('the service worker MUST serve the shell and the stored sessions WHEN the
   // before the page is reached, so this cannot run there. Chromium covers it; the worker
   // itself is checked against the shipped file list by tests/security.mjs on every engine.
   if (engineName === 'webkit') return;
-  // The one test the worker must run for.
+  // Service worker enabled for this test.
   const {ctx} = await context({serviceWorkers: 'allow'});
   const page = await ctx.newPage();
   await page.goto(BASE, {waitUntil: 'networkidle'});
@@ -311,8 +306,8 @@ b.test('every probe MUST reach its endpoint with no policy violation logged WHEN
   await page.waitForTimeout(500);
   assert.deepEqual(blocked, [], 'no probe is refused by the policy');
   const db = await readDb(page);
-  // The stop above aborts whatever round was in flight, so the last row can be a round that
-  // was cut short. The last one that ran to the end is the one with something to say.
+  // Stop aborts the round in flight, so the last row can be cut short; the check reads the last
+  // complete round.
   const whole = db.samples.filter(s => !s.skipped && s.probes.down?.fail !== 'abort');
   const last = whole.at(-1).probes;
   for (const id of ['ip6', 'dns', 'dns_ctl', 'web', 'down', 'udp']) {
@@ -371,7 +366,7 @@ b.test('the header MUST show APP_VERSION and hide the help control WHEN no sessi
   const page = await ctx.newPage();
   await page.goto(BASE, {waitUntil: 'networkidle'});
 
-  // A tester has to be able to tell which build is on screen without opening a file.
+  // The header shows the build version.
   assert.equal(await page.textContent('#app-version'), APP_VERSION);
   assert.equal(await page.$eval('#btn-help', e => e.hidden), true,
                'nothing is measured yet, so there is nothing to explain');
@@ -391,8 +386,7 @@ b.test('a graded row and bar MUST compute a painted colour distinct from the neu
   await page.click('#btn-start');
   await page.waitForTimeout(5000);
 
-  // Asserting the class alone passed while the rules that colour it had been deleted, which
-  // left every rail and every bar the same grey.
+  // Computed colours: a class assertion alone passes with the colour rules missing.
   const paint = await page.evaluate(() => {
     const bg = el => getComputedStyle(el).backgroundColor;
     const rail = el => getComputedStyle(el, '::before').backgroundColor;

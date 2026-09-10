@@ -1,5 +1,4 @@
-// Grading tests: each activity is judged on its own scales, every threshold is absolute, and a
-// activity is only as good as its weakest requirement.
+// Grading: each activity on its own scales, absolute thresholds, the worst term sets the grade.
 import assert from 'node:assert';
 import {stubBrowser, suite} from './helpers.mjs';
 
@@ -26,8 +25,8 @@ s.test('gradeActivities MUST grade each activity on its own scales WHEN one roun
   assert.equal(grades.news, 'green', '190 ms to a cold origin is a good result');
   assert.equal(grades.streaming, 'green', '40 Mb/s');
 
-  // The same number means different things on different scales: 190 ms of cold lookup is
-  // comfortable, 190 ms of round trip is not.
+  // The same value grades differently per scale: 190 ms is green on `ttfb` and yellow on
+  // `round_trip`.
   assert.equal(g.gradeValue('ttfb', 190), 'green');
   assert.equal(g.gradeValue('round_trip', 190), 'yellow');
 });
@@ -51,14 +50,13 @@ s.test('gradeActivities MUST leave the round unchanged WHEN it grades one', () =
 });
 
 s.test('gradeActivities MUST grade voice on its worst term WHEN any one of its three scales degrades', () => {
-  // Voice reads three things, and each alone can sink it however well the others read.
+  // Voice has three terms, and any one of them can set red.
   assert.equal(g.gradeActivities(round()).voice, 'green', 'all three hold');
   assert.equal(g.gradeActivities(round({udp: bad()})).voice, 'red', 'no UDP path');
   assert.equal(g.gradeActivities(round({ip6: ok(500)})).voice, 'red', 'round trip too long');
   assert.equal(g.gradeActivities(round({down: {ok: true, bps: 20e3}})).voice, 'red',
                'a link carrying less than speech needs');
-  // The term is there to catch a dead link, not to rank live ones: speech is 9-14 kb/s, so
-  // anything a train cell delivers carries a call.
+  // `call_rate` detects a link carrying no data: speech takes 9-14 kb/s.
   assert.equal(g.gradeActivities(round({down: {ok: true, bps: 500e3}})).voice, 'green',
                'half a megabit is ample for a call');
   assert.equal(g.gradeActivities(round({ip6: ok(10), udp: bad()})).voice, 'red',
@@ -72,11 +70,10 @@ s.test('gradeActivities MUST grade voice on its worst term WHEN any one of its t
 
 s.test('gradeActivities MUST grade news on the cold lookup and the throughput together WHEN either term degrades', () => {
   assert.equal(g.gradeActivities(round()).news, 'green');
-  // A fast lookup does not save an article that cannot be pulled down.
+  // A fast lookup with near-zero throughput grades news red.
   const crawling = g.gradeActivities(round({dns: ok(120), down: {ok: true, bps: 300e3}}));
   assert.equal(crawling.news, 'red', 'a fast cold origin over a link that carries nothing');
-  // And a quick link does not save a slow lookup: 2.5 s of cold origin is past the point
-  // web.dev calls poor, and 3.5 s is past the point an article is worth waiting for.
+  // A slow lookup on a fast link: 2.5 s exceeds web.dev's poor threshold, 3.5 s grades red.
   assert.equal(g.gradeActivities(round({dns: ok(2500)})).news, 'orange');
   assert.equal(g.gradeActivities(round({dns: ok(3500)})).news, 'red');
 });
@@ -96,8 +93,7 @@ s.test('gradeActivities MUST grade news red WHEN the DNS answer carries retry_su
 });
 
 s.test('gradeActivities MUST charge streaming red for a connection failure and withhold red for a server refusal WHEN the download fails', () => {
-  // Reporting a server refusal as red claims the person's connection cannot carry video while
-  // that connection is carrying everything else.
+  // A server refusal describes the endpoint; the connection carries the other probes.
   const refused = round({down: {ok: false, fail: 'network', refused_by: 'server'}});
   assert.notEqual(g.gradeActivities(refused).streaming, 'red',
                   'the endpoint turning us away is a fact about the endpoint');
@@ -157,8 +153,8 @@ s.test('probeReading MUST return the probe value, unit and grade WHEN the probe 
 });
 
 s.test('probeReading MUST return a null grade WHEN the probe is absent, resting or missing from the round', () => {
-  // An absent IPv4 path, a rested probe and a probe the round never ran are all reasons for
-  // there to be no measurement, and none of them is the link being bad.
+  // An absent IPv4 path, a rested probe and a missing probe produce no measurement and no link
+  // failure.
   assert.deepEqual(pick(g.probeReading('ip4', round())), {state: 'absent', grade: null});
   assert.deepEqual(pick(g.probeReading('web', round({web: bad({fail: 'resting'})}))),
                    {state: 'resting', grade: null});
@@ -171,15 +167,14 @@ s.test('probeReading MUST return a null grade WHEN the probe is absent, resting 
 });
 
 s.test('probeReading MUST return state refused with a null grade WHEN the server refused the download', () => {
-  // The same fact the streaming activity already ignores: the row and the tile below it must
-  // not disagree about whose fault it was.
+  // The probe row and the streaming grade treat a server refusal alike.
   const refused = round({down: {ok: false, fail: 'network', refused_by: 'server'}});
   assert.deepEqual(pick(g.probeReading('down', refused)), {state: 'refused', grade: null});
   assert.notEqual(g.gradeActivities(refused).streaming, 'red');
 });
 
 s.test('probeReading MUST return grade red with a null value WHEN the DNS answer carries retry_suspected', () => {
-  // The first query was lost. Loss, not slowness, and the delta cannot see it.
+  // The first query was lost: packet loss, red regardless of the time.
   const lost = round({dns: ok(80, {retry_suspected: true}), dns_ctl: ok(60)});
   const r = g.probeReading('dns', lost);
   assert.equal(r.grade, 'red');
@@ -188,8 +183,8 @@ s.test('probeReading MUST return grade red with a null value WHEN the DNS answer
 });
 
 s.test('activityReading MUST read the round trip from the family that answered WHEN one address family is absent', () => {
-  // A network with only one family is ordinary, not broken. Grading the route on IPv6 alone
-  // reported "no route" on every round of a perfectly healthy IPv4-only network.
+  // A single-family network is a working network; a route graded on IPv6 alone reports "no route"
+  // on an IPv4-only network.
   const route = over => g.activityReading('voice', round(over));
 
   const only4 = route({ip6: bad({expected: true}), ip4: ok(25)});
@@ -211,7 +206,7 @@ s.test('activityReading MUST return the no-route note only WHEN every family fai
   const route = over => g.activityReading('voice', round({...dead, ...over}));
 
   assert.equal(route({ip6: bad(), ip4: bad()}).note, 'no route');
-  // The absent family reported nothing, so the failure of the working one still decides.
+  // An absent family produces no result, so the other family's failure sets the grade.
   assert.equal(route({ip6: bad(), ip4: bad({expected: true})}).note, 'no route');
   assert.equal(route({ip6: bad({expected: true}), ip4: bad()}).note, 'no route');
 
@@ -223,7 +218,7 @@ s.test('activityReading MUST return the no-route note only WHEN every family fai
   const blocked = g.activityReading('voice', round({ip6: bad(), ip4: bad()}));
   assert.notEqual(blocked.note, 'no route',
                   'a blocked literal is not the same as a dead link');
-  // Two rested probes have reported nothing at all and cannot condemn the link.
+  // Two rested probes produce no results, so the route has no failure.
   assert.notEqual(route({ip6: bad({fail: 'resting'}), ip4: bad({fail: 'resting'})}).note,
                   'no route');
 });
@@ -242,9 +237,8 @@ s.test('throughput MUST return the round bps or null WHEN the download succeeded
 });
 
 s.test('activeRoute MUST return the family carrying traffic WHEN the two literals report different failures', () => {
-  // A fibre connection with IPv6 addressing but no route to the IPv6 literal reported a red
-  // row every round while IPv4 carried every byte. Neither literal answered, and the tie went
-  // to IPv6 — the family that was doing nothing.
+  // A fibre link with IPv6 addressing and no route to the IPv6 literal carries all traffic over
+  // IPv4; the route row shows the family carrying traffic.
   const ok = ms => ({ok: true, ms});
   const bad = over => ({ok: false, ms: null, fail: 'network', ...over});
 
@@ -257,10 +251,10 @@ s.test('activeRoute MUST return the family carrying traffic WHEN the two literal
   assert.equal(g.probeReading('ip4', {probes: blocked}).grade, null,
                'and a blocked literal takes no colour, because the path is fine');
 
-  // An absent family has said nothing at all, so it is the last thing worth showing.
+  // An absent family ranks last.
   assert.equal(g.activeRoute({ip6: bad({expected: true}), ip4: bad({blocked: true})}), 'ip4');
 
-  // Nothing carrying anything is still red.
+  // Without traffic on either family the route is red.
   const dead = {ip6: bad(), ip4: bad()};
   assert.equal(g.activeRoute(dead), 'ip6');
   assert.equal(g.probeReading('ip6', {probes: dead}).grade, 'red');
@@ -308,22 +302,24 @@ s.test('probeReading MUST return one exclusive state per literal failure and gra
 // What a download that produced no rate does to each activity. A term that cannot be measured
 // is dropped; one left in place with no value reads as unrated, which blanks an activity whose
 // round trip and UDP path were both measured.
-s.test('gradeActivities MUST degrade only the activities reading throughput WHEN the download produced no rate', () => {
+s.test('gradeActivities MUST redden articles and streaming and grade calls on the round trip WHEN the download produced no rate', () => {
   const grades = down => {
     const r = g.gradeActivities(round({down}));
     return [r.voice, r.news, r.streaming];
   };
 
-  // The link stopped carrying: every activity that needs data is red, calls included.
+  // Download failure: news and streaming red; voice grades on the round trip and UDP, both ok.
   assert.deepEqual(grades({ok: false, fail: 'network', refused_by: 'connection', bps: null}),
-                   ['red', 'red', 'red'], 'a connection that would not open is the link');
+                   ['green', 'red', 'red'], 'a connection that would not open is the link');
   assert.deepEqual(grades({ok: false, fail: 'stalled', bps: null}),
-                   ['red', 'red', 'red'], 'a cell that stopped answering mid-window is the link');
+                   ['green', 'red', 'red'], 'a cell that stopped answering mid-window is the link');
+  assert.deepEqual(grades({ok: false, fail: 'connect', bps: null}),
+                   ['green', 'red', 'red'], 'a download that never opened is the link');
   assert.deepEqual(grades({ok: false, fail: 'timeout', bps: null}),
-                   ['red', 'red', 'red']);
+                   ['green', 'red', 'red']);
 
-  // The endpoint turned us away, or the measurement was too short to divide by. Neither says
-  // anything about the link, so the round trip and the lookup still grade.
+  // Server refusal, short span or rest: no link failure, so voice and news grade on their other
+  // terms.
   for (const down of [{ok: false, fail: 'network', refused_by: 'server', bps: null},
                       {ok: false, fail: 'short', bps: null},
                       {ok: false, fail: 'resting', bps: null}]) {
@@ -335,11 +331,24 @@ s.test('gradeActivities MUST degrade only the activities reading throughput WHEN
 });
 
 s.test('gradeActivities MUST grade voice red WHEN the UDP path failed beside an unmeasured download', () => {
-  // The carve-out must not become a way to lose a red: a refused download beside a dead UDP
-  // path is still a call that will not connect.
+  // A dropped rate term leaves other red terms in place: a failed UDP path still grades voice red.
   const r = g.gradeActivities(round({down: {ok: false, fail: 'short', bps: null},
                                      udp: {ok: false, ms: null, fail: 'timeout'}}));
   assert.equal(r.voice, 'red', 'no UDP is still no call');
+});
+
+s.test('gradeActivities MUST grade voice red WHEN the download failed along with the round trip', () => {
+  const r = g.gradeActivities(round({ip6: bad(), ip4: bad(), down: {ok: false, fail: 'stalled', bps: null}}));
+  assert.equal(r.voice, 'red');
+});
+
+s.test('gradeValue MUST grade a rate against the 1080p, 720p and 480p sustained speeds divided by 0.7 WHEN reading the rate scale', () => {
+  assert.equal(g.gradeValue('rate', 7.2e6), 'green', 'above 5 Mb/s ÷ 0.7');
+  assert.equal(g.gradeValue('rate', 5.2e6), 'yellow', '1080p without headroom');
+  assert.equal(g.gradeValue('rate', 3.6e6), 'yellow', 'above 2.5 Mb/s ÷ 0.7');
+  assert.equal(g.gradeValue('rate', 3e6), 'orange');
+  assert.equal(g.gradeValue('rate', 1.6e6), 'orange', 'above 1.1 Mb/s ÷ 0.7');
+  assert.equal(g.gradeValue('rate', 1.5e6), 'red');
 });
 
 await s.run();

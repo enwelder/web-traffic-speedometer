@@ -143,8 +143,8 @@ d.test('runProbe MUST keep the bytes received and set truncated WHEN the stream 
 });
 
 d.test('runProbe MUST report no rate above DOWN_CEILING_BPS WHEN the body is too small to fill a window', async () => {
-  // A single buffered chunk arriving in 2 ms divides out to 7.5 Gb/s. A window that never
-  // opened has measured nothing.
+  // A single buffered chunk arriving in 2 ms computes to 7.5 Gb/s; an unopened window yields no
+  // rate.
   for (const [name, chunks] of [['one tiny chunk', [{after: 2, bytes: 10}]],
                                 ['one buffered chunk', [{after: 2, bytes: 5e6}]],
                                 ['a stall after one chunk', [{after: 2, bytes: 1000}, {stall: true}]]]) {
@@ -171,8 +171,8 @@ d.test('runProbe MUST open DOWN_STREAMS requests and sum their bytes against one
 });
 
 d.test('runProbe MUST report DOWN_CEILING_BPS with saturated set WHEN the byte cap ends the window', async () => {
-  // A window this short cannot tell 25 Mb/s from 300. What it can prove is that the link
-  // carries at least the ceiling, so that is what it reports, and the row is flagged.
+  // A capped 1.5 s window separates no rates above the ceiling; the reading is the ceiling, flagged
+  // `saturated`.
   globalThis.fetch = async () => ({ok: true, status: 200, headers: {get: () => null},
     body: stream(Array.from({length: 400}, () => ({after: 1, bytes: 250000})))});
   const r = await probe.runProbe(P.down, {timeoutMs: 8000});
@@ -193,8 +193,7 @@ d.test('runProbe MUST report the link rate with saturated false WHEN the window 
 });
 
 d.test('runProbe MUST exclude the ramp bytes from the window WHEN a ramp is configured', async () => {
-  // RMBT spends two seconds here and says what for: to get the radio into an active state so
-  // a result does not depend on what the connection was doing beforehand.
+  // RMBT's 2 s pre-test activates the radio, so a result is independent of prior connection state.
   const slow = Array.from({length: 30}, () => ({after: 20, bytes: 500}));
   const fast = Array.from({length: 300}, () => ({after: 10, bytes: 20000}));
   const r = await download([...slow, ...fast], {rampMs: 600, streams: 1});
@@ -205,9 +204,8 @@ d.test('runProbe MUST exclude the ramp bytes from the window WHEN a ramp is conf
 });
 
 d.test('runProbe MUST set refused_by to connection or server WHEN the download fails, and issue one request WHEN it succeeds', async () => {
-  // Cloudflare turning us away and a connection that never opened are identical from the
-  // outside. An opaque repeat tells them apart, because a response this origin may not read
-  // still counts as one.
+  // A server refusal and an unopened connection look identical to the page. An opaque repeat
+  // separates them: an unreadable response counts as a success.
   globalThis.fetch = async () => { throw netError(); };
   const dead = await probe.runProbe(P.down, {timeoutMs: 3000});
   assert.equal(dead.fail, 'network');
@@ -221,7 +219,7 @@ d.test('runProbe MUST set refused_by to connection or server WHEN the download f
   const blocked = await probe.runProbe(P.down, {timeoutMs: 3000});
   assert.equal(blocked.refused_by, 'server', 'the server answered, just not readably');
 
-  // A working download must not pay for the extra request.
+  // A successful download issues no repeat request.
   let calls = 0;
   globalThis.fetch = async () => {
     calls++;
@@ -247,8 +245,7 @@ d.test('runProbe MUST set aborted_reason eof or done WHEN the body ends first or
   assert.equal(cut.ok, true, 'a read stopped by its own window is a measurement, not a failure');
 });
 
-// Eight ways the download can report a number the link has not earned, each pinned here with
-// the arithmetic that produces it.
+// Download rate overstatement cases, each with its arithmetic.
 
 d.test('runProbe MUST return fail short with a null bps WHEN the window span is under DOWN_MIN_SPAN_MS', async () => {
   // A 9 kB body handed over whole, 3 ms after the ramp opened the window: 9000 x 8 / 0.003 is
@@ -295,8 +292,8 @@ d.test('runProbe MUST exclude the chunk that ended the ramp from window_bytes WH
 });
 
 d.test('runProbe MUST return fail short that countsAsFailure rejects WHEN the body ends inside the ramp', async () => {
-  // One chunk inside the ramp and then the far end runs out: nothing was measured, and the
-  // activities that read throughput must not be reddened by it.
+  // One chunk inside the ramp, then the body ends: no measurement, so no failure for throughput
+  // activities.
   const r = await download([{after: 2, bytes: 200000}], {windowMs: 1500, rampMs: 300, streams: 1});
   assert.equal(r.window_ms, 0);
   assert.equal(r.window_bytes, 0, 'the ramp is not the window');
@@ -306,8 +303,8 @@ d.test('runProbe MUST return fail short that countsAsFailure rejects WHEN the bo
 });
 
 d.test('runProbe MUST grade within one band of the link WHEN the link runs from 0.4 to 200 Mb/s', async () => {
-  // Above the ceiling the reading saturates and says so; below it the number has to land in
-  // the right band, since a reading that is merely true decides nothing.
+  // Above the ceiling the reading saturates with a flag; below it the grade falls within one band
+  // of the link's true grade.
   for (const mbps of [200, 50, 10, 1.5, 0.4]) {
     const per = Math.max(1, Math.round((mbps * 1e6 / 8) * 0.02));
     const chunks = Math.ceil(probe.DOWN_REQUEST_BYTES / per);
@@ -355,6 +352,111 @@ d.test('runProbe MUST record a stream whose request never opened WHEN the other 
     download: {windowMs: 300, rampMs: 0, streams: 3, capBytes: 1e9}});
   assert.equal(r.streams, 2);
   assert.deepEqual([r.per_stream[1].headers_ms, r.per_stream[1].end], [null, 'network']);
+});
+
+d.test('runProbe MUST end a stream still waiting for headers at the deadline as connect WHEN the other streams deliver', async () => {
+  let call = 0;
+  globalThis.fetch = async (url, o) => {
+    if (call++ === 1) {
+      return new Promise((res, rej) => o.signal?.addEventListener('abort',
+        () => rej(Object.assign(new Error('x'), {name: 'AbortError'})), {once: true}));
+    }
+    return {ok: true, status: 200, headers: {get: () => null},
+            body: stream(Array.from({length: 200}, () => ({after: 10, bytes: 20000})))};
+  };
+  const t0 = Date.now();
+  const r = await probe.runProbe(P.down, {timeoutMs: 1200,
+    download: {windowMs: 5000, rampMs: 0, streams: 3, capBytes: 1e9}});
+  assert.ok(Date.now() - t0 < 1800, `the download ends with its budget: ${Date.now() - t0} ms`);
+  assert.equal(r.per_stream[1].end, 'connect');
+  assert.equal(r.streams, 2);
+});
+
+d.test('runProbe MUST return fail connect WHEN no stream has headers by the deadline', async () => {
+  globalThis.fetch = (url, o) => new Promise((res, rej) => o.signal?.addEventListener('abort',
+        () => rej(Object.assign(new Error('x'), {name: 'AbortError'})), {once: true}));
+  const r = await probe.runProbe(P.down, {timeoutMs: 800});
+  assert.deepEqual([r.ok, r.fail, r.refused_by], [false, 'connect', undefined]);
+  assert.ok(r.per_stream.every(s => s.end === 'connect'), JSON.stringify(r.per_stream));
+});
+
+d.test('runProbe MUST read a stream from the moment its headers arrive WHEN the other streams are still opening', async () => {
+  let call = 0;
+  globalThis.fetch = async () => {
+    if (call++ > 0) await sleep(500);
+    return {ok: true, status: 200, headers: {get: () => null},
+            body: stream(Array.from({length: 100}, () => ({after: 10, bytes: 20000})))};
+  };
+  const r = await probe.runProbe(P.down, {timeoutMs: 3000,
+    download: {windowMs: 800, rampMs: 0, streams: 3, capBytes: 1e9}});
+  assert.ok(r.per_stream[0].first_byte_ms < r.per_stream[1].headers_ms,
+            `stream 0 read before stream 1 opened: ${JSON.stringify(r.per_stream)}`);
+});
+
+d.test('runProbe MUST flag window_cut WHEN the download deadline closes the window, and leave it false WHEN the clock does', async () => {
+  const body = () => stream(Array.from({length: 200}, () => ({after: 10, bytes: 20000})));
+  globalThis.fetch = async () => ({ok: true, status: 200, headers: {get: () => null}, body: body()});
+  const cut = await probe.runProbe(P.down, {timeoutMs: 700,
+    download: {windowMs: 1500, rampMs: 300, streams: 1, capBytes: 1e9}});
+  assert.equal(cut.window_cut, true, `window ${cut.window_ms} ms`);
+  const whole = await probe.runProbe(P.down, {timeoutMs: 3000,
+    download: {windowMs: 300, rampMs: 0, streams: 1, capBytes: 1e9}});
+  assert.equal(whole.window_cut, false, `window ${whole.window_ms} ms`);
+});
+
+d.test('runProbe MUST record headers_ms and status for a stream answering with an HTTP error WHEN its headers arrive', async () => {
+  let call = 0;
+  globalThis.fetch = async () => (call++ === 2
+    ? {ok: false, status: 503, headers: {get: () => null}, body: {cancel: async () => {}}}
+    : {ok: true, status: 200, headers: {get: () => null},
+       body: stream(Array.from({length: 40}, () => ({after: 10, bytes: 20000})))});
+  const r = await probe.runProbe(P.down, {timeoutMs: 3000,
+    download: {windowMs: 300, rampMs: 0, streams: 3, capBytes: 1e9}});
+  assert.deepEqual([r.per_stream[2].end, r.per_stream[2].status], ['http', 503]);
+  assert.ok(r.per_stream[2].headers_ms >= 0, JSON.stringify(r.per_stream[2]));
+});
+
+d.test('runProbe MUST check the same host, another host and STUN WHEN a stream still waits for headers 2 s in', async () => {
+  stubStun();
+  let downCalls = 0;
+  globalThis.fetch = async (url, o) => {
+    const u = String(url);
+    if (u.includes('bytes=') && downCalls++ === 1) {
+      return new Promise((res, rej) => o.signal?.addEventListener('abort',
+        () => rej(Object.assign(new Error('x'), {name: 'AbortError'})), {once: true}));
+    }
+    if (u.includes('bytes=')) {
+      return {ok: true, status: 200, headers: {get: () => null},
+              body: stream(Array.from({length: 400}, () => ({after: 10, bytes: 2000})))};
+    }
+    return {ok: true, status: 200, type: 'opaque'};
+  };
+  const r = await probe.runProbe(P.down, {timeoutMs: 3000,
+    download: {windowMs: 5000, rampMs: 0, streams: 3, capBytes: 1e9}});
+  assert.ok(r.stall_check, 'the check ran');
+  assert.deepEqual([r.stall_check.same_host.ok, r.stall_check.other_host.ok, r.stall_check.udp.ok],
+                   [true, true, true], JSON.stringify(r.stall_check));
+});
+
+d.test('runProbe MUST omit stall_check WHEN every stream has headers within 2 s', async () => {
+  const r = await download([{after: 2, bytes: 200000}], {windowMs: 300});
+  assert.equal(r.stall_check, undefined);
+});
+
+d.test('runProbe MUST record transfer_size and encoded_body_size per stream WHEN the browser filed a timing entry', async () => {
+  const saved = performance.getEntriesByName;
+  performance.getEntriesByName = name =>
+    (String(name).includes('s=1-') ? [{transferSize: 900300, encodedBodySize: 900000}] : []);
+  try {
+    globalThis.fetch = async () => ({ok: true, status: 200, headers: {get: () => null},
+      body: stream(Array.from({length: 40}, () => ({after: 10, bytes: 20000})))});
+    const r = await probe.runProbe(P.down, {timeoutMs: 3000,
+      download: {windowMs: 300, rampMs: 0, streams: 3, capBytes: 1e9}});
+    assert.deepEqual(r.per_stream.map(s => s.transfer_size), [null, 900300, null]);
+    assert.equal(r.per_stream[1].encoded_body_size, 900000);
+  } finally {
+    performance.getEntriesByName = saved;
+  }
 });
 
 await d.run();
@@ -419,7 +521,7 @@ n.test('looksLikeRetry MUST flag only resolver retry timers WHEN given a range o
 
 n.test('createRecorder MUST write a row per round with no rests and unique seqs WHEN every probe fails through an outage and then recovers', async () => {
   let down = false;
-  // A tunnel takes the radio, so UDP goes with it: nothing answers.
+  // A tunnel removes the radio, so UDP fails as well.
   globalThis.RTCPeerConnection = class {
     addTransceiver() {} async createOffer() { return {}; }
     async setLocalDescription() {
@@ -563,9 +665,8 @@ l.test('createRecorder MUST number from zero and carry over no rest, pause or po
   const first = store.written.samples.filter(x => !x.skipped);
   assert.ok(first.some(x => x.probes.web?.fail === 'resting'), 'the first journey rested it');
 
-  // Second journey on a healthy network. One recorder lives for the page, so a rest
-  // scheduled by round number in the first journey would silence the probe through the
-  // second.
+  // Second journey on a healthy network with the same recorder: rests keyed by round number in
+  // the first journey must not carry over.
   wedged = false;
   store.written.samples.length = 0;
   await rec.start({...session(), id: 's2'});

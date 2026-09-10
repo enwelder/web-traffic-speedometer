@@ -12,24 +12,16 @@ import {APP_VERSION} from './session.js';
 import {ACTIVITY_IDS, SCALES, ACTIVITIES, PROBE_SCALES} from './grade.js';
 import * as store from './store.js';
 
-// What counts as a probe failure. A resting probe has not reached the network; a literal of an
-// address family this network does not carry is a known-absent path; a literal being blocked
-// on a family that does carry traffic is a fact about that address. None of the three says
-// anything about the link. Shared with the screen so the count on it and the count in the file
-// agree.
-// 'short' is this tool failing to measure: bytes crossed, over a span too brief to divide by.
-// 'error' is the round itself throwing.
+// Probe failure predicate, shared by the screen and the export. Excluded: `resting` (no request
+// sent), `expected` (family absent), `blocked` and `unused` literals (address refused, or traffic
+// on the other family), `short` (span too brief to divide by) and `error` (the round threw).
 const NOT_THE_LINK = new Set(['resting', 'short', 'error']);
 
 export const countsAsFailure = r =>
   !!r && r.ok === false && !r.expected && !r.blocked && !r.unused && !NOT_THE_LINK.has(r.fail);
 
-// One probe across the rounds that ran. Failures and deliberate stops are counted apart,
-// so neither hides the other.
-// Failures that were the link's are counted apart from the ones that were not, and the ones
-// that were not are counted apart from each other: a literal refused while its own family
-// worked is a different fact from one nobody waited on, and neither is the recorder standing
-// a probe down.
+// One probe across the rounds that ran. Link failures (`fails`), tool stops (`stopped`) and
+// `expected`, `blocked` and `unused` literals are counted separately.
 function probeSummary(rs) {
   const ok = rs.filter(r => r.ok);
   const ms = ok.map(r => r.ms).filter(v => v != null).sort((a, b) => a - b);
@@ -55,19 +47,17 @@ function rateSummary(rs) {
   const ok = rs.filter(r => r.ok);
   const rates = ok.map(r => r.bps).filter(v => v != null).sort((a, b) => a - b);
   return {
-    // Bounds: each is what that round's window proved the link carries, so a percentile over
-    // them is a percentile of proven floors.
+    // Each value is a lower bound, so these are percentiles of lower bounds.
     bps_p10: quantile(rates, 0.1),
     bps_p50: quantile(rates, 0.5),
     rated: rates.length,
-    // Rounds that reached the byte cap, where the bound is the ceiling and the link is faster.
+    // Rounds that reached the byte cap: the bound equals the ceiling.
     saturated: ok.filter(r => r.saturated).length,
     bytes_total: ok.reduce((n, r) => n + (r.bytes || 0), 0)
   };
 }
 
-// The grades resolved during the run, so thresholds can be checked against what was felt
-// without recomputing anything.
+// Grades as resolved during the run, for threshold checks against marks without regrading.
 function gradeTally(ran, keys, field) {
   const grades = {};
   for (const key of keys) {
@@ -89,6 +79,7 @@ const FORMAT_VERSION = 11;
 // not start was a row.
 export function summarise(samples, events = []) {
   const ran = samples.filter(s => !s.skipped && !s.round_error);
+  const skips = events.filter(e => e.type === 'skip').length;
   const probes = {};
   for (const p of PROBES) {
     const rs = ran.map(s => s.probes[p.id]).filter(Boolean);
@@ -107,7 +98,9 @@ export function summarise(samples, events = []) {
     generated_by: `wts ${APP_VERSION}`,
     rounds: samples.length,
     ran: ran.length,
-    skipped: samples.filter(s => s.skipped).length + events.filter(e => e.type === 'skip').length,
+    // Every slot the scheduler reached: the rounds that ran and the slots that could not start.
+    slots: samples.length + skips,
+    skipped: samples.filter(s => s.skipped).length + skips,
     round_errors: samples.filter(s => s.round_error).length,
     in_pause: ran.filter(s => s.in_pause).length,
     // Rounds with at least one failure outside a known-absent path.
@@ -138,8 +131,7 @@ function slug(s) {
 }
 
 export function filename(session) {
-  // A session with an unreadable start time still has to produce a usable filename rather
-  // than wts-NaNNaNNaN.
+  // An unreadable start time falls back to the current time, which keeps NaN out of the filename.
   const d = new Date(Number.isFinite(session.started) ? session.started : Date.now());
   const p = n => String(n).padStart(2, '0');
   return `wts-${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}` +

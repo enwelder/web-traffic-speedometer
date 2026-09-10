@@ -1,4 +1,4 @@
-// Where the device is, how fast it is moving, and how much either figure is worth.
+// Position, speed and their accuracy.
 
 const EARTH_M = 6371000;
 
@@ -16,8 +16,8 @@ function derivedSpeed(prevFix, fix) {
   // meaningless.
   if (!fix.fine || !prevFix?.fine || fix.t <= prevFix.t) return null;
   const seconds = (fix.t - prevFix.t) / 1000;
-  // Under a second the rate is dominated by fix jitter; over two minutes it averages away
-  // everything that happened in between.
+  // Under a second the rate is dominated by fix jitter; over two minutes it averages out speed
+  // changes.
   if (seconds < 1 || seconds > 120) return null;
   const rate = metresBetween(prevFix, fix) / seconds;
   // Two fixes accurate to 10 m can still be hundreds of metres apart if one is wrong, so a
@@ -110,7 +110,7 @@ export function createPositionTracker({onNote, onNotice, onChange} = {}) {
     };
   }
 
-  // What the readout shows between rounds: the raw fix, and why there is not one.
+  // Readout state between rounds: the raw fix, or the reason it is missing.
   const snapshot = () => ({pos: lastPos, error});
 
   function reset() { lastPos = null; error = null; prevFix = null; fineFix = null; }

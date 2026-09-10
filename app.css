@@ -2,7 +2,7 @@
   --ground:#0E1620; --panel:#18232E; --line:#26333F;
   --text:#E8EDF2; --muted:#7E8C9A;
   --green:#35B37E; --amber:#E5A02C; --red:#E4574C;
-  /* Four steps: three cannot separate "slow but working" from "barely working". */
+  /* Four grade steps, so "slow" and "barely working" get separate colours. */
   --good:#35B37E; --ok:#C9B93C; --poor:#E0822F; --bad:#E4574C;
   --rail:#4C9BE8;
   --num:ui-monospace,"SF Mono",Menlo,monospace;

@@ -89,8 +89,7 @@ s.test('createWakeLock MUST leave the event log empty and request no replacement
   await wake.acquire();
   await wake.release();
   assert.equal(wake.held(), false);
-  // Stopping a session releases the lock; the handler must not read that as the system
-  // taking it, or every session would end by logging a loss and asking for it back.
+  // A deliberate release at stop logs no loss and requests no new lock.
   platform.grants[0].systemRelease();
   await sleep(10);
   assert.deepEqual(log.events, [], 'the event log is empty');

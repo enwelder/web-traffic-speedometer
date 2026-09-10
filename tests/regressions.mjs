@@ -25,8 +25,7 @@ function stubStun(ok = true) {
   };
 }
 
-// A round streams for a window and then samples latency across it, so a suite driving many
-// rounds has to shrink both, or the clock is what it measures.
+// Short windows and samples, so many rounds fit the test duration.
 const session = (over = {}) => ({id: 's', name: 't', operator: 'KPN', connection: 'cellular',
                                  intervalMs: 100, downloadBytes: 1000, started: Date.now(),
                                  download: {windowMs: 30, rampMs: 0, streams: 1,
@@ -81,9 +80,8 @@ r.test('createRecorder MUST record how long the running round has run on each sk
             `every skip carries the running time: ${skips.map(e => e.running_ms)}`);
 });
 
-// After an outage a single probe can keep timing out while every other one recovers:
-// observed over twenty consecutive rounds. Those rounds report the connection, not the
-// network.
+// After an outage one probe can keep timing out while the others recover, for twenty
+// consecutive rounds in one recording: a wedged connection.
 r.test('createRecorder MUST rest a probe failing alone and rest none WHEN every probe fails together', async () => {
   stubStun();
   let webWedged = true;
@@ -354,9 +352,9 @@ r.test('createRecorder MUST record a pause sized from the wall clock WHEN perfor
             `and its length comes from the wall clock: ${pauses.map(e => e.text).join(' ')}`);
 });
 
-r.test('createStuckTracker MUST rest the download for timeout and network failures and leave it unrested WHEN the failure is stalled', () => {
-  // Resting stands a probe down for six rounds, which would blank the throughput for 90
-  // seconds of the congestion the run exists to record.
+r.test('createStuckTracker MUST leave the download unrested WHEN it fails alone for timeout, network, stalled or connect', () => {
+  // A failed download holds no persistent connection; a rest would remove 90 s of throughput
+  // failures from the record.
   const rests = fail => {
     const t = createStuckTracker();
     for (let i = 0; i < 4; i++) {
@@ -367,9 +365,9 @@ r.test('createStuckTracker MUST rest the download for timeout and network failur
     }
     return false;
   };
-  assert.equal(rests('stalled'), false, 'a stall does not wedge a connection');
-  assert.equal(rests('timeout'), true, 'a timeout does');
-  assert.equal(rests('network'), true);
+  for (const fail of ['timeout', 'network', 'stalled', 'connect']) {
+    assert.equal(rests(fail), false, `${fail} rested the download`);
+  }
 });
 
 const ok = await r.run();

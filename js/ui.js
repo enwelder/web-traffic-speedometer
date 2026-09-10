@@ -1,4 +1,4 @@
-// DOM rendering. Nothing here is persisted.
+// DOM rendering; no persistence.
 
 import {PROBES} from './probe.js';
 import {ACTIVITY_IDS, GRADES, ACTIVITIES, gradeActivities, worse, probeReading,
@@ -52,12 +52,11 @@ export function classify(sample) {
   return worstGrade || 'green';
 }
 
-// One row per reading: the two address families share a row, since only the family carrying
-// traffic says anything.
+// One row per reading; both address families share the route row, which shows the family
+// carrying traffic.
 const ROWS = ['route', 'dns', 'dns_ctl', 'web', 'udp', 'down'];
 
-// Each row names the request it sent, so it matches a line of the probe table. PROBES
-// carries the full sentence.
+// Row labels name the request, matching the probe table; PROBES holds the full label.
 const PROBE_LABELS = {
   ip6: 'GET IPv6', ip4: 'GET IPv4', dns: 'HEAD new host', dns_ctl: 'HEAD same host',
   web: 'GET gstatic', down: 'GET download', udp: 'STUN'
@@ -68,33 +67,29 @@ const rowProbe = (row, sample) =>
 
 const ROUTE_EXPLAIN = 'GET to an address literal, no lookup. Whichever family is carrying traffic: a network with only one of them is ordinary.';
 
-// Where a row's number invites a wrong reading. The README argues each one.
+// Caveats for rows whose value is easily misread; the README documents each.
 const PROBE_CAVEATS = {
   dns: 'The whole cost of reaching a host never contacted before: resolution, connection and handshake together. A page cannot separate them.',
   down: `Three connections read together for a fixed window. Reads up to ${Math.round(DOWN_CEILING_BPS / 1e6)} Mb/s and says ≥ at that point, which is all a window this size can prove.`,
   udp: 'ICE gathering rides on top of the round trip, so this reads slower than the link is.'
 };
 
-// A row shows the measurement its colour graded, so the two always describe the same thing.
-// A reading with no number — a path that is gone — says so in place of one.
+// A row shows the measurement its colour graded. A reading without a value shows its note.
 function displayReading(r) {
   if (!r || (r.note == null && r.value == null)) return '—';
   if (r.note) return r.note;
-  // A rate reads as itself unless the round saturated, where all that was proved is the
-  // ceiling and the ≥ says so.
+  // A saturated rate is a lower bound and prints with ≥.
   if (r.unit === 'bps') return (r.saturated ? '≥' : '') + rate(r.value);
   return String(Math.round(r.value));
 }
 
-// `rate` writes its own unit, and a term reporting a gone path has none. The DNS delta says
-// what its number is, since every other row prints a plain latency in the same column.
+// `rate` formats its own unit; a note has no unit; latency values print ms.
 function displayUnit(r) {
   if (!r || r.note || r.value == null || r.unit !== 'ms') return '';
   return 'ms';
 }
 
-// Rows are generated from ROWS and named from PROBES; the strips are named from ACTIVITIES.
-// Nothing on screen carries a name this file invents.
+// Rows are generated from ROWS and labelled from PROBES; strips are labelled from ACTIVITIES.
 export function buildProbeRows() {
   const host = $('probes');
   host.textContent = '';
@@ -121,7 +116,7 @@ export function buildProbeRows() {
   }
 }
 
-// Every cell that can explain itself, in the order they appear.
+// Cells with an explanation, in display order.
 const cells = () => ROWS.map(id => `probe-${id}`);
 
 const explainText = id => {
@@ -139,7 +134,7 @@ export function setProbes(sample) {
     cell.classList.remove(...GRADES);
     const reading = sample ? probeReading(probe, sample) : null;
     if (reading?.grade) cell.classList.add(reading.grade);
-    // A word in place of a number is a reason, and is styled apart from a measurement.
+    // A note in place of a value is styled apart from a measurement.
     cell.classList.toggle('words', !!reading?.note);
     $(`pname-${id}`).textContent = PROBE_LABELS[probe] ?? probe;
     $(`pval-${id}`).textContent = displayReading(reading);
@@ -157,9 +152,8 @@ export function renderExplanations() {
   }
 }
 
-// One strip per activity, each always full width with empty slots dimmed, scrolling right to
-// left. Separate rows are what make a single failing activity visible: one combined row shows
-// only the worst of them and never says which.
+// One strip per activity, full width with empty slots dimmed, scrolling right to left. Separate
+// strips show which activity failed.
 export function clearStrip() {
   for (const activity of ACTIVITY_IDS) {
     const strip = $(`strip-${activity}`);
@@ -182,7 +176,7 @@ export function pushStrip(sample) {
   }
 }
 
-// A bridged gap belongs on every row: no activity was measured while the page was frozen.
+// A bridged gap marks every strip: the page was frozen and no round ran.
 export function pushStripPause() {
   for (const activity of ACTIVITY_IDS) {
     const strip = $(`strip-${activity}`);
@@ -210,12 +204,9 @@ export function clearLog(placeholder) {
 }
 
 
-// What changed since the round before. Thirty rounds of an unremarkable connection produced
-// thirty near-identical lines, and the one fact that mattered — a family that had stopped
-// answering — was invisible among them. A line now marks a transition.
+// Log lines for probe state transitions since the previous round.
 
-// One line per thing that moved. With no round before it, only what is not already fine is
-// worth saying.
+// One line per changed probe; without a previous round, one line per probe state other than ok.
 function transitions(ids, {label, now, then, fine}) {
   const out = [];
   for (const id of ids) {
@@ -231,8 +222,7 @@ export function changes(sample, prev) {
   const time = clock(sample.t);
   if (sample.round_error) return [`${time}  round error: ${sample.round_error}`];
 
-  // Only what a strip cannot already show. An activity changing colour is on screen as a bar;
-  // which probe moved, and to what, is not anywhere else.
+  // Probe transitions only; activity grades are on the strips.
   return transitions(PROBES.map(p => p.id), {
     label: id => id,
     now: id => probeReading(id, sample).state,
@@ -255,15 +245,14 @@ export function setRunning(running) {
   const start = $('btn-start');
   start.textContent = running ? 'Stop' : 'Start';
   start.className = running ? 'stop' : 'start';
-  // While idle Start is the only action and takes the whole width, and there is nothing on
-  // screen for the help control to explain.
+  // While idle, Start takes the full width and the help control is hidden, since no rows show.
   $('btn-mark').hidden = !running;
   $('btn-mark').disabled = !running;
   $('btn-help').hidden = !running;
   $('setup').hidden = running;
 }
 
-// Which build is on screen, so a tester can tell one from another without opening a file.
+// Build version, identifying the running build.
 export function setVersion(v) { $('app-version').textContent = v; }
 
 // Tap a row to see what it measures; tap again for the number.
@@ -303,7 +292,7 @@ const div = (className, text) => {
   return el;
 };
 
-// A plain string is a fact about the session; a pair is a fact and the class that flags it.
+// A string is a session fact; a pair is a fact and its flag class.
 function sessionMeta(session, count) {
   const meta = div('meta');
   const secs = Math.round(((session.stopped || session.started) - session.started) / 1000);

@@ -1,5 +1,5 @@
-// The sentinel stays non-null with `released` set when the system reclaims the lock, so
-// whether it is held is decided by that flag as well as by the release event.
+// The sentinel stays non-null with `released` set when the system reclaims the lock, so `held`
+// reads that flag as well as the release event.
 //
 // `acquire` is called from the round loop, from visibilitychange and from the release
 // handler, so a request in flight is tracked: two concurrent requests orphan a sentinel
@@ -9,8 +9,8 @@ export function createWakeLock({onNotice, onEvent} = {}) {
   let sentinel = null;
   let lost = false;
   let pending = false;
-  // Whether the session wants the screen held. False while stopping, so releasing on purpose
-  // is not read as a loss and does not ask for the lock back.
+  // Whether the session holds the screen. False while stopping, so a deliberate release logs no
+  // loss and requests no new lock.
   let active = false;
 
   const held = () => !!sentinel && !sentinel.released;

@@ -172,7 +172,7 @@ export async function estimate() {
   } catch { return null; }
 }
 
-// Survives a crash: on reload the page finds this and offers to resume.
+// Persisted across a crash; on reload the page reads it and offers to resume.
 export function setActive(id) {
   try { id ? localStorage.setItem(ACTIVE_KEY, id) : localStorage.removeItem(ACTIVE_KEY); }
   catch { /* private mode */ }

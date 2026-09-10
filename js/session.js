@@ -13,10 +13,9 @@ import * as realStore from './store.js';
 const PATHS = [['ip6', 'ipv6_available', 'IPv6'], ['ip4', 'ipv4_available', 'IPv4']];
 const LITERAL_IPS = {ip6: '2606:4700:4700::1111', ip4: '1.1.1.1'};
 
-// Byte estimates for the data-used figure, taken at the worst case a browser presents: Safari
-// opens a fresh connection per request, so every sample is charged its own handshake, full for
-// the session's first contact with an origin and resumed after that. A `fresh` probe reaches a
-// host no one has seen, so each of its samples pays the full one.
+// Byte estimates for the data-used figure at the browser worst case: Safari opens a connection
+// per request, so each sample is charged a handshake, full on first contact with an origin and
+// resumed after. Each sample of a `fresh` probe reaches an uncontacted host and pays a full one.
 const FIRST_CONTACT_BYTES = 5000;
 const RESUMED_BYTES = 1500;
 const WARM_BYTES = {trace: 420, opaque: 220, download: 400, stun: 400};
@@ -37,8 +36,7 @@ export const PROFILES = {
   coarse: {label: 'Coarse — every 30 s', intervalMs: 30000}
 };
 
-// What a round streams, and therefore what it can report. Copied into every export so a file
-// states its own saturation point.
+// Download settings, copied into every export so each file carries its saturation point.
 export const DOWNLOAD_DEFAULTS = {
   streams: DOWN_STREAMS,
   windowMs: DOWN_WINDOW_MS,
@@ -47,9 +45,8 @@ export const DOWNLOAD_DEFAULTS = {
 };
 
 
-// A round streams the ramp and then the window, and the window stops at the cap. So the most
-// a round can cost is knowable in advance, and a link slower than the ceiling costs less in
-// proportion. A link at or above the ceiling pays this worst case in full.
+// Worst-case data cost: ramp plus capped window per round. A link below the ceiling costs
+// proportionally less.
 export function projectedBytes(intervalMs, settings = DOWNLOAD_DEFAULTS, minutes = 40) {
   const rounds = Math.round((minutes * 60000) / intervalMs);
   const small = PROBES.reduce((n, p) => n + cost(p), 0);
@@ -79,9 +76,9 @@ export function environment(intervalMs, downloadSettings = DOWNLOAD_DEFAULTS) {
 // first request to a host is charged a full handshake.
 function probeBytes(probe, r, contacted) {
   if (!r) return 0;
-  // An IPv4 literal with no path never gets a connection up.
+  // An IPv4 literal without a path opens no connection.
   if (r.expected && !r.ok) return REFUSED_BYTES;
-  // Nothing was sent: the probe was stood down, or the round threw before it ran.
+  // No request sent: the probe rested, or the round threw first.
   if (r.fail === 'resting' || r.fail === 'error') return 0;
   const attempts = r.ms_samples ? r.ms_samples.length : 1;
   const n = WARM_BYTES[probe.kind] * attempts + (probe.kind === 'download' ? r.bytes || 0 : 0)
@@ -112,15 +109,15 @@ const connectionKind = () => {
   return c ? `${c.type ?? '?'} ${c.effectiveType ?? '?'}` : null;
 };
 
-// What the page and the network did around the rounds. A hidden or frozen tab and a lost
-// interface each explain a gap the probes cannot see. `note(type, text)` receives each one.
+// Page lifecycle and network interface events, which account for gaps in probe results.
+// `note(type, text)` receives each one.
 function watchPage(note) {
   document.addEventListener('visibilitychange', () => note('page', document.visibilityState));
   for (const type of ['freeze', 'resume']) document.addEventListener(type, () => note('page', type));
   for (const type of ['pagehide', 'pageshow']) globalThis.addEventListener?.(type, () => note('page', type));
   for (const type of ['online', 'offline']) globalThis.addEventListener?.(type, () => note('network', type));
-  // Chrome revises its downlink and rtt estimates continually. A change of connection type or
-  // class is the signal; each revision beside it is noise.
+  // Chrome revises downlink and rtt estimates continually; only a change of type or class is
+  // recorded.
   let last = connectionKind();
   navigator.connection?.addEventListener?.('change', () => {
     const kind = connectionKind();
@@ -137,9 +134,8 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
   let running = false;
   let timer = null;
   let due = 0;
-  // performance.now() stops while an iOS device sleeps; the wall clock does not. A gap made
-  // entirely of sleep is invisible to the monotonic clock, so scheduling lateness is read from
-  // both. No measurement reads this clock: every latency and rate is performance.now().
+  // performance.now() stops while an iOS device sleeps and the wall clock continues, so scheduling
+  // lateness reads both clocks. Latencies and rates use performance.now() only.
   let dueWall = 0;
   let t0 = 0;
   let seq = 0;
@@ -186,7 +182,7 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
       speedSource: lastSpeedSource,
       pending: pendingSamples.length + pendingEvents.length,
       writeFailed, pos: fix.pos, posError: fix.error,
-      // Frozen when the session stops: a finished run still took the time it took.
+      // Frozen at stop: a finished session reports its final elapsed time.
       elapsed: running ? (lastElapsed = Math.floor(mono() / 1000)) : lastElapsed
     };
   }
@@ -248,7 +244,7 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
       round_error: null,
       // iOS suspends a hidden tab; a column filters more easily than the pause events.
       visible: document.visibilityState === 'visible',
-      // A tab hidden mid-round explains a probe cut short.
+      // Visibility at round end; a tab hidden mid-round cuts probes short.
       visible_end: null,
       // Set on the round following a bridged gap, so those rows can be filtered without
       // matching timestamps against the event list.
@@ -267,11 +263,9 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
     };
   }
 
-  // The operator label is typed in, the egress address is measured, so an address change
-  // under an unchanged label marks a hotspot picked up mid-journey or a handover onto a
-  // different core network.
-  // One address per family. Comparing across them reported a change every time a dual-stack
-  // round happened to report the other family first, with both addresses unchanged.
+  // The operator label is entered and the egress address is measured, so an address change under
+  // an unchanged label marks a hotspot or a handover to another core network. Compared per family,
+  // since a dual-stack round can report either family first.
   function noteEgressChange(row) {
     for (const r of Object.values(row.probes || {})) {
       if (!r?.egress_ip) continue;
@@ -292,21 +286,16 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
     store.putSession(session);
   }
 
-  // Two kinds of evidence that a family carries traffic. The literal answering is direct. An
-  // egress address of that family is indirect and just as conclusive: the round reached
-  // Cloudflare over it. They disagree where a literal is blocked but the path is fine —
-  // 1.1.1.1 is a public resolver and relays and filters intercept it — and reading only the
-  // literal then calls a working path absent and excuses every failure on it.
-  // Said once per session, not once per round: the cause does not change between rounds and
-  // thirty copies of it bury the rest of the log.
+  // Logged once per session: the cause is constant across rounds, and per-round repeats flood the
+  // log.
   function noteOnce(key, text) {
     if (said.has(key)) return;
     said.add(key);
     noteEvent(text);
   }
 
-  // A literal refused while its own family carries traffic is not the network. Naming what
-  // does that is the difference between a puzzling row and a fixable one.
+  // A literal refused while its family carries traffic indicates interception; the notice names
+  // the likely causes.
   function noteInterference(row) {
     for (const [id, , label] of PATHS) {
       if (!row.probes[id]?.blocked) continue;
@@ -321,9 +310,8 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
     }
   }
 
-  // The preflight is recorded, not obeyed: what a literal did at session start explains a log
-  // line, and every round decides for itself. A family that answers is still worth settling,
-  // because a session that never sees one again should say so in the file.
+  // The preflight is informational and rounds classify their own literals. A family seen carrying
+  // traffic, by its literal or an egress address, is stored as available on the session.
   function revisePaths(row) {
     for (const [id, key, label] of PATHS) {
       if (row.probes[id]?.ok) settle(key, label, 'answered');
@@ -358,8 +346,8 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
       row.phase_idle_ms = round.phase_idle_ms;
       row.phase_down_ms = round.phase_down_ms;
     } catch (e) {
-      // The round threw, so nothing was measured. 'error' keeps it out of the network tallies
-      // and out of the wedge count; the grades below are left null.
+      // The round threw before measuring. 'error' excludes it from network tallies and the wedge
+      // count; its grades stay null.
       row.round_error = String(e && e.message || e);
       for (const p of PROBES) {
         if (!row.probes[p.id]) row.probes[p.id] = {ok: false, ms: null, status: null, fail: 'error'};
@@ -374,11 +362,9 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
     if (!wake.held()) wake.acquire();
     downloadBytesUsed += row.probes.down?.bytes || 0;
 
-    // The quickest first response in the round, which approximates the cost of waking the
-    // radio, and is carried on the row for the record. Zero values are excluded: connect_ms is
-    // zero both for a reused connection and when timing is unreadable.
-    // Sampling stops at the first failure, so a probe with no successful sample failed on its
-    // first: its `ms` is how long it took to fail.
+    // Fastest first response in the round, an estimate of radio wake-up cost. Zero values are
+    // excluded: connect_ms is zero for a reused connection and for unreadable timing. A probe without
+    // a successful sample stopped at its first failure, so its first sample is a time to fail.
     const firsts = [row.probes.ip6, row.probes.web, row.probes.dns_ctl, row.probes.udp]
                    .filter(r => r?.samples_ok > 0)
                    .map(r => r.ms_samples[0])
@@ -420,16 +406,16 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
               lat: p.lat, lon: p.lon, text: `${(late / 1000).toFixed(1)}s bridged`});
     }
 
-    // Scheduled from when this round fired. On a fixed grid, lateness pulls the next slot
-    // closer, so a 13.7 s delay on a 10 s interval fires the next tick 11 ms later, into the
-    // round still running. Even spacing is what this needs; grid phase is not.
+    // Scheduled from when this round fired. On a fixed grid, lateness pulls the next slot closer: a
+    // 13.7 s delay on a 10 s interval fires the next tick 11 ms later, into the running round. Even
+    // spacing takes priority over grid phase.
     due = now + interval();
     dueWall = wall + interval();
     timer = setTimeout(tick, Math.max(0, due - mono()));
 
     if (inFlight) {
-      // The running round keeps the link and this slot starts nothing; the next regular slot
-      // does. What the round is waiting on is what held it up.
+      // The running round keeps the link; this slot starts no round and records a skip event with the
+      // probes still pending.
       const p = position.read();
       const ranFor = Math.round(now - runningSince);
       const waiting = [...pending];
@@ -451,12 +437,8 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
 
   const noteEvent = text => event('note', text);
 
-  // `monoBase` continues the monotonic clock across a reload: performance.now() restarts,
-  // so the gap is bridged with the wall clock. Both clocks are on every row, so the bridge
-  // is checkable.
-  // What each family did at the start, recorded so a log line can explain the first rounds. No
-  // round reads it: a literal is judged on what carried traffic in its own round. A resume
-  // leaves alone any family an earlier run had already settled.
+  // Preflight result per family, for the log; rounds classify their own literals. A resume keeps
+  // the families an earlier run already stored.
   async function preflight() {
     const paths = await checkPaths(abort.signal);
     for (const [id, key, label] of PATHS) {

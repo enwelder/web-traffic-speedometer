@@ -1,7 +1,6 @@
-// Replays recorded journeys through the measurement code. Three anonymised recordings are
-// committed: a 5G run, a commute with pauses and coarse positions, and one where a probe
-// failed alone for twenty rounds. Unlike synthetic fixtures, their contents were not chosen
-// to match the code.
+// Replays anonymised recorded journeys through the measurement code: a 5G run, a commute with
+// pauses and coarse positions, and a probe failing alone for twenty rounds. The fixtures are
+// recordings, independent of the code under test.
 import assert from 'node:assert';
 import {readFileSync, readdirSync} from 'node:fs';
 import {stubBrowser, suite} from './helpers.mjs';
@@ -10,8 +9,7 @@ stubBrowser();
 const g = await import('../js/grade.js');
 const {summarise, sessionJson} = await import('../js/export.js');
 const {anonymise, assertClean} = await import('../tools/anonymise.mjs');
-// Imported, so a threshold tuned in the source cannot leave this suite asserting the old
-// value and still passing.
+// Imported, so a threshold change in the source applies to these assertions.
 const {MAX_PLAUSIBLE_MS, FINE_ACCURACY_M} = await import('../js/position.js');
 
 const dir = new URL('./fixtures/', import.meta.url);
@@ -66,9 +64,7 @@ r.test('anonymise MUST strip position, egress and typed text while keeping every
   assert.deepEqual(anonymise(original), a, 'the same input gives the same fixture');
 });
 
-// The guard rejects anything it cannot account for, since a scan for known-bad shapes
-// accepts whatever the schema grows next. Each case below is a shape that passed such a
-// scan.
+// assertClean is an allowlist; each case below passes a denylist scan.
 r.test('assertClean MUST throw WHEN a document carries coordinates, a bearing, typed text, a time zone or an unshifted timestamp', () => {
   const base = anonymise({
     session: {started: 1700000000000, stopped: 1700000100000, name: 'Morning KPN', note: '',
@@ -110,9 +106,16 @@ r.test('assertClean MUST accept the fields format 11 adds WHEN an anonymised exp
                             screen: '393x852@3'}},
     samples: [{seq: 0, t: 1700000000000, mono: 0, round_ms: 2400, phase_idle_ms: 900, phase_down_ms: 1500,
                visible: true, visible_end: true,
-               probes: {ip6: {ok: true, ms: 30, ms_samples: [30], samples_ok: 1, samples_end: 'count', wall_ms: 31},
-                        down: {ok: true, bps: 2e7,
-                               per_stream: [{headers_ms: 120, first_byte_ms: 140, bytes: 900000, end: 'done'}]}}}],
+               probes: {ip6: {ok: true, ms: 30, ms_samples: [30, 900], sample_starts_ms: [0, 31], samples_ok: 1,
+                              samples_lost: 1, samples_end: 'count', wall_ms: 931},
+                        udp: {ok: true, ms: 40, ms_samples: [40], host_ms_samples: [3]},
+                        down: {ok: true, bps: 2e7, window_cut: false,
+                               stall_check: {same_host: {ok: true, ms: 80, fail: null},
+                                             other_host: {ok: true, ms: 60, fail: null},
+                                             udp: {ok: true, ms: 40, fail: null}},
+                               per_stream: [{headers_ms: 120, first_byte_ms: 140, bytes: 900000, end: 'done',
+                                             transfer_size: 900300, encoded_body_size: 900000},
+                                            {headers_ms: null, first_byte_ms: null, bytes: 0, end: 'connect'}]}}}],
     events: [
       {t: 1700000015000, mono: 15000, type: 'skip', round: 0, running_ms: 15000, waiting_on: ['down', 'loaded_rtt'],
        text: 'round 0 still running after 15.0 s, waiting on down, loaded_rtt'},
@@ -134,7 +137,7 @@ r.test('gradeActivities MUST return a known grade or null for every round WHEN r
       for (const [activity, val] of Object.entries(grades)) {
         assert.ok(val === null || g.GRADES.includes(val),
                   `${name} seq ${s.seq}: ${activity} produced ${val}`);
-        // A activity with no usable input yields no grade and no value.
+        // An activity without usable input has no grade and no value.
         if (val === null) {
           assert.equal(g.activityValue(activity, s), null,
                        `${name} seq ${s.seq}: ${activity} had a value but no grade`);
@@ -225,7 +228,7 @@ r.test('the vpn-blocked-literal recording MUST report a saturated three-stream d
             'so the reading is the ceiling, which is all a window this size can prove');
   assert.ok(down.every(d => d.window_ms > 0 && d.window_bytes > 0), 'over a real window');
 
-  // And the cost of a round is what the ceiling implies, not whatever the link would give.
+  // Per-round cost follows the ceiling.
   const mb = down.reduce((n, d) => n + d.bytes, 0) / down.length / 1e6;
   assert.ok(mb < 8, `a round costs what it was told to: ${mb.toFixed(1)} MB`);
 });
@@ -243,9 +246,8 @@ r.test('gradeActivities MUST grade the terms present and return null for the res
 });
 
 r.test('gradeActivities MUST return null for streaming WHEN the recorded rows carry no rate', () => {
-  // The committed journeys predate throughput measurement, so nothing in them can fill the
-  // rate terms. An activity missing a term is unrated: a grade may not rest on a measurement
-  // that was never taken.
+  // The committed journeys predate throughput measurement, so their rate terms are empty. An
+  // activity with an empty term is unrated.
   const old = journeys['good-5g'];
   assert.ok(old.samples.every(s => s.probes.down.bps == null), 'these rows carry no rate');
   for (const s of old.samples) {
@@ -253,8 +255,8 @@ r.test('gradeActivities MUST return null for streaming WHEN the recorded rows ca
     assert.equal(a.streaming, null, 'streaming is only throughput, so it cannot be graded');
   }
 
-  // Latency still grades: a fresh lookup at ~200 ms and 30-60 ms round trips are good results,
-  // and the reason articles stay unrated here is the missing rate, not the lookup.
+  // Latency grades: fresh lookups at ~200 ms and 30-60 ms round trips; news is unrated because the
+  // rate is missing.
   const news = old.samples.map(s => g.activityReading('news', s));
   assert.ok(news.every(r => r.grade !== 'red'), 'nothing here is a failure');
   assert.ok(news.every(r => r.grade !== null || r.missing.includes('article')),
@@ -277,7 +279,7 @@ r.test('activityReading MUST return a null grade for voice naming round_trip as 
     assert.deepEqual(voice.missing, ['round_trip'], 'and say what is missing');
   }
 
-  // What the connection could still do is still graded: nothing about it was broken.
+  // News and streaming grade green on the same rounds.
   const tally = a => j.samples.reduce((n, s) => n + (g.gradeActivities(s)[a] === 'green' ? 1 : 0), 0);
   assert.equal(tally('news'), j.samples.length, 'reading articles was fine');
   assert.equal(tally('streaming'), j.samples.length, 'so was video');
@@ -290,8 +292,7 @@ r.test('gradeActivities MUST grade news red WHEN the recorded control probe fail
   const tail = j.samples.slice(-20);
   assert.ok(tail.every(s => !s.probes.web.ok), 'the control never recovered');
   assert.ok(tail.filter(s => s.probes.ip6.ok).length >= 18, 'while the link was fine');
-  // One probe failing alone still sinks the activity that reads it: an article cannot open
-  // if a host the phone already knows will not answer.
+  // The failing control probe grades news red in every round.
   const grades = tail.map(s => g.gradeActivities(s).news);
   assert.ok(grades.every(x => x === 'red'), 'and the activity it feeds grades red');
 });

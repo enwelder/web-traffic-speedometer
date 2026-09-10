@@ -148,7 +148,7 @@ s.test('createPositionTracker.reset MUST return null speed_derived WHEN the fix 
   geo.send(51.9244, 4.4777, t0);
   tracker.read();
   tracker.reset();
-  // The pair that would have produced a speed is gone with the session that made it.
+  // reset() drops the previous session's fix pair.
   geo.send(51.9334, 4.4777, t0 + 20000);
   assert.equal(tracker.read().speed_derived, null);
 });

@@ -1,14 +1,12 @@
 // Turns a recorded journey into a committable fixture.
 //
-// A recording carries a home address, a workplace and a daily timetable. Everything that
-// could place or identify the person is removed; every number the measurement code reads is
-// kept unchanged, so the fixture still tests that code.
+// A recording contains a home address, a workplace and a daily timetable. Identifying fields are
+// removed; every value the measurement code reads is kept, so fixtures still test that code.
 //
 //   node tools/anonymise.mjs .dev/logs/<file>.json tests/fixtures/<name>.json
 import {readFileSync, writeFileSync} from 'node:fs';
 
-// A fixed epoch, so a fixture cannot say when anyone travelled. Intervals are preserved
-// exactly, since the scheduler tests read them.
+// Fixed epoch, which removes travel dates. Intervals are preserved exactly for the scheduler tests.
 const EPOCH = Date.parse('2026-01-01T09:00:00Z');
 
 const REDACT = '<redacted>';
@@ -80,9 +78,8 @@ const PUBLIC_ENDPOINTS = [
   'speed.cloudflare.com', 'www.gstatic.com', 'wts-dns-control.github.io'
 ];
 
-// Every key a fixture may contain, by level. An allowlist, since a scan for known-bad shapes
-// passes whatever the schema grows next. A field added to the recorder has to be added here
-// with a rule for its value.
+// Allowed keys per level. An allowlist: a denylist scan accepts every field the schema adds. A new
+// recorder field requires an entry here with a rule for its value.
 const KEYS = {
   root: ['format', 'version', 'source_app_version', 'note', 'session', 'samples', 'events'],
   session: ['id', 'name', 'operator', 'connection', 'note', 'started', 'stopped', 'intervalMs',
@@ -103,17 +100,15 @@ const KEYS = {
           'warmup_only', 'refused_by', 'bps', 'bps_server', 'saturated', 'ceiling_bps', 'streams', 'ramp_ms',
           'window_bytes', 'window_ms',
           'duration_ms', 'aborted_reason', 'public_ips',
-          'candidates', 'per_stream', 'wall_ms', 'samples_end',
-          // Written by releases up to 3.3.1 and still present in recordings kept for replay.
-          // The current app writes none of them; removing them makes those files
-          // un-anonymisable.
+          'candidates', 'per_stream', 'wall_ms', 'samples_end', 'stall_check', 'window_cut',
+          'samples_lost', 'sample_starts_ms', 'host_ms_samples',
+          // Fields of recordings from releases up to 3.3.1, kept for replay.
           'bps_transfer', 'bps_end_to_end', 'bps_steady', 'bps_peak', 'warmup_ms',
           'warmup_bytes', 'insufficient_sample'],
   event: ['sessionId', 'id', 't', 'mono', 'type', 'lat', 'lon', 'text', 'late_ms', 'round', 'running_ms', 'waiting_on']
 };
 
-// A typed note saying where someone got off is as identifying as a coordinate, so text is
-// allowed through only when it matches one of these machine-written shapes.
+// Typed text can identify a location, so event text passes only in these machine-written forms.
 const MACHINE_TEXT = [
   /^<redacted>$/,
   /^mark \d+$/,
@@ -154,12 +149,11 @@ function checkString(v, where) {
 
 function checkTime(v, where) {
   if (typeof v !== 'number') return;
-  // Wall-clock milliseconds: a value of this magnitude that is not near the epoch says when
-  // the journey happened.
+  // Wall-clock milliseconds far from the epoch reveal the journey date.
   if (v > 1e12 && Math.abs(v - EPOCH) > 86400000) fail(`${where}: an unshifted timestamp: ${v}`);
 }
 
-// Throws on the first field that could identify anyone.
+// Throws on the first identifying field.
 export function assertClean(fixture) {
   const strip = v => {
     let t = String(v);
