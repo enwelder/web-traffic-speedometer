@@ -50,10 +50,14 @@ main{flex:1;overflow-y:auto;overscroll-behavior:contain;-webkit-overflow-scrolli
 .probe.orange,.strip i.orange{--grade:var(--poor)}
 .probe.red,.strip i.red{--grade:var(--bad)}
 
-.probes{display:grid;grid-template-columns:repeat(2,1fr);gap:4px 8px}
-/* Fixed columns rather than auto: the numbers line up on their right edge and the units on
-   their left, so a column of rows reads down as well as across. */
-.probe{display:grid;grid-template-columns:1fr 5.4em 4.2em;align-items:baseline;gap:0 4px;
+/* One column until there is room for two: two half-width cells on a 390px phone leave the
+   name about 30px, too narrow for its label. */
+.probes{display:grid;grid-template-columns:1fr;gap:4px 8px}
+@media (min-width:560px){.probes{grid-template-columns:repeat(2,1fr)}}
+/* Fixed columns: the numbers line up on their right edge, so a column of rows reads down as
+   well as across. The last column holds "ms", the only unit rendered on its own; a rate
+   carries its unit inside the value and takes that column too. */
+.probe{display:grid;grid-template-columns:1fr 5.4em 1.2em;align-items:baseline;gap:0 4px;
        position:relative;padding:5px 7px 5px 10px;border-radius:7px;background:var(--panel);
        border:1px solid var(--line);cursor:pointer}
 .probe::before{content:"";position:absolute;inset:0 auto 0 0;width:3px;
@@ -66,6 +70,7 @@ main{flex:1;overflow-y:auto;overscroll-behavior:contain;-webkit-overflow-scrolli
 .probe .value{font-family:var(--num);font-size:13px;font-variant-numeric:tabular-nums;
               white-space:nowrap;text-align:right}
 .probe .unit{font-size:10px;color:var(--muted);white-space:nowrap}
+.probe:has(.unit:empty) .value{grid-column:2/-1}
 /* A word in place of a number takes both columns, since it is not a quantity to align. */
 .probe.words .value{font-family:var(--ui);font-size:11px;color:var(--muted);
                     grid-column:2/-1;text-align:right}
@@ -133,7 +138,7 @@ input:focus,select:focus{outline:2px solid var(--rail);outline-offset:1px}
              -webkit-appearance:auto;appearance:auto}
 
 /* Outside the scrolling area, so the bar cannot overlap the content behind it. The readout
-   takes the free space instead, so the log grows rather than leaving a gap above. */
+   takes the free space, so the log grows into it. */
 .controls{flex:0 0 auto;display:flex;gap:8px;background:var(--ground);
           padding:8px 14px 10px;max-width:560px;width:100%;margin:0 auto;
           border-top:1px solid var(--line)}
@@ -181,9 +186,8 @@ nav button.on{color:var(--text);box-shadow:inset 0 2px 0 var(--rail)}
 
 @media (max-width:399px){.stats{font-size:11.5px;gap:9px 12px}}
 
-/* narrow phones: stack the labels instead of squeezing the controls */
+/* narrow phones: stack the labels, keeping the controls at full size */
 @media (max-width:359px){
-  .probes{grid-template-columns:1fr}
   .field{gap:4px}
   .field label{flex:0 0 100%}
   .stats{grid-template-columns:1fr}
