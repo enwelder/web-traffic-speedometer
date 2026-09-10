@@ -132,11 +132,10 @@ r.test('createRecorder MUST rest a probe failing alone and rest none WHEN every 
 
 // Small probes have succeeded at 3885, 3883 and 3878 ms, so a deadline near 4 s records
 // slow-but-working rounds as failures.
-r.test('timeoutFor MUST allow at least 8000 ms per fetch probe WHEN the interval is 15 s or 30 s', async () => {
+r.test('timeoutFor MUST allow at least 8000 ms per probe WHEN the interval is 15 s or 30 s', async () => {
   for (const interval of [15000, 30000]) {
     for (const p of probe.PROBES) {
       const t = probe.timeoutFor(p, interval);
-      if (p.kind === 'stun') continue;
       assert.ok(t >= 8000, `${p.id} at a ${interval} ms interval allows ${t} ms, under the 8 s floor`);
     }
   }

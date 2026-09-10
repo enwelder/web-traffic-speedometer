@@ -508,6 +508,25 @@ n.test('createRecorder MUST grade voice red and leave the TCP activities graded 
   assert.ok(settled.some(x => x.grades.tap !== 'red'), 'while everything over TCP is fine');
 });
 
+n.test('runProbe MUST end an unanswered STUN sample at STUN_TIMEOUT_MS WHEN the probe window is 8 s', async () => {
+  // UDP answers within a round trip or not at all, so a lost binding response ends its sample at
+  // the per-sample cap and leaves the rest of the window unspent.
+  const saved = globalThis.RTCPeerConnection;
+  globalThis.RTCPeerConnection = class {
+    addTransceiver() {} async createOffer() { return {}; }
+    async setLocalDescription() { /* the binding response is lost */ }
+    close() {}
+  };
+  try {
+    const r = await probe.runProbe(P.udp, {timeoutMs: probe.timeoutFor(P.udp, 15000)});
+    assert.equal(r.fail, 'timeout');
+    assert.ok(r.wall_ms >= probe.STUN_TIMEOUT_MS - 50 && r.wall_ms < probe.STUN_TIMEOUT_MS + 400,
+              `the sample ended at ${r.wall_ms} ms`);
+  } finally {
+    globalThis.RTCPeerConnection = saved;
+  }
+});
+
 n.test('looksLikeRetry MUST flag only resolver retry timers WHEN given a range of latencies', () => {
   for (const ms of [2000, 1750, 5000, 5250]) {
     assert.equal(probe.looksLikeRetry(ms), true, `${ms} ms sits on a retry timer`);

@@ -79,6 +79,7 @@ s.test('timeoutFor MUST return a deadline under the interval and at least 1000 m
   }
   assert.equal(probe.timeoutFor(P.down, 30000), 8000, 'a long interval is not a licence to hang');
   assert.equal(probe.timeoutFor(P.ip6, 2000), 1500, 'a short interval squeezes the small probes too');
+  assert.equal(probe.timeoutFor(P.udp, 15000), 8000, 'STUN samples share the window of the TCP probes');
 });
 
 s.test('runRound MUST derive unused and blocked from the traffic of that round alone WHEN a literal fails', async () => {
@@ -321,6 +322,29 @@ s.test('runProbe MUST return fail timeout inside its deadline WHEN no ICE candid
 s.test('runProbe MUST return fail unsupported WHEN RTCPeerConnection is absent', async () => {
   const r = await probe.runProbe(P.udp, {timeoutMs: 300});
   assert.deepEqual([r.ok, r.fail], [false, 'unsupported']);
+});
+
+s.test('runProbe MUST take every STUN sample WHEN the first sample answers after 1400 ms inside the probe window', async () => {
+  // Round 128 of the 10 Sep session: a slow first answer ended STUN after two samples, and those
+  // two set the median.
+  let made = 0;
+  globalThis.RTCPeerConnection = class {
+    constructor() { this.delay = made++ === 0 ? 1400 : 5; }
+    addTransceiver() {}
+    async createOffer() { return {}; }
+    async setLocalDescription() {
+      setTimeout(() => this.onicecandidate({candidate: {type: 'srflx', address: '2a09::9'}}), this.delay);
+      setTimeout(() => this.onicecandidate({candidate: null}), this.delay + 2);
+    }
+    close() {}
+  };
+  try {
+    const r = await probe.runProbe(P.udp, {timeoutMs: probe.timeoutFor(P.udp, 15000)});
+    assert.equal(r.samples_ok, P.udp.samples, `samples: ${JSON.stringify(r.ms_samples)}`);
+    assert.equal(r.samples_end, 'count');
+  } finally {
+    delete globalThis.RTCPeerConnection;
+  }
 });
 
 // A body delivered in timed chunks, which separates the ramp from the steady portion.

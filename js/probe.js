@@ -30,7 +30,7 @@ export const ROUND_SLACK_MS = 500;
 // Added to a deadline taken from the wall clock, which brackets more than the body.
 export const DOWN_SLACK_MS = 50;
 export const TIMEOUT_MS = 8000;
-export const STUN_TIMEOUT_MS = 3000;      // UDP answers within a round trip or not at all
+export const STUN_TIMEOUT_MS = 3000;      // per sample: UDP answers within a round trip or not at all
 export const MIN_TIMEOUT_MS = 1000;
 
 export const STUCK_AFTER = 3;
@@ -561,8 +561,9 @@ async function takeSamples(probe, opts, started) {
     if (i > 0 && left < Math.max(MIN_TIMEOUT_MS, 2 * slowest)) return {runs, starts, end: 'budget'};
     const answered = runs.some(r => r.ok);
     starts.push(Math.round(performance.now() - started));
-    // Each sample gets the whole remaining budget, so a slow answer keeps its full time.
-    const r = await runOnce(probe, {...opts, timeoutMs: left});
+    // Each sample gets the whole remaining budget, so a slow answer keeps its full time. A STUN
+    // sample is capped, since its lost binding response never arrives late.
+    const r = await runOnce(probe, {...opts, timeoutMs: probe.kind === 'stun' ? Math.min(left, STUN_TIMEOUT_MS) : left});
     runs.push(r);
     slowest = Math.max(slowest, r.ms ?? 0);
     // After a success a failed sample is a lost packet, and sampling continues.
@@ -633,10 +634,10 @@ export async function checkPaths(signal) {
 }
 
 // Every deadline is capped by the interval, so a probe cannot outlive its round and shift the
-// cadence. A download cut at the deadline reports the bytes it read.
-export function timeoutFor(probe, intervalMs) {
-  const base = probe.kind === 'stun' ? STUN_TIMEOUT_MS : TIMEOUT_MS;
-  return Math.max(MIN_TIMEOUT_MS, Math.min(base, intervalMs - ROUND_SLACK_MS));
+// cadence. A download cut at the deadline reports the bytes it read. STUN samples share the window
+// of the TCP probes, so one slow answer leaves room for the rest of the series.
+export function timeoutFor(_probe, intervalMs) {
+  return Math.max(MIN_TIMEOUT_MS, Math.min(TIMEOUT_MS, intervalMs - ROUND_SLACK_MS));
 }
 
 // ICE gathering against a STUN server only: without a data channel, track or remote description

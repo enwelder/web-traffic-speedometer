@@ -49,8 +49,8 @@ s.test('gradeActivities MUST leave the round unchanged WHEN it grades one', () =
   assert.deepEqual(input, before, 'the round carries no field a reading wrote into it');
 });
 
-s.test('gradeActivities MUST grade voice on its worst term WHEN any one of its three scales degrades', () => {
-  // Voice has three terms, and any one of them can set red.
+s.test('gradeActivities MUST grade voice on its worst term WHEN any one of its terms degrades', () => {
+  // Any one of voice's terms can set red.
   assert.equal(g.gradeActivities(round()).voice, 'green', 'all three hold');
   assert.equal(g.gradeActivities(round({udp: bad()})).voice, 'red', 'no UDP path');
   assert.equal(g.gradeActivities(round({ip6: ok(500)})).voice, 'red', 'round trip too long');
@@ -62,10 +62,19 @@ s.test('gradeActivities MUST grade voice on its worst term WHEN any one of its t
   assert.equal(g.gradeActivities(round({ip6: ok(10), udp: bad()})).voice, 'red',
                'loss beats a fast answer: calls break on loss before latency');
 
-  // A STUN exchange carries ICE gathering on top of a round trip, so its milliseconds are on
-  // a different scale and only whether the path exists is read.
-  assert.equal(g.gradeActivities(round({ip6: ok(33), udp: ok(340)})).voice, 'green',
-               'a slow STUN exchange over a fast link is still a fast link');
+  assert.equal(g.gradeActivities(round({ip6: ok(33), udp: ok(340)})).voice, 'orange',
+               'call audio travels over UDP, so its delay grades the call');
+});
+
+s.test('gradeActivities MUST grade voice on the UDP round trip WHEN STUN answers slower than the literal', () => {
+  const r = g.activityReading('voice', round({ip6: ok(33), udp: ok(340)}));
+  assert.deepEqual([r.grade, r.value, r.scale], ['orange', 340, 'round_trip']);
+});
+
+s.test('gradeActivities MUST add no UDP delay term WHEN udp is expected', () => {
+  // A browser without WebRTC, such as Safari in Lockdown Mode, measures no UDP delay.
+  const r = g.activityReading('voice', round({udp: bad({fail: 'unsupported', expected: true})}));
+  assert.deepEqual([r.grade, r.missing], ['green', []]);
 });
 
 s.test('gradeActivities MUST grade news on the cold lookup and the throughput together WHEN either term degrades', () => {

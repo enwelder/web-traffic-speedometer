@@ -93,7 +93,6 @@ const lost = c => c?.ok === false && c.fail !== 'abort' && c.fail !== 'unsupport
 const linkDown = p => lost(p.down?.stall_check?.other_host) && lost(p.down?.stall_check?.udp);
 const linkTerm = p => ({note: 'link down', grade: linkDown(p) ? 'red' : null});
 
-// Only whether the UDP path exists is read here; the row above grades its milliseconds.
 const TERMS = {
   voice: ({p, rate, noThroughput, skipRate}) => [
     linkTerm(p),
@@ -101,6 +100,8 @@ const TERMS = {
     {note: 'no route', grade: noRoute(p) ? 'red' : null},
     {note: 'round trip lost', grade: roundTripFailed(p) ? 'red' : null},
     {scale: 'round_trip', value: routeMs(p)},
+    // Call audio travels over UDP. A browser without WebRTC measures no UDP delay and adds no term.
+    ...(p.udp?.ok ? [{scale: 'round_trip', value: p.udp.ms}] : []),
     // A call carries about 100 kb/s over the path the round trip and the UDP probe measured, so a
     // failed bulk download drops the rate term and adds no red.
     ...(skipRate || noThroughput ? [] : [{scale: 'call_rate', value: rate}])

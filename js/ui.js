@@ -71,7 +71,7 @@ const ROUTE_EXPLAIN = 'GET to an address literal, no lookup. Whichever family is
 const PROBE_CAVEATS = {
   dns: 'The whole cost of reaching a host never contacted before: resolution, connection and handshake together. A page cannot separate them.',
   down: `Three connections read together for a fixed window. Reads up to ${Math.round(DOWN_CEILING_BPS / 1e6)} Mb/s and says ≥ at that point, which is all a window this size can prove.`,
-  udp: 'ICE gathering rides on top of the round trip, so this reads slower than the link is.'
+  udp: 'ICE gathering rides on top of the round trip, so this reads slower than the link is. Calls grade on it, since call audio travels over UDP.'
 };
 
 // A row shows the measurement its colour graded. A reading without a value shows its note.
