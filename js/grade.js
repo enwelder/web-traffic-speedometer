@@ -38,9 +38,9 @@ export const worse = (a, b) => (a == null ? b : b == null ? a : (RANK[a] >= RANK
 // feeds as red for the whole cool-down.
 const failed = countsAsFailure;
 
-// A download the far end turned away is a fact about the endpoint, not about the link, and
-// must not be reported as the person's connection being bad. Anything else that stops a
-// transfer — a refused connection, a stall, a timeout — is the network.
+// A download the far end turned away is a fact about the endpoint, so it must not be reported
+// as the person's connection being bad. Anything else that stops a transfer — a refused
+// connection, a stall, a timeout — is the network.
 const ourFault = r => r?.refused_by === 'server';
 
 // What the round's streams carried over its window. A saturated round reached the byte cap
@@ -86,7 +86,7 @@ const reached = p => !!(p.web?.ok || p.down?.ok || p.dns?.ok || p.dns_ctl?.ok);
 const noRoute = p =>
   !p.ip6?.ok && !p.ip4?.ok && (failed(p.ip6) || failed(p.ip4)) && !reached(p);
 
-// Only whether the UDP path exists is read, never its milliseconds: the row above grades those.
+// Only whether the UDP path exists is read here; the row above grades its milliseconds.
 const TERMS = {
   voice: ({p, rate, noThroughput, skipRate}) => [
     {note: 'no UDP', grade: failed(p.udp) ? 'red' : null},
@@ -126,10 +126,9 @@ export function activityReading(activity, sample) {
     .map(t => ({...t, grade: t.grade ?? gradeValue(t.scale, t.value)}));
   const grade = graded.reduce((a, t) => worse(a, t.grade), null);
 
-  // A term that measures something and got no measurement is not a term that passed. Letting
-  // it fall out of the worst-of graded a call green on UDP and throughput alone while the
-  // round trip had no instrument at all — every probe that could have supplied one blocked.
-  // A failure already seen outranks it: red is known, unrated is not knowing.
+  // A term that measures something and got no measurement has to hold the worst-of open: a
+  // call graded on UDP and throughput alone claims a verdict while the round trip had no
+  // instrument at all. A failure already seen outranks it: red is known, unrated is not knowing.
   const missing = graded.filter(t => t.scale && t.grade == null).map(t => t.scale);
   if (missing.length && grade !== 'red') {
     return {grade: null, value: null, unit: null, note: 'unrated', scale: null,
@@ -168,13 +167,12 @@ function probeState(r) {
 }
 
 // What it costs to reach a host never contacted before: resolution, the connection and the
-// handshake together. Measured, not decomposed — a page cannot separate them, because the
+// handshake together, measured as one figure — a page cannot separate them, because the
 // resource-timing phases come back zeroed cross-origin without Timing-Allow-Origin.
 //
-// It was graded against the cached-name control on a scale of its own. The control answers in
-// about 15 ms on a warm connection, so subtracting it removed nothing, and the bespoke scale
-// then had to be tuned to a corpus. The absolute time is what a person waits for when they
-// open a link to somewhere new, and `ttfb` was written for exactly that wait.
+// The absolute time is what a person waits for when they open a link to somewhere new, which
+// is the wait `ttfb` grades. The cached-name control answers in about 15 ms on a warm
+// connection, so a difference against it carries the same figure on a scale of its own.
 function dnsMeasure(p) {
   if (p.dns?.retry_suspected) return {grade: 'red', note: 'lost'};
   return {scale: 'ttfb', value: p.dns.ms};

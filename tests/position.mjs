@@ -31,7 +31,7 @@ const track = (over = {}) => {
   return {tracker, notes};
 };
 
-s.test('no fix yet is reported as nothing, not as a position', () => {
+s.test('createPositionTracker.read MUST return null lat, accuracy_class and speed_source WHEN no fix has arrived', () => {
   fakeGeolocation();
   const {tracker} = track();
   const row = tracker.read();
@@ -40,7 +40,7 @@ s.test('no fix yet is reported as nothing, not as a position', () => {
   assert.equal(row.speed_source, null);
 });
 
-s.test('speed is derived from a pair of fine fixes when the platform supplies none', () => {
+s.test('createPositionTracker.read MUST derive speed from a pair of fine fixes WHEN the platform reports no speed', () => {
   const geo = fakeGeolocation();
   const {tracker} = track();
   const t0 = 1700000000000;
@@ -51,12 +51,12 @@ s.test('speed is derived from a pair of fine fixes when the platform supplies no
   const row = tracker.read();
 
   assert.equal(row.speed, null, 'the measured field stays empty');
-  assert.equal(row.speed_source, 'derived', 'and the row says where the figure came from');
+  assert.equal(row.speed_source, 'derived', 'and the row records the source of the figure');
   assert.ok(Math.abs(row.speed_derived - 50) < 5, `~50 m/s, got ${row.speed_derived}`);
   assert.equal(row.accuracy_class, 'gps');
 });
 
-s.test('a measured speed is preferred and labelled as such', () => {
+s.test('createPositionTracker.read MUST report speed with source gps WHEN the fix carries a speed', () => {
   const geo = fakeGeolocation();
   const {tracker} = track();
   geo.send(51.9244, 4.4777, 1700000000000, {speed: 38.5});
@@ -65,7 +65,7 @@ s.test('a measured speed is preferred and labelled as such', () => {
   assert.equal(row.speed_source, 'gps');
 });
 
-s.test('a tower-class fix produces no speed and says why', () => {
+s.test('createPositionTracker.read MUST return null speed_derived and accuracy_class coarse WHEN both fixes are tower estimates', () => {
   const geo = fakeGeolocation();
   const {tracker} = track();
   const t0 = 1700000000000;
@@ -75,11 +75,11 @@ s.test('a tower-class fix produces no speed and says why', () => {
   geo.send(51.9334, 4.4777, t0 + 20000, {accuracy: 1414});
   const row = tracker.read();
   assert.equal(row.speed_derived, null, 'no speed from a pair of estimates');
-  assert.equal(row.accuracy_class, 'coarse', 'and the row explains the gap');
+  assert.equal(row.accuracy_class, 'coarse', 'and the row records the coarse accuracy class');
   assert.equal(row.accuracy, 1414, 'the accuracy itself is kept, being a measurement');
 });
 
-s.test('one coarse fix in the pair is enough to withhold the speed', () => {
+s.test('createPositionTracker.read MUST return null speed_derived WHEN one fix of the pair exceeds FINE_ACCURACY_M', () => {
   const geo = fakeGeolocation();
   const {tracker} = track();
   const t0 = 1700000000000;
@@ -89,7 +89,7 @@ s.test('one coarse fix in the pair is enough to withhold the speed', () => {
   assert.equal(tracker.read().speed_derived, null);
 });
 
-s.test('a rate no train reaches is discarded, and the coordinates are kept', () => {
+s.test('createPositionTracker.read MUST return null speed_derived and keep the coordinates WHEN the pair implies a rate above MAX_PLAUSIBLE_MS', () => {
   const geo = fakeGeolocation();
   const {tracker} = track();
   const t0 = 1700000000000;
@@ -104,7 +104,7 @@ s.test('a rate no train reaches is discarded, and the coordinates are kept', () 
   assert.equal(row.lat, 52.0143, 'while the coordinates stay for the analysis');
 });
 
-s.test('fixes too close together or too far apart in time derive nothing', () => {
+s.test('createPositionTracker.read MUST return null speed_derived WHEN the fixes are under 1 s or over 2 min apart', () => {
   for (const gapMs of [500, 130000]) {
     const geo = fakeGeolocation();
     const {tracker} = track();
@@ -116,12 +116,12 @@ s.test('fixes too close together or too far apart in time derive nothing', () =>
   }
 });
 
-s.test('a change of accuracy class is reported once, on the transition', () => {
+s.test('createPositionTracker MUST emit one note WHEN the accuracy class changes', () => {
   const geo = fakeGeolocation();
   const {notes} = track();
   geo.send(51.9244, 4.4777, 1, {accuracy: 10});
   geo.send(51.9244, 4.4777, 2, {accuracy: 12});
-  assert.deepEqual(notes, [], 'staying precise says nothing');
+  assert.deepEqual(notes, [], 'an unchanged class produces no note');
   geo.send(51.9244, 4.4777, 3, {accuracy: 1414});
   assert.equal(notes.length, 1, 'the degradation is reported');
   assert.match(notes[0], /degraded to 1414 m/);
@@ -131,7 +131,7 @@ s.test('a change of accuracy class is reported once, on the transition', () => {
   assert.match(notes[1], /precise again/, 'the recovery is reported too');
 });
 
-s.test('a refused permission is carried on the row and on the screen', () => {
+s.test('createPositionTracker MUST report denied on the row, the snapshot and the notice WHEN permission is refused', () => {
   const geo = fakeGeolocation();
   const notices = [];
   const {tracker} = track({onNotice: n => notices.push(n)});
@@ -141,7 +141,7 @@ s.test('a refused permission is carried on the row and on the screen', () => {
   assert.match(notices[0], /No location \(denied\)/);
 });
 
-s.test('a session starts without the previous session\'s fixes', () => {
+s.test('createPositionTracker.reset MUST return null speed_derived WHEN the fix pair spans two sessions', () => {
   const geo = fakeGeolocation();
   const {tracker} = track();
   const t0 = 1700000000000;

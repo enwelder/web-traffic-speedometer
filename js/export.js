@@ -17,8 +17,8 @@ import * as store from './store.js';
 // on a family that does carry traffic is a fact about that address. None of the three says
 // anything about the link. Shared with the screen so the count on it and the count in the file
 // agree.
-// 'short' is this tool failing to measure, never the link failing: bytes crossed, over a span
-// too brief to divide by. 'error' is the round itself throwing.
+// 'short' is this tool failing to measure: bytes crossed, over a span too brief to divide by.
+// 'error' is the round itself throwing.
 const NOT_THE_LINK = new Set(['resting', 'short', 'error']);
 
 export const countsAsFailure = r =>

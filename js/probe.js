@@ -310,16 +310,16 @@ function downloadMeter({rampMs, rampBytes, windowMs, capBytes}) {
     // the reported window is the one that was asked for and the rounds stay comparable.
     until() { return markT == null ? Infinity : markT + windowMs; },
     // RMBT ends the measurement at t* = min over threads of the last time each recorded, so
-    // the rate is never a sum of bytes divided by a span some of them did not run for. A
-    // stream that reaches its end early ends the window for all of them.
+    // the rate covers only the span every stream was running. A stream that reaches its end
+    // early ends the window for all of them.
     threadEnded() {
       if (markT == null || stopped) return;
       stopped = 'thread';
       stopT = performance.now();
     },
     read() {
-      // The span the bytes crossed in, never the span the round took: a stream still open
-      // after the window closed adds no bytes and must add no time.
+      // The span the bytes crossed in: a stream still open after the window closed adds no
+      // bytes and must add no time.
       const now = performance.now();
       const end = stopT ?? (markT == null ? now : Math.min(now, markT + windowMs));
       // A window that never opened measured no bytes, whatever crossed during the ramp.

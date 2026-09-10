@@ -337,8 +337,8 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
     downloadBytesUsed += row.probes.down?.bytes || 0;
 
     // The quickest first response in the round, which approximates the cost of waking the
-    // radio. Reported, never graded. Zero values are excluded: connect_ms is zero both for a
-    // reused connection and when timing is unreadable.
+    // radio, and is carried on the row for the record. Zero values are excluded: connect_ms is
+    // zero both for a reused connection and when timing is unreadable.
     // Sampling stops at the first failure, so a probe with no successful sample failed on its
     // first: its `ms` is how long it took to fail.
     const firsts = [row.probes.ip6, row.probes.web, row.probes.dns_ctl, row.probes.udp]

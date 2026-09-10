@@ -217,7 +217,7 @@ median, which hides a spread like 52-4275 ms within one round.
 A probe fails when no sample answered. One failure after a run of answers is a lost packet, and
 the samples that answered measured the link; that failure is kept in `sample_fail` and counted
 out of `samples_ok`. Nine answers at 20 ms and a tenth that never returns is a working
-connection, and reddening calls on it reports the packet rather than the link.
+connection, and reddening calls on it reports the packet, leaving the link unreported.
 
 **A name that cannot be cached.** A fixed hostname stops testing DNS after one round:
 `one.one.one.one` has a 24-hour TTL, so the OS answers from cache and no query reaches the
@@ -346,12 +346,12 @@ answer checkable afterwards, since a carrier range and home Wi-Fi resolve to dif
 
 RTR's [RMBT specification](https://github.com/rtr-nettest/rmbt-server/blob/master/RMBT_specification.md)
 is the reference this method is taken from. RMBT owns both ends of the connection; this owns
-neither, and runs in a page. What that costs is set out here rather than left to be discovered
+neither, and runs in a page. What that costs is set out here, so it need not be discovered
 in the data.
 
 | RMBT | here | why it differs |
 |---|---|---|
-| seven phases, none overlapping | two: idle probes, then the download | the loaded round trip is deliberately taken *during* the download, and grades nothing — it is a measure of queueing, not of latency |
+| seven phases, none overlapping | two: idle probes, then the download | the loaded round trip is deliberately taken *during* the download, and grades nothing — it measures queueing |
 | downlink pre-test of 2 s, chunk size doubling from 4 kB | ramp of 300 ms or 1 MB, chunk size whatever the browser hands over | data cost. A page cannot set a chunk size |
 | latency measured after the pre-test, on an active radio | latency measured first, on a radio that may be asleep | the median of ten discards the wake-up; the cost of it is reported separately as `first_packet_ms`, which is 373 ms against a 21 ms median on one KPN round |
 | latency is 10-200 pings, timed **by the server**, median | 10 samples, timed by the client around a whole HTTPS request, median | **shortcoming**: the figure includes TLS resumption, HTTP framing and browser scheduling, so it is an upper bound on the round trip. Three independent sources agreeing within 2 ms is the only check available |

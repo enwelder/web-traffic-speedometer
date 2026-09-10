@@ -20,7 +20,7 @@ const round = (over = {}) => ({probes: {
   ...over
 }});
 
-s.test('each activity is graded on its own scales', () => {
+s.test('gradeActivities MUST grade each activity on its own scales WHEN one round supplies every probe', () => {
   const grades = g.gradeActivities(round());
   assert.equal(grades.voice, 'green', '30 ms round trip, UDP open, 40 Mb/s');
   assert.equal(grades.news, 'green', '190 ms to a cold origin is a good result');
@@ -32,7 +32,7 @@ s.test('each activity is graded on its own scales', () => {
   assert.equal(g.gradeValue('round_trip', 190), 'yellow');
 });
 
-s.test('nothing consults the session for its thresholds', () => {
+s.test('gradeActivities MUST return identical grades WHEN called repeatedly with identical round data', () => {
   const slow = round({ip6: ok(900), udp: ok(900), web: ok(2500), dns: ok(2500)});
   const first = g.gradeActivities(slow);
   for (let i = 0; i < 50; i++) g.gradeActivities(slow);      // history cannot move the answer
@@ -41,7 +41,16 @@ s.test('nothing consults the session for its thresholds', () => {
   assert.equal(first.news, 'red');
 });
 
-s.test('a activity is only as good as its weakest requirement', () => {
+s.test('gradeActivities MUST leave the round unchanged WHEN it grades one', () => {
+  const input = round({ip6: ok(900), down: {ok: false, fail: 'network', refused_by: 'server'}});
+  const before = JSON.parse(JSON.stringify(input));
+  g.gradeActivities(input);
+  g.probeReading('ip6', input);
+  g.activityReading('voice', input);
+  assert.deepEqual(input, before, 'the round carries no field a reading wrote into it');
+});
+
+s.test('gradeActivities MUST grade voice on its worst term WHEN any one of its three scales degrades', () => {
   // Voice reads three things, and each alone can sink it however well the others read.
   assert.equal(g.gradeActivities(round()).voice, 'green', 'all three hold');
   assert.equal(g.gradeActivities(round({udp: bad()})).voice, 'red', 'no UDP path');
@@ -61,7 +70,7 @@ s.test('a activity is only as good as its weakest requirement', () => {
                'a slow STUN exchange over a fast link is still a fast link');
 });
 
-s.test('opening an article reads the lookup and the bytes together', () => {
+s.test('gradeActivities MUST grade news on the cold lookup and the throughput together WHEN either term degrades', () => {
   assert.equal(g.gradeActivities(round()).news, 'green');
   // A fast lookup does not save an article that cannot be pulled down.
   const crawling = g.gradeActivities(round({dns: ok(120), down: {ok: true, bps: 300e3}}));
@@ -72,23 +81,23 @@ s.test('opening an article reads the lookup and the bytes together', () => {
   assert.equal(g.gradeActivities(round({dns: ok(3500)})).news, 'red');
 });
 
-s.test('an article needs both origins, the cold one and the warm one', () => {
+s.test('gradeActivities MUST grade news red WHEN either the cold lookup or the warm origin fails', () => {
   assert.equal(g.gradeActivities(round({web: bad()})).news, 'red',
-               'a host the phone already knows refusing to answer stops an article');
+               'a warm origin refusing to answer stops an article');
   assert.equal(g.gradeActivities(round({dns: bad()})).news, 'red', 'and so does a lookup failing');
   assert.equal(g.gradeActivities(round({web: bad()})).voice, 'green',
                'while a call over the same round is unaffected');
 });
 
-s.test('a lookup that came back on a retry timer grades as loss', () => {
+s.test('gradeActivities MUST grade news red WHEN the DNS answer carries retry_suspected', () => {
   const retried = round({dns: ok(2207, {retry_suspected: true})});
   assert.equal(g.gradeActivities(retried).news, 'red',
                'a fixed multi-second timer is packet loss, not a slow resolver');
 });
 
-s.test('a download the far end refused is not the link being bad', () => {
-  // The failure that broke two recorded journeys. Reporting it as red said the person's
-  // connection could not carry video, when the connection was carrying everything else.
+s.test('gradeActivities MUST charge streaming red for a connection failure and withhold red for a server refusal WHEN the download fails', () => {
+  // Reporting a server refusal as red claims the person's connection cannot carry video while
+  // that connection is carrying everything else.
   const refused = round({down: {ok: false, fail: 'network', refused_by: 'server'}});
   assert.notEqual(g.gradeActivities(refused).streaming, 'red',
                   'the endpoint turning us away is a fact about the endpoint');
@@ -100,7 +109,7 @@ s.test('a download the far end refused is not the link being bad', () => {
   assert.notEqual(g.gradeActivities(rested).streaming, 'red', 'a rested probe reported nothing');
 });
 
-s.test('every scale is reachable and ordered', () => {
+s.test('SCALES MUST order every set of edges from best to worst and reach all four grades WHEN gradeValue runs over each edge', () => {
   for (const [name, t] of Object.entries(g.SCALES)) {
     const sorted = [...t.edges].sort((a, b) => t.dir === 'low' ? a - b : b - a);
     assert.deepEqual(t.edges, sorted, `${name} edges run from best to worst`);
@@ -114,7 +123,7 @@ s.test('every scale is reachable and ordered', () => {
   }
 });
 
-s.test('every activity names the scales it is judged on', () => {
+s.test('ACTIVITIES MUST carry a label and scales present in SCALES WHEN every entry is read', () => {
   for (const [name, activity] of Object.entries(g.ACTIVITIES)) {
     assert.ok(activity.label, `${name} has a label`);
     assert.ok(activity.scales.length > 0, `${name} names its scales`);
@@ -125,7 +134,7 @@ s.test('every activity names the scales it is judged on', () => {
 });
 
 
-s.test('every probe names a scale that exists', () => {
+s.test('PROBE_SCALES MUST name a scale present in SCALES WHEN every probe in PROBES is read', () => {
   for (const p of PROBES) {
     const scale = g.PROBE_SCALES[p.id];
     assert.ok(scale, `${p.id} names a scale, or its row shows a number no colour contradicts`);
@@ -133,7 +142,7 @@ s.test('every probe names a scale that exists', () => {
   }
 });
 
-s.test('a probe reports its own measurement', () => {
+s.test('probeReading MUST return the probe value, unit and grade WHEN the probe measured', () => {
   const r = g.probeReading('ip6', round({ip6: ok(30)}));
   assert.equal(r.state, 'ok');
   assert.equal(r.grade, 'green');
@@ -147,7 +156,7 @@ s.test('a probe reports its own measurement', () => {
   assert.equal(g.probeReading('down', round()).grade, 'green');
 });
 
-s.test('a probe that measured nothing carries no colour', () => {
+s.test('probeReading MUST return a null grade WHEN the probe is absent, resting or missing from the round', () => {
   // An absent IPv4 path, a rested probe and a probe the round never ran are all reasons for
   // there to be no measurement, and none of them is the link being bad.
   assert.deepEqual(pick(g.probeReading('ip4', round())), {state: 'absent', grade: null});
@@ -158,10 +167,10 @@ s.test('a probe that measured nothing carries no colour', () => {
 
   const failing = g.probeReading('web', round({web: bad()}));
   assert.deepEqual(pick(failing), {state: 'failed', grade: 'red'});
-  assert.equal(failing.note, 'timeout', 'the row says why, not just that');
+  assert.equal(failing.note, 'timeout', 'the row carries the failure reason');
 });
 
-s.test('a download the server refused does not grade the link', () => {
+s.test('probeReading MUST return state refused with a null grade WHEN the server refused the download', () => {
   // The same fact the streaming activity already ignores: the row and the tile below it must
   // not disagree about whose fault it was.
   const refused = round({down: {ok: false, fail: 'network', refused_by: 'server'}});
@@ -169,7 +178,7 @@ s.test('a download the server refused does not grade the link', () => {
   assert.notEqual(g.gradeActivities(refused).streaming, 'red');
 });
 
-s.test('a lookup on a retry timer is red however small the delta', () => {
+s.test('probeReading MUST return grade red with a null value WHEN the DNS answer carries retry_suspected', () => {
   // The first query was lost. Loss, not slowness, and the delta cannot see it.
   const lost = round({dns: ok(80, {retry_suspected: true}), dns_ctl: ok(60)});
   const r = g.probeReading('dns', lost);
@@ -178,7 +187,7 @@ s.test('a lookup on a retry timer is red however small the delta', () => {
   assert.equal(r.note, 'lost');
 });
 
-s.test('calling reads whichever address family the network carries', () => {
+s.test('activityReading MUST read the round trip from the family that answered WHEN one address family is absent', () => {
   // A network with only one family is ordinary, not broken. Grading the route on IPv6 alone
   // reported "no route" on every round of a perfectly healthy IPv4-only network.
   const route = over => g.activityReading('voice', round(over));
@@ -196,7 +205,7 @@ s.test('calling reads whichever address family the network carries', () => {
   assert.equal(g.activeRoute({ip6: bad(), ip4: ok(25)}), 'ip4');
 });
 
-s.test('every family gone is the only route failure', () => {
+s.test('activityReading MUST return the no-route note only WHEN every family failed and no probe reached the network', () => {
   // Every other probe fails too, so the round has no traffic to credit a literal with.
   const dead = {dns: bad(), dns_ctl: bad(), web: bad(), down: bad()};
   const route = over => g.activityReading('voice', round({...dead, ...over}));
@@ -219,7 +228,7 @@ s.test('every family gone is the only route failure', () => {
                   'no route');
 });
 
-s.test('throughput is what the round streamed over its window', () => {
+s.test('throughput MUST return the round bps or null WHEN the download succeeded or opened no window', () => {
   const down = over => ({ok: true, ms: 300, ...over});
   assert.equal(g.throughput(down({bps: 22e6})), 22e6);
   assert.equal(g.throughput({ok: false, bps: 30e6}), null, 'a failed download measured nothing');
@@ -232,7 +241,7 @@ s.test('throughput is what the round streamed over its window', () => {
                'and the reading says so, so the screen can print a ≥');
 });
 
-s.test('the route row shows the family doing the work', () => {
+s.test('activeRoute MUST return the family carrying traffic WHEN the two literals report different failures', () => {
   // A fibre connection with IPv6 addressing but no route to the IPv6 literal reported a red
   // row every round while IPv4 carried every byte. Neither literal answered, and the tie went
   // to IPv6 — the family that was doing nothing.
@@ -257,10 +266,10 @@ s.test('the route row shows the family doing the work', () => {
   assert.equal(g.probeReading('ip6', {probes: dead}).grade, 'red');
 });
 
-s.test('a literal never decides an activity while anything reached the network', () => {
-  // The whole point of the flags is what the screen and the file say about the literal. They
-  // must not be able to change a verdict about calling, reading or watching — that belongs to
-  // the probes a person waits on.
+s.test('gradeActivities MUST return identical grades WHEN the literal flags are stripped from a round that reached the network', () => {
+  // The flags describe the literal on the screen and in the file. A verdict about calling,
+  // reading or watching belongs to the probes a person waits on, so the flags must not move
+  // one.
   const ok = ms => ({ok: true, ms});
   const bad = o => ({ok: false, ms: null, fail: 'network', ...o});
   const base = {dns: ok(180), dns_ctl: ok(30), web: ok(25), udp: ok(20), down: {ok: true, bps: 25e6}};
@@ -279,7 +288,7 @@ s.test('a literal never decides an activity while anything reached the network',
   }
 });
 
-s.test('the states a failing literal can take are exclusive, and only one is red', () => {
+s.test('probeReading MUST return one exclusive state per literal failure and grade only a plain failure red WHEN ip4 fails', () => {
   const bad = o => ({ok: false, ms: null, fail: 'network', ...o});
   const state = o => g.probeReading('ip4', {probes: {ip4: bad(o)}}).state;
   assert.equal(state({}), 'failed');
@@ -299,7 +308,7 @@ s.test('the states a failing literal can take are exclusive, and only one is red
 // What a download that produced no rate does to each activity. A term that cannot be measured
 // is dropped; one left in place with no value reads as unrated, which blanks an activity whose
 // round trip and UDP path were both measured.
-s.test('a download with no rate degrades what it measures and nothing else', () => {
+s.test('gradeActivities MUST degrade only the activities reading throughput WHEN the download produced no rate', () => {
   const grades = down => {
     const r = g.gradeActivities(round({down}));
     return [r.voice, r.news, r.streaming];
@@ -325,7 +334,7 @@ s.test('a download with no rate degrades what it measures and nothing else', () 
   }
 });
 
-s.test('an unmeasured term never leaves an activity greener than its worst probe', () => {
+s.test('gradeActivities MUST grade voice red WHEN the UDP path failed beside an unmeasured download', () => {
   // The carve-out must not become a way to lose a red: a refused download beside a dead UDP
   // path is still a call that will not connect.
   const r = g.gradeActivities(round({down: {ok: false, fail: 'short', bps: null},

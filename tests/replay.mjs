@@ -21,7 +21,7 @@ const journeys = Object.fromEntries(files.map(f => [f.replace('.json', ''), load
 
 const r = suite('replay');
 
-r.test('the fixtures carry nothing that could place anyone', () => {
+r.test('the committed fixtures MUST carry no coordinates and keep accuracy and round spacing WHEN each is read', () => {
   assert.ok(files.length >= 3, `three journeys are committed: ${files.join(', ')}`);
   for (const [name, j] of Object.entries(journeys)) {
     assert.doesNotThrow(() => assertClean(j), `${name} passes the anonymiser's own guard`);
@@ -35,7 +35,7 @@ r.test('the fixtures carry nothing that could place anyone', () => {
   }
 });
 
-r.test('anonymising is repeatable and loses only what it claims to', () => {
+r.test('anonymise MUST strip position, egress and typed text while keeping every measurement WHEN run twice on the same export', () => {
   const original = {
     session: {started: 1700000000000, stopped: 1700000100000, name: 'Morning KPN',
               environment: {app_version: '9.9.9', user_agent: 'Mozilla/5.0 (iPhone)', timezone: 'Europe/Amsterdam'}},
@@ -69,7 +69,7 @@ r.test('anonymising is repeatable and loses only what it claims to', () => {
 // The guard rejects anything it cannot account for, since a scan for known-bad shapes
 // accepts whatever the schema grows next. Each case below is a shape that passed such a
 // scan.
-r.test('the anonymiser refuses anything it has not been taught to clean', () => {
+r.test('assertClean MUST throw WHEN a document carries coordinates, a bearing, typed text, a time zone or an unshifted timestamp', () => {
   const base = anonymise({
     session: {started: 1700000000000, stopped: 1700000100000, name: 'Morning KPN', note: '',
               environment: {app_version: '9.9.9', user_agent: 'Mozilla/5.0 (iPhone)',
@@ -103,7 +103,7 @@ r.test('the anonymiser refuses anything it has not been taught to clean', () => 
   assert.doesNotThrow(() => assertClean(base), 'and a clean fixture still passes');
 });
 
-r.test('grading runs over every recording without inventing or crashing', () => {
+r.test('gradeActivities MUST return a known grade or null for every round WHEN replayed over each recording', () => {
   for (const [name, j] of Object.entries(journeys)) {
     let graded = 0;
     for (const s of j.samples) {
@@ -125,7 +125,7 @@ r.test('grading runs over every recording without inventing or crashing', () => 
   }
 });
 
-r.test('nothing derived from a real journey is a number that cannot exist', () => {
+r.test('summarise MUST produce finite non-negative figures WHEN replayed over every recorded round', () => {
   // Sweeps every figure derived from the recordings for the products of broken arithmetic:
   // NaN from a division by zero, Infinity from a zero-length window, a negative duration
   // from a clock that moved.
@@ -172,10 +172,10 @@ r.test('nothing derived from a real journey is a number that cannot exist', () =
   }
 });
 
-r.test('every impossible speed in the recordings comes from a fix the rules now reject', () => {
+r.test('the recorded speed_derived MUST exceed MAX_PLAUSIBLE_MS only WHEN the fix is coarser than FINE_ACCURACY_M', () => {
   // The recordings contain rates up to 189 m/s (681 km/h) from trains doing 140. Every such
-  // row must be caught by one of the two rules: a coarse fix, which now produces no speed at
-  // all, or a rate above the plausible ceiling.
+  // row must be caught by one of the two rules: a coarse fix, which produces no speed at all,
+  // or a rate above the plausible ceiling.
   let impossible = 0;
   for (const [name, j] of Object.entries(journeys)) {
     for (const s of j.samples) {
@@ -190,9 +190,9 @@ r.test('every impossible speed in the recordings comes from a fix the rules now 
             `the recordings still carry the rows the rules were written for: ${impossible}`);
 });
 
-r.test('a recorded journey grades its own throughput', () => {
-  // This replaces a guard that asserted no committed recording could supply a rate. One now
-  // does, so the rate is graded against a real journey.
+r.test('the vpn-blocked-literal recording MUST report a saturated three-stream download at the ceiling WHEN its rows are read', () => {
+  // The one committed recording that supplies a rate, so the throughput reading is asserted
+  // against a real journey.
   const j = journeys['vpn-blocked-literal'];
   const down = j.samples.map(s => s.probes.down).filter(d => d?.ok);
   assert.equal(down.length, j.samples.length, 'every round measured throughput');
@@ -209,7 +209,7 @@ r.test('a recorded journey grades its own throughput', () => {
 });
 
 
-r.test('a recording from an older build grades without a schema for it', () => {
+r.test('gradeActivities MUST grade the terms present and return null for the rest WHEN the recording predates a probe', () => {
   // The oldest fixture predates the UDP probe, the steady rate and the grades field. Missing
   // fields must grade as null.
   const old = journeys['stuck-probe'];
@@ -220,10 +220,9 @@ r.test('a recording from an older build grades without a schema for it', () => {
   assert.equal(grades.video, null, 'and what cannot is left empty');
 });
 
-r.test('a recording that cannot supply a measurement is not graded on the rest', () => {
+r.test('gradeActivities MUST return null for streaming WHEN the recorded rows carry no rate', () => {
   // The committed journeys predate throughput measurement, so nothing in them can fill the
-  // rate terms. Before, those terms fell out of the worst-of and the activity graded green on
-  // what remained. An activity is now unrated instead: a grade may not rest on a measurement
+  // rate terms. An activity missing a term is unrated: a grade may not rest on a measurement
   // that was never taken.
   const old = journeys['good-5g'];
   assert.ok(old.samples.every(s => s.probes.down.bps == null), 'these rows carry no rate');
@@ -240,10 +239,10 @@ r.test('a recording that cannot supply a measurement is not graded on the rest',
             'and where it is unrated, it says which measurement is missing');
 });
 
-r.test('a blocked literal leaves calls unrated', () => {
+r.test('activityReading MUST return a null grade for voice naming round_trip as missing WHEN the ip4 literal is blocked and ip6 is unused', () => {
   // Recorded on a desktop behind a corporate VPN: 1.1.1.1 refused every round while IPv4
-  // carried the traffic, and IPv6 had no route. Calls had no round trip to grade, and used to
-  // report green on UDP and throughput alone.
+  // carried the traffic, and IPv6 had no route. Calls have no round trip to grade, so UDP and
+  // throughput alone cannot settle them.
   const j = journeys['vpn-blocked-literal'];
   assert.ok(j, 'the recording is committed');
 
@@ -263,7 +262,7 @@ r.test('a blocked literal leaves calls unrated', () => {
 });
 
 
-r.test('a wedged probe is visible in the recording that showed it', () => {
+r.test('gradeActivities MUST grade news red WHEN the recorded control probe fails alone for twenty rounds', () => {
   const j = journeys['stuck-probe'];
   // The control probe failed alone for the last twenty rounds while the rest recovered.
   const tail = j.samples.slice(-20);
@@ -272,10 +271,10 @@ r.test('a wedged probe is visible in the recording that showed it', () => {
   // One probe failing alone still sinks the activity that reads it: an article cannot open
   // if a host the phone already knows will not answer.
   const grades = tail.map(s => g.gradeActivities(s).news);
-  assert.ok(grades.every(x => x === 'red'), 'and the activity it feeds says so');
+  assert.ok(grades.every(x => x === 'red'), 'and the activity it feeds grades red');
 });
 
-r.test('the rollup describes each recording without throwing', () => {
+r.test('summarise MUST return ordered percentiles and a round-tripping export WHEN run over each recording', () => {
   for (const [name, j] of Object.entries(journeys)) {
     const sum = summarise(j.samples);
     assert.equal(sum.rounds, j.samples.length, name);
@@ -295,7 +294,7 @@ r.test('the rollup describes each recording without throwing', () => {
   }
 });
 
-r.test('the recordings agree with what the scheduler promises', () => {
+r.test('the recordings MUST carry a contiguous seq, two clocks and late_ms on every row WHEN each is read', () => {
   for (const [name, j] of Object.entries(journeys)) {
     const seqs = j.samples.map(s => s.seq);
     assert.deepEqual(seqs, seqs.map((_, i) => i), `${name}: seq is contiguous, no round lost`);
@@ -309,7 +308,7 @@ r.test('the recordings agree with what the scheduler promises', () => {
 });
 
 
-r.test('every probe reading holds up against recorded rounds', () => {
+r.test('probeReading MUST return a known state, a valid grade and a finite or null value WHEN run over every recorded round', () => {
   const states = ['none', 'resting', 'absent', 'blocked', 'unused', 'refused', 'failed', 'ok'];
   let readings = 0;
   for (const [name, j] of Object.entries(journeys)) {
