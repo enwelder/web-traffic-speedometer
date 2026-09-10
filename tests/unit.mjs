@@ -481,7 +481,8 @@ s.test('runProbe MUST record a slow answer with its full time WHEN it follows a 
     return {ok: true, status: 200, text: async () => TRACE};
   };
   const r = await probe.runProbe(P.ip6, {timeoutMs: 8000});
-  assert.ok(r.ms_samples[1] >= 1500, `the slow sample kept its time: ${r.ms_samples[1]} ms`);
+  // A timer can fire a few milliseconds early against performance.now().
+  assert.ok(r.ms_samples[1] >= 1490, `the slow sample kept its time: ${r.ms_samples[1]} ms`);
   assert.equal(r.samples_lost, 0);
 });
 
@@ -490,7 +491,8 @@ s.test('runProbe MUST record when each sample began WHEN the probe is sampled', 
   const r = await probe.runProbe(P.ip6, {timeoutMs: 8000});
   assert.equal(r.sample_starts_ms.length, r.ms_samples.length);
   assert.ok(r.sample_starts_ms[0] <= 1, `the first sample starts the probe: ${r.sample_starts_ms[0]}`);
-  assert.ok(r.sample_starts_ms.every((t, k) => k === 0 || t >= r.sample_starts_ms[k - 1] + r.ms_samples[k - 1] - 1),
+  // Offsets and durations are rounded separately: 2 ms tolerance.
+  assert.ok(r.sample_starts_ms.every((t, k) => k === 0 || t >= r.sample_starts_ms[k - 1] + r.ms_samples[k - 1] - 2),
             JSON.stringify(r.sample_starts_ms));
 });
 
@@ -902,7 +904,9 @@ l.test('createRecorder MUST record round_ms covering both phases and visible_end
   await rec.stop();
   const row = store.written.samples.find(x => x.phase_down_ms != null);
   assert.ok(row, 'a round completed');
-  assert.ok(row.round_ms >= row.phase_idle_ms + row.phase_down_ms && row.phase_idle_ms > 0,
+  // Each duration is rounded to a whole millisecond on its own, so the parts can exceed the
+  // rounded total by up to 2 ms.
+  assert.ok(row.round_ms >= row.phase_idle_ms + row.phase_down_ms - 2 && row.phase_idle_ms > 0,
             `${row.round_ms} ms spans ${row.phase_idle_ms} + ${row.phase_down_ms} ms`);
   assert.equal(row.visible_end, true);
 });
