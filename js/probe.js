@@ -461,8 +461,9 @@ async function downloadOutcome(live, meter, {elapsed, deadline, cfg, perStream})
 }
 
 // Triggered when a stream has no headers STALL_CHECK_MS into the download: one request to the
-// download host, one to gstatic, one STUN binding. Download host slow with gstatic fast: browser
-// or host. Both slow: link. STUN fast with both slow: TCP path.
+// download host, one to the dns_ctl host, one STUN binding. Download host slow with the other host
+// fast: browser or host. STUN answering with both slow: TCP path. The other host and STUN both
+// lost: link.
 const STALL_CHECK_MS = 2000;
 
 function stallCheck(probe, {signal, deadline}) {

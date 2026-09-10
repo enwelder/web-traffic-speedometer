@@ -93,7 +93,8 @@ s.test('PROBES MUST hold one write request, the up entry sending UP_BYTES to htt
 });
 
 s.test('the source files MUST contain one write method, on the up entry of PROBES WHEN scanned', () => {
-  const writes = matching(/method:\s*['"](POST|PUT|PATCH|DELETE)['"]/i);
+  // A write verb can reach request() as a probe's method or as a literal verb.
+  const writes = matching(/\b(method|verb)\s*[:=]\s*['"](POST|PUT|PATCH|DELETE)['"]/i);
   assert.equal(writes.length, 1, writes.join('\n'));
   assert.match(writes[0], /^js\/probe\.js: \{id: 'up',.*url: 'https:\/\/speed\.cloudflare\.com\/__up'.*bodyBytes: UP_BYTES\}/);
   assert.match(read('js/probe.js'), /^export const UP_BYTES = \d+;$/m, 'the body length is a numeric literal');
@@ -103,7 +104,8 @@ s.test('the source files MUST attach one request body, zero bytes of the probe l
   // A body can be named with a colon or passed by shorthand; each form appears once.
   const named = matching(/\bbody\s*:/);
   assert.equal(named.length, 1, named.join('\n'));
-  assert.match(named[0], /^js\/probe\.js: .*body: new Uint8Array\(probe\.bodyBytes\)/);
+  assert.match(named[0], /^js\/probe\.js: body: new Uint8Array\(probe\.bodyBytes\)\}\);$/,
+               'the body is the typed array itself, with nothing chained onto it');
   const shorthand = matching(/\bbody\s*[,}]/);
   assert.deepEqual(shorthand, ["js/probe.js: referrerPolicy: 'no-referrer', signal, body,"]);
   // A typed array built from anything but a numeric literal or the probe length could carry data.

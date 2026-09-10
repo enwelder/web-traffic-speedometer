@@ -73,9 +73,9 @@ function gradeTally(ran, keys, field) {
   return grades;
 }
 
-// 11: a slot that could not start is a `skip` event; rows, sampled probes and download streams
-// carry their own timings.
-const FORMAT_VERSION = 11;
+// 12: `up` replaces `web`; rows carry `interrupted`, `suspended_ms`, `reference` and `phase_up_ms`;
+// trace probes carry `protocol_samples`.
+const FORMAT_VERSION = 12;
 
 // A row carrying `skipped` comes from a file written before format 11, where a slot that could
 // not start was a row.

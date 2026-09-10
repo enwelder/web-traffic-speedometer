@@ -6,7 +6,7 @@
 <meta name="theme-color" content="#0E1620">
 <!-- Every directive except connect-src is locked to this origin. The CSP host-source grammar
      cannot express a bracketed IPv6 literal, and naming the IPv6 probe endpoint blocks that
-     probe, so tests/security.mjs enforces the outbound allowlist and the absence of upload paths. -->
+     probe, so tests/security.mjs enforces the outbound allowlist and the single upload body. -->
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; manifest-src 'self'; worker-src 'self'; connect-src 'self' https:; base-uri 'none'; form-action 'none'">
 <meta name="description" content="Network connectivity and throughput logger — seven parallel probes graded into three everyday activities, with GPS, one JSON file per session. Runs in the browser, no backend.">
 <meta name="apple-mobile-web-app-capable" content="yes">
