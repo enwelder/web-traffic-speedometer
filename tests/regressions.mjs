@@ -26,7 +26,7 @@ function stubStun(ok = true) {
 }
 
 // A round streams for a window and then samples latency across it, so a suite driving many
-// rounds has to shrink both or it measures the clock rather than the code.
+// rounds has to shrink both, or the clock is what it measures.
 const session = (over = {}) => ({id: 's', name: 't', operator: 'KPN', connection: 'cellular',
                                  intervalMs: 100, downloadBytes: 1000, started: Date.now(),
                                  download: {windowMs: 30, rampMs: 0, streams: 1,
@@ -54,7 +54,7 @@ r.test('a freeze shorter than two intervals does not fire the next round instant
   const overlaps = rows.filter(x => x.skipped === 'overlap');
   assert.equal(overlaps.length, 0, `a missed slot must not manufacture an overlap: ${overlaps.length}`);
 
-  // Rounds stay evenly spaced rather than bunching up.
+  // Rounds stay evenly spaced.
   const gaps = rows.filter(x => !x.skipped).map(x => x.mono).sort((a, b) => a - b)
                    .map((v, i, all) => (i ? v - all[i - 1] : null)).filter(Boolean);
   assert.ok(gaps.every(g => g >= 80), `no round follows another instantly: ${gaps.join(',')}`);
@@ -63,7 +63,7 @@ r.test('a freeze shorter than two intervals does not fire the next round instant
 // A frozen tab suspends the abort timer, so a round can outlast every deadline in it: every
 // probe hit its 4 s deadline in a round that took 16.7 s. prev_round_ms is what separates an
 // overlap from a stalled app.
-r.test('a skipped round records how long the round before it actually took', async () => {
+r.test('a skipped round records how long the round before it took', async () => {
   stubStun();
   globalThis.fetch = (url, o) => new Promise((res, rej) => {
     const t = setTimeout(() => res(okResponse()), 260);
@@ -84,7 +84,7 @@ r.test('a skipped round records how long the round before it actually took', asy
 // After an outage a single probe can keep timing out while every other one recovers:
 // observed over twenty consecutive rounds. Those rounds report the connection, not the
 // network.
-r.test('a probe failing alone is rested rather than believed', async () => {
+r.test('a probe failing alone is rested', async () => {
   stubStun();
   let webWedged = true;
   globalThis.fetch = async url => {
@@ -101,7 +101,7 @@ r.test('a probe failing alone is rested rather than believed', async () => {
   assert.ok(rows.length >= 6, 'enough rounds to detect it');
   assert.ok(rows.some(x => x.probes.web.stuck), 'the wedged probe is marked stuck');
   assert.ok(rows.some(x => x.probes.web.fail === 'resting'),
-            'and is rested instead of producing more identical failures');
+            'and produces no further identical failures');
   assert.ok(rows.every(x => x.probes.ip6.ok), 'the probes that work are untouched');
   assert.ok(notices.some(n => /resting/.test(n)), 'and the screen says why');
 
@@ -171,7 +171,7 @@ r.test('speed is derived from consecutive fixes when the platform will not suppl
   const withSpeed = store.written.samples.filter(x => x.speed_derived != null);
   assert.ok(withSpeed.length > 0, 'a speed is produced without the platform supplying one');
   const s = withSpeed[0];
-  assert.equal(s.speed, null, 'the measured field stays empty rather than being invented');
+  assert.equal(s.speed, null, 'the measured field stays empty');
   assert.equal(s.speed_source, 'derived', 'and the row says where the number came from');
   assert.ok(Math.abs(s.speed_derived - 50) < 5, `~50 m/s over 1 km in 20 s, got ${s.speed_derived}`);
 
@@ -189,7 +189,7 @@ r.test('speed is derived from consecutive fixes when the platform will not suppl
   assert.ok(store2.written.samples.every(x => x.speed_derived == null),
             'a speed is never derived from tower-class fixes');
   assert.ok(store2.written.samples.some(x => x.accuracy_class === 'coarse'),
-            'and the row says the fix was coarse rather than leaving it unexplained');
+            'and the row says the fix was coarse');
 
   stubBrowser();
   Object.defineProperty(globalThis, 'navigator', {value: {userAgent: 'node-test', language: 'en', geolocation: null}, configurable: true});
@@ -211,7 +211,7 @@ r.test('rounds inside a bridged gap are flagged on the row', async () => {
 
   assert.ok(store.written.events.some(e => e.type === 'pause'), 'the gap is still an event');
   // The threshold is one missed slot: at two, a 13.7 s delay on a 10 s interval goes
-  // unlogged. Counting against late_ms pins the number rather than the freeze length.
+  // unlogged. Counting against late_ms pins the number to the schedule.
   const missed = store.written.samples.filter(x => x.late_ms >= 100);
   const pauses = store.written.events.filter(e => e.type === 'pause');
   assert.ok(missed.length > 0, 'the freeze produced a late round to judge');

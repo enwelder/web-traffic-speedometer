@@ -42,8 +42,8 @@ export function gradeFor(activity, sample) {
   return (sample.grades || gradeActivities(sample))?.[activity] ?? 'none';
 }
 
-// The colour of a round taken as a whole: its worst activity. Used for the log line, where
-// there is one line per round rather than one per activity.
+// The colour of a round taken as a whole: its worst activity. Used for the log line, which
+// carries one line per round.
 export function classify(sample) {
   if (sample.skipped) return 'skip';
   const g = sample.grades || gradeActivities(sample);
@@ -52,12 +52,12 @@ export function classify(sample) {
   return worstGrade || 'green';
 }
 
-// One row per reading, not one per probe: the two address families share a row, because only
-// the family carrying traffic tells you anything.
+// One row per reading: the two address families share a row, since only the family carrying
+// traffic says anything.
 const ROWS = ['route', 'dns', 'dns_ctl', 'web', 'udp', 'down'];
 
-// Each row names the request it sent, not the layer it stands for: a reader can match a row
-// to a line of the probe table without guessing. PROBES carries the full sentence.
+// Each row names the request it sent, so it matches a line of the probe table. PROBES
+// carries the full sentence.
 const PROBE_LABELS = {
   ip6: 'GET IPv6', ip4: 'GET IPv4', dns: 'HEAD new host', dns_ctl: 'HEAD same host',
   web: 'GET gstatic', down: 'GET download', udp: 'STUN'
@@ -68,7 +68,7 @@ const rowProbe = (row, sample) =>
 
 const ROUTE_EXPLAIN = 'GET to an address literal, no lookup. Whichever family is carrying traffic: a network with only one of them is ordinary.';
 
-// Where a row's number would be read as something it is not. Both are argued in the README.
+// Where a row's number invites a wrong reading. The README argues each one.
 const PROBE_CAVEATS = {
   dns: 'The whole cost of reaching a host never contacted before: resolution, connection and handshake together. A page cannot separate them.',
   down: `Three connections read together for a fixed window. Reads up to ${Math.round(DOWN_CEILING_BPS / 1e6)} Mb/s and says ≥ at that point, which is all a window this size can prove.`,
@@ -139,7 +139,7 @@ export function setProbes(sample) {
     cell.classList.remove(...GRADES);
     const reading = sample && !sample.skipped ? probeReading(probe, sample) : null;
     if (reading?.grade) cell.classList.add(reading.grade);
-    // A word in place of a number is a reason, not a measurement, and must not read like one.
+    // A word in place of a number is a reason, and is styled apart from a measurement.
     cell.classList.toggle('words', !!reading?.note);
     $(`pname-${id}`).textContent = PROBE_LABELS[probe] ?? probe;
     $(`pval-${id}`).textContent = sample?.skipped ? '–' : displayReading(reading);

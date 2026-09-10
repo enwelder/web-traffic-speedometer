@@ -45,7 +45,7 @@ s.test('a lock taken back by the system is reacquired', async () => {
 
   platform.grants[0].systemRelease();
   await sleep(10);
-  assert.equal(platform.grants.length, 2, 'and taken again rather than abandoned');
+  assert.equal(platform.grants.length, 2, 'and taken again');
   assert.equal(wake.held(), true, 'the current one is live');
   assert.ok(log.events.includes('screen wake lock released'), 'the loss is on the record');
   assert.ok(log.notices.some(n => /released/.test(n)), 'and on the screen');
@@ -110,7 +110,7 @@ s.test('a lost lock does not report a recovery in the next session', async () =>
   wake.reset();
   await wake.acquire();
   assert.ok(!log.events.includes('screen stays awake again'),
-            'a new session starts clean rather than announcing the last one recovered');
+            'a new session starts clean');
 });
 
 s.test('a hidden page does not ask for a lock it cannot get', async () => {

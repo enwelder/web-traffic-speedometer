@@ -77,8 +77,8 @@ function gradeTally(ran, keys, field) {
   return grades;
 }
 
-// 9: an activity with an unmeasured term is unrated rather than graded on the rest, and the
-// fresh-name probe is graded on ttfb.
+// 9: an activity with an unmeasured term is unrated, and the fresh-name probe is graded on
+// ttfb.
 const FORMAT_VERSION = 9;
 
 export function summarise(samples) {

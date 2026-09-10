@@ -33,7 +33,7 @@ const engine = ENGINES[engineName];
 if (!engine) throw new Error(`unknown WTS_ENGINE ${engineName}: ${Object.keys(ENGINES)}`);
 
 // CI installs Playwright's pinned browsers. Where that download is absent, fall back to an
-// installed Chrome rather than reporting a failure the code did not cause.
+// installed Chrome, since the missing download is not a fault in the code.
 const browser = await (async () => {
   if (process.env.PW_CHANNEL) return chromium.launch({channel: process.env.PW_CHANNEL});
   try {
@@ -161,7 +161,7 @@ b.test('the projection says what the run will cost before Start', async () => {
   const fine = await read();
 
   // A round streams a window that stops at a byte cap, so the interval decides the cost and
-  // the figure is a worst case rather than a guess.
+  // the figure is an exact worst case.
   const mb = t => Number(t.match(/≈ (\d+) MB/)[1]);
   assert.ok(Math.abs(mb(fine) - mb(coarse) * 2) < mb(coarse) * 0.1,
             `halving the interval doubles the bill: ${mb(coarse)} then ${mb(fine)} MB`);
@@ -179,8 +179,8 @@ b.test('a session records, survives a reload, and exports losslessly', async () 
   await page.selectOption('#f-operator', 'Odido');
   await page.click('#btn-start');
   await page.waitForTimeout(3000);
-  // The route row reports whichever family carries traffic, so an absent IPv4 path is simply
-  // not what is shown.
+  // The route row reports whichever family carries traffic; an absent IPv4 path never
+  // reaches it.
   assert.equal(await page.textContent('#pname-route'), 'GET IPv6');
   assert.match(await page.$eval('#probe-route', e => e.className), /green|yellow|orange/,
                'and the family that works is graded');
@@ -277,7 +277,7 @@ b.test('the shell and the recorded sessions survive with no network at all', asy
   // before the page is reached, so this cannot run there. Chromium covers it; the worker
   // itself is checked against the shipped file list by tests/security.mjs on every engine.
   if (engineName === 'webkit') return;
-  // The one test the worker must actually run for.
+  // The one test the worker must run for.
   const {ctx} = await context({serviceWorkers: 'allow'});
   const page = await ctx.newPage();
   await page.goto(BASE, {waitUntil: 'networkidle'});
@@ -332,7 +332,7 @@ b.test('the newest log line is on top and nothing hides behind the controls', as
   assert.ok(stamps[0] >= stamps[stamps.length - 1], `newest is first: ${stamps[0]} then ${stamps.at(-1)}`);
 
   // The bar sits outside the scrolling area, so it cannot overlap the content. Measured on
-  // main rather than the log lines, which main has already clipped.
+  // main, whose box is unclipped; main has already clipped the log lines.
   const box = await page.evaluate(() => {
     const r = s => document.querySelector(s).getBoundingClientRect();
     const m = r('main'), bar = r('.controls');

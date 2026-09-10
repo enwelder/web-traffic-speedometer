@@ -61,7 +61,7 @@ t.test('nothing and nonsense are not grades', () => {
   for (const scale of Object.keys(g.SCALES)) {
     for (const v of [null, undefined, NaN, Infinity, -Infinity, -1, '30']) {
       assert.equal(g.gradeValue(scale, v), null,
-                   `${scale} must grade ${String(v)} as nothing rather than a colour`);
+                   `${scale} must give ${String(v)} no colour`);
     }
   }
   // Zero is a valid reading in both directions: instant, and stopped.
@@ -124,7 +124,7 @@ d.test('a body that never arrives is a stalled cell, not a broken connection', a
   assert.equal(r.ok, false);
   assert.equal(r.fail, 'stalled', 'the headers came back and then nothing did');
   assert.equal(r.bytes, 0);
-  assert.ok(r.duration_ms >= 350, `the budget bounded it rather than the 8 s deadline: ${r.duration_ms} ms`);
+  assert.ok(r.duration_ms >= 350, `the budget ended it before the 8 s deadline: ${r.duration_ms} ms`);
   assert.equal(countsAsFailure(r), true, 'and it counts against the connection');
 });
 
@@ -142,7 +142,7 @@ d.test('a stream cut mid-flight keeps what arrived', async () => {
   assert.equal(r.truncated, true);
 });
 
-d.test('a body too small to fill a window reports nothing rather than a guess', async () => {
+d.test('a body too small to fill a window reports no rate', async () => {
   // A single buffered chunk arriving in 2 ms once claimed 7.5 Gb/s through a whole-transfer
   // bound. A window that never opened has measured nothing.
   for (const [name, chunks] of [['one tiny chunk', [{after: 2, bytes: 10}]],
@@ -170,7 +170,7 @@ d.test('several connections are opened, and counted as one measurement', async (
   assert.ok(r.window_bytes > 0, 'their bytes are summed against one clock');
 });
 
-d.test('reaching the cap saturates at the ceiling rather than guessing past it', async () => {
+d.test('reaching the cap saturates at the ceiling', async () => {
   // A window this short cannot tell 25 Mb/s from 300. What it can prove is that the link
   // carries at least the ceiling, so that is what it reports, and the row is flagged.
   globalThis.fetch = async () => ({ok: true, status: 200, headers: {get: () => null},
@@ -519,7 +519,7 @@ l.test('a resumed journey continues its numbering and its bill', async () => {
   await rec.stop();
   const rows = [...store.written.samples].sort((a, b) => a.seq - b.seq);
 
-  assert.equal(rows[0].seq, 41, 'the sequence carries on rather than restarting');
+  assert.equal(rows[0].seq, 41, 'the sequence carries on from the stored rows');
   assert.ok(rows[0].mono >= 60000, 'and so does the monotonic clock, bridged across the gap');
   assert.ok(st.bytes > 1234, 'the estimate continues from what was already spent');
   assert.ok(st.downloadMB >= 5, `and so does the figure on screen: ${st.downloadMB} MB`);
@@ -652,7 +652,7 @@ function fakeIndexedDB() {
   };
 }
 
-st.test('a connection the system closed is reopened rather than lost for the session', async () => {
+st.test('a connection the system closed is reopened', async () => {
   const idb = fakeIndexedDB();
   Object.defineProperty(globalThis, 'indexedDB', {value: idb, configurable: true});
   const store = await import(`../js/store.js?closed=${Date.now()}`);
@@ -674,7 +674,7 @@ st.test('a connection the system closed is reopened rather than lost for the ses
   assert.equal(idb.state.puts.length, 3, 'nothing is dropped either way');
 });
 
-st.test('a database that will not open reports it rather than hanging every later call', async () => {
+st.test('a database that will not open reports the failure to every later call', async () => {
   let failing = true;
   const idb = {
     open() {
@@ -749,7 +749,7 @@ x.test('the file survives every character a person can type into it', () => {
   assert.equal(back.events.length, 2, 'and every event is in the file as recorded');
 });
 
-x.test('a session with no rounds exports a file rather than failing', () => {
+x.test('a session with no rounds exports a file', () => {
   const back = JSON.parse(sessionJson(meta(), [], []));
   assert.equal(back.format, 'wts/session');
   assert.equal(back.summary.ran, 0);
@@ -806,7 +806,7 @@ h.test('a round that never ran colours nothing', () => {
   assert.equal(g.gradeActivities({skipped: 'overlap', probes: {}}), null);
   const empty = g.gradeActivities({probes: {}});
   assert.ok(g.ACTIVITY_IDS.every(c => empty[c] === null),
-            'and a round with no probe results grades nothing rather than green');
+            'and a round with no probe results grades nothing');
 });
 
 await h.run();

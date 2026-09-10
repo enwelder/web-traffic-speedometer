@@ -10,8 +10,8 @@ stubBrowser();
 const g = await import('../js/grade.js');
 const {summarise, sessionJson} = await import('../js/export.js');
 const {anonymise, assertClean} = await import('../tools/anonymise.mjs');
-// Imported rather than restated: a threshold tuned in the source would otherwise leave this
-// suite asserting the old value and still passing.
+// Imported, so a threshold tuned in the source cannot leave this suite asserting the old
+// value and still passing.
 const {MAX_PLAUSIBLE_MS, FINE_ACCURACY_M} = await import('../js/position.js');
 
 const dir = new URL('./fixtures/', import.meta.url);
@@ -192,7 +192,7 @@ r.test('every impossible speed in the recordings comes from a fix the rules now 
 
 r.test('a recorded journey grades its own throughput', () => {
   // This replaces a guard that asserted no committed recording could supply a rate. One now
-  // does, so the rate is graded against a real journey rather than against synthetic streams.
+  // does, so the rate is graded against a real journey.
   const j = journeys['vpn-blocked-literal'];
   const down = j.samples.map(s => s.probes.down).filter(d => d?.ok);
   assert.equal(down.length, j.samples.length, 'every round measured throughput');
@@ -211,7 +211,7 @@ r.test('a recorded journey grades its own throughput', () => {
 
 r.test('a recording from an older build grades without a schema for it', () => {
   // The oldest fixture predates the UDP probe, the steady rate and the grades field. Missing
-  // fields must grade as null rather than throw.
+  // fields must grade as null.
   const old = journeys['stuck-probe'];
   assert.equal(old.source_app_version, '6.0.0');
   assert.ok(!old.samples[0].probes.udp, 'no UDP probe existed then');
@@ -240,7 +240,7 @@ r.test('a recording that cannot supply a measurement is not graded on the rest',
             'and where it is unrated, it says which measurement is missing');
 });
 
-r.test('a blocked literal leaves calls unrated rather than green', () => {
+r.test('a blocked literal leaves calls unrated', () => {
   // Recorded on a desktop behind a corporate VPN: 1.1.1.1 refused every round while IPv4
   // carried the traffic, and IPv6 had no route. Calls had no round trip to grade, and used to
   // report green on UDP and throughput alone.

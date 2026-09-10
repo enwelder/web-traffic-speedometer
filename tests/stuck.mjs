@@ -85,7 +85,7 @@ s.test('one success clears the count', () => {
   feed(t, seq++, {});
   for (let i = 0; i < STUCK_AFTER - 1; i++) {
     assert.ok(!feed(t, seq++, {web: 'timeout'}).probes.web.stuck,
-              'the count restarts rather than carrying across the success');
+              'the count restarts after the success');
   }
 });
 

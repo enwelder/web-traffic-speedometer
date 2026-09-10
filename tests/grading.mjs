@@ -49,7 +49,7 @@ s.test('a activity is only as good as its weakest requirement', () => {
   assert.equal(g.gradeActivities(round({down: {ok: true, bps: 20e3}})).voice, 'red',
                'a link carrying less than speech needs');
   // The term is there to catch a dead link, not to rank live ones: speech is 9-14 kb/s, so
-  // anything a train cell actually delivers carries a call.
+  // anything a train cell delivers carries a call.
   assert.equal(g.gradeActivities(round({down: {ok: true, bps: 500e3}})).voice, 'green',
                'half a megabit is ample for a call');
   assert.equal(g.gradeActivities(round({ip6: ok(10), udp: bad()})).voice, 'red',
@@ -196,8 +196,8 @@ s.test('calling reads whichever address family the network carries', () => {
   assert.equal(g.activeRoute({ip6: bad(), ip4: ok(25)}), 'ip4');
 });
 
-s.test('no route means every family is gone, not merely one', () => {
-  // Nothing else reached the network either, or the literals are not the story.
+s.test('every family gone is the only route failure', () => {
+  // Every other probe fails too, so the round has no traffic to credit a literal with.
   const dead = {dns: bad(), dns_ctl: bad(), web: bad(), down: bad()};
   const route = over => g.activityReading('voice', round({...dead, ...over}));
 
@@ -260,7 +260,7 @@ s.test('the route row shows the family doing the work', () => {
 s.test('a literal never decides an activity while anything reached the network', () => {
   // The whole point of the flags is what the screen and the file say about the literal. They
   // must not be able to change a verdict about calling, reading or watching — that belongs to
-  // the probes a person actually waits on.
+  // the probes a person waits on.
   const ok = ms => ({ok: true, ms});
   const bad = o => ({ok: false, ms: null, fail: 'network', ...o});
   const base = {dns: ok(180), dns_ctl: ok(30), web: ok(25), udp: ok(20), down: {ok: true, bps: 25e6}};

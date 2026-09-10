@@ -97,7 +97,7 @@ export function createPositionTracker({onNote, onNotice, onChange} = {}) {
       lat: fix.lat, lon: fix.lon,
       accuracy,
       // gps: usable for position and for deriving speed. coarse: a tower estimate, usable
-      // as a rough location only. Consumers filter on this instead of the raw threshold.
+      // as a rough location only. Consumers filter on this field.
       accuracy_class: accuracy == null ? null : fine ? 'gps' : 'coarse',
       speed: measured,
       speed_derived: derived == null ? null : Math.round(derived * 100) / 100,

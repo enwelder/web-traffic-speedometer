@@ -1,5 +1,5 @@
 // Shared fixtures. The browser globals the modules touch are stubbed in one place, so a
-// module gaining a new dependency fails here rather than in each suite.
+// module gaining a new dependency fails here, once for every suite.
 
 export function stubBrowser() {
   globalThis.document ??= {addEventListener() {}, visibilityState: 'visible'};

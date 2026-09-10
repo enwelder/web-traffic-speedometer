@@ -11,13 +11,12 @@ Answers one question about any network, anywhere: **can I make a call, read an a
 watch a video on this connection right now — and if not, which layer is at fault?**
 
 It runs in a browser, on any device, over Wi-Fi or mobile data. Point it at a connection that
-drops video calls, or at a commute where data dies between stations, and it records what was
-actually happening the whole time.
+drops video calls, or at a commute where data dies between stations, and it records the
+state of the connection throughout.
 
 A browser is given no radio metrics — no RSRP, RSRQ, SINR or cell ID, on any platform.
-Timing requests is the only measurement available. So: seven requests every round, each
-isolating a different layer, which is what makes a failure attributable rather than merely
-noted.
+Timing requests is the only measurement available. Seven requests every round each isolate a
+different layer, which makes a failure attributable.
 
 ## What it does
 
@@ -37,7 +36,7 @@ every 15 s (Fine) or 30 s (Coarse)
 Every round is written whole, including the rounds that failed. Nothing is aggregated away,
 and every grade on screen can be recomputed from the exported rows. Where the line falls
 between noise and an outage is an analysis decision, made downstream against timetables and
-cell databases — not here.
+cell databases.
 
 ## The seven probes
 
@@ -51,17 +50,18 @@ cell databases — not here.
 | `down` | `https://speed.cloudflare.com/__down` | throughput the link sustains |
 | `udp` | `stun:stun.cloudflare.com:3478` | whether UDP gets out, and what it maps to |
 
-`ip6`, `dns_ctl`, `web` and `udp` run three times per round and report the median. `down`
-reports a lower bound on throughput, not a rate.
+`ip6`, `ip4`, `dns_ctl`, `web` and `udp` run ten times per round and report the median;
+`dns` runs five, each against a name no resolver has seen. `down` reports a lower bound on
+throughput.
 
-Reading them against each other is the point:
+Read against each other:
 
 | observation | conclusion |
 |---|---|
-| `dns` fails, `dns_ctl` succeeds | name resolution, not the destination |
-| `dns` and `ip6` both fail | the radio link, not DNS |
-| `web` alone fails | one provider's edge, not the network |
-| all answer but `down` collapses | congestion — a saturated cell still replies quickly to small requests |
+| `dns` fails, `dns_ctl` succeeds | name resolution is at fault; the destination is reachable |
+| `dns` and `ip6` both fail | the radio link is down |
+| `web` alone fails | one provider's edge is down |
+| all answer and `down` collapses | congestion — a saturated cell still replies quickly to small requests |
 | `udp` alone fails | the carrier shapes UDP apart from TCP; calls and streaming ride on UDP |
 
 ## How probes become activity grades
@@ -99,11 +99,10 @@ that answered; a browser prefers IPv6 where both work, so it leads.
 
 **An activity is the worst of its terms.** One failed requirement sinks it however well the
 others read: a call with a 30 ms round trip and no UDP path is a call that will not connect.
-Its verdict is a colour rather than a number, since the terms behind it are measured in
-different units; the numbers are on the probe rows above it, and the grade is stored per round
-so it can be traced back to them.
+Its verdict is a colour; the terms behind it are measured in different units. The numbers are
+on the probe rows above it, and the grade is stored per round, so it traces back to them.
 
-Article time is modelled, not measured:
+Article time is modelled:
 
 ```
 2 × dns + 2 × web + 500 kB / down
@@ -116,9 +115,8 @@ upper bound on the wait.
 
 ## The scales
 
-Every edge is absolute. Nothing consults the session's own statistics, so a connection is not
-good merely because it is no worse than the rest of the journey. A value exactly on an edge
-takes the worse side.
+Every edge is absolute. Nothing consults the session's own statistics, so a grade does not
+drift with the journey around it. A value exactly on an edge takes the worse side.
 
 | scale | what is measured on it | green | yellow | orange | red | source |
 |---|---|---|---|---|---|---|
@@ -137,17 +135,17 @@ Where an edge departs from its source:
 |---|---|
 | `round_trip` | G.114 budgets mouth-to-ear one-way; codec, packetisation and jitter buffer take 80-120 ms, leaving ~100 ms of round trip to the edge |
 | `ttfb` | defined over a site's 75th percentile, applied here to a single round |
-| `rate` | 4K is not the bar: it asks 15 Mb/s and buys nothing on a phone screen |
-| `call_rate` | catches a link carrying nothing, not a slow one — a call is latency-bound |
+| `rate` | 4K asks 15 Mb/s and buys nothing on a phone screen |
+| `call_rate` | a call is latency-bound, so this edge catches a link carrying nothing at all |
 
 Every probe is graded on its own row too, on the scale named above. Four states carry no
-colour, because in none of them did the probe measure the link:
+colour; in each, the probe measured nothing:
 
 | state | when |
 |---|---|
 | `absent` | the path is known missing — IPv4 after the preflight, UDP without WebRTC |
 | `resting` | the recorder stood the probe down to clear a wedged connection |
-| `refused` | the far end turned the request away: a fact about the endpoint |
+| `refused` | the far end turned the request away |
 | `none` | the round ran no such probe |
 
 ## On screen
@@ -159,36 +157,34 @@ which it is. Tapping a row says what it measures; **?** does all six at once.
 The strips carry the activity verdicts: one bar per round, newest on the right. The header
 shows the running build, so a tester can tell one from another without opening a file.
 
-Nothing on the readout summarises the session, because the useful summaries are aggregates
-over a whole journey rather than figures to watch while travelling. They are in the exported
-`summary`: `degraded` counts the rounds in which any probe failed, which is the number worth
-reading afterwards — full outages are rare, the longest recorded ran four rounds, while
-partially failing rounds reached 47% over the worst stretch at a perfectly healthy median
-latency of 96 ms.
+Nothing on the readout summarises the session; the useful summaries are aggregates over a
+whole journey, and they are in the exported `summary`. `degraded` counts the rounds in which
+any probe failed. Full outages are rare — the longest recorded ran four rounds — while
+partially failing rounds reached 47% over the worst stretch, at a median latency of 96 ms.
 
 ## Data usage
 
-The download is almost the whole cost; the six small probes total ~12 kB per round. A round
-streams a ramp and then a window that stops at a byte cap, so the worst case is exact rather
-than assumed: **up to 914 MB for 40 minutes on Fine**, the default, or 457 MB on Coarse. A link
+The download is almost the whole cost; the six small probes total ~105 kB per round, most of
+it handshakes, since a sample is a request and Safari opens a connection for each. A round
+streams a ramp and then a window that stops at a byte cap, so the worst case is known before
+the run: **up to 929 MB for 40 minutes on Fine**, the default, or 464 MB on Coarse. A link
 slower than the 25 Mb/s ceiling costs less in proportion — 10 Mb/s is about a third of it. The
 projection is shown before a run and the running total during it.
 
 ## Design notes
 
-Why each probe is built the way it is. Most of this came from recorded journeys rather than
-from review.
+Why each probe is built the way it is. Most of it came from recorded journeys.
 
 **A failing address family is only a failure if someone waited on it.** Networks carry IPv6
 only, or IPv4 only, or both; a literal can be blocked while its path works, and a family can
-stop working while the other carries every byte. None of that is the connection failing, and
-the person using it notices none of it.
+stop working while the other carries every byte. The person using the connection notices none
+of it.
 
-So each round decides for itself, from what carried traffic in that round:
+Each round decides from what carried traffic in that round:
 
 | the round shows | the literal is | colour | counted |
 |---|---|---|---|
-| this family carried traffic | `blocked` — the address is refused, the path is not | none | no |
+| this family carried traffic | `blocked` — the address is refused, the path works | none | no |
 | another family carried it | `unused` — nobody waited on this one | none | no |
 | nothing carried anything | a failure | red | yes |
 
@@ -196,11 +192,11 @@ A family carries traffic when its own literal answers, when it answers with a st
 this code rejects — a completed handshake either way — or when a probe reports an egress
 address of that family.
 
-Nothing here remembers anything between rounds. Deciding it once per session instead needed a
-verdict about whether a family was "absent", and that verdict was wrong on a fibre link with
-no route to the IPv6 literal, wrong again across a handover between networks, and wrong when
-both literals were blocked at once. The preflight at session start is still recorded in
-`ipv6_check` and `ipv4_check` because it explains the first rounds; no round is judged by it.
+Nothing here remembers anything between rounds. A once-per-session verdict about whether a
+family is "absent" is wrong on a fibre link with no route to the IPv6 literal, wrong across a
+handover between networks, and wrong when both literals are blocked at once. The preflight at
+session start is recorded in `ipv6_check` and `ipv4_check`; it explains the first rounds and
+judges none of them.
 
 The screen shows one of the two, whichever has most to say: a family that answered, then one
 that carried traffic with its literal refused, then one that genuinely failed. A network with
@@ -211,11 +207,12 @@ resolver, and relays and filters intercept it — while the download's own egres
 IPv4. That is what `blocked` is for.
 
 
-**Latency is a median of three.** One round trip moves by an order of magnitude on a cold
-connection, a retransmission or a scheduling delay. RMBT takes 10-200 samples for the same
-reason; three is the compromise for something that runs a whole journey and pays per sample.
-Sampling stops at the first failure. `dns` is sampled once — a second lookup is answered from
-cache.
+**Latency is a median of ten.** One round trip moves by an order of magnitude on a cold
+connection, a retransmission or a scheduling delay. RMBT takes 10-200 samples and reports the
+median for the same reason. `dns` takes five, each against a different random name, so every
+sample pays a full first contact. Sampling stops at the first failure, leaving the remaining
+budget to the rest of the round. `ms_samples`, `ms_min` and `ms_max` are kept alongside the
+median, which hides a spread like 52-4275 ms within one round.
 
 **A name that cannot be cached.** A fixed hostname stops testing DNS after one round:
 `one.one.one.one` has a 24-hour TTL, so the OS answers from cache and no query reaches the
@@ -226,7 +223,7 @@ the 9 kB 404 body off the wire.
 | alternative | why not |
 |---|---|
 | a wildcard on Cloudflare, matching the IP probes' destination | none exists: `pages.dev`, `workers.dev` and `cloudflare-dns.com` have no wildcard DNS |
-| DNS-over-HTTPS | bypasses the OS resolver, so it measures Cloudflare's recursive resolver instead of the carrier's |
+| DNS-over-HTTPS | bypasses the OS resolver, so the carrier's resolver is never measured |
 
 **Reaching a host for the first time.** The `new host` probe asks for a hostname never used
 before, so nothing about it is cached anywhere. What that costs is resolution, the connection
@@ -237,27 +234,24 @@ Measured on one machine, one moment: a warm control answers in 14 ms, a brand-ne
 takes 139 ms, and **the same hostname a second time takes 13 ms**. The cost is first contact,
 and it is gone the instant the connection exists.
 
-It is therefore graded on `ttfb`, the scale written for exactly that wait, and not against the
-control. Subtracting a 14 ms warm connection removed nothing and left a bespoke scale to be
-tuned. A mobile figure four to eight times the desktop one is not a fault in the measurement:
-first contact is several round trips, and mobile round trips are longer.
+It is graded on `ttfb`, the scale written for that wait. Subtracting a 14 ms warm connection
+removes nothing and leaves a bespoke scale to tune. A mobile figure runs four to eight times
+the desktop one: first contact is several round trips, and mobile round trips are longer.
 
-`retry_suspected` still forces red whatever the time says, since a lost first query is loss
-rather than slowness.
+`retry_suspected` forces red whatever the time says. A lost first query is packet loss.
 
-**A wedged probe is not the network.** A connection can reach a state the browser will not
+**A wedged connection.** A connection can reach a state the browser will not
 retire: after an outage every other probe recovers within a round while one keeps timing out
 alone — one recording has twenty consecutive false failures. A page cannot ask for a fresh
 connection, so a probe failing three rounds running while *most* others answer is rested for
 six rounds. Only `timeout`, `network` and `stalled` trigger it: a `parse` failure means the
-connection worked and returned a body, which is what a captive portal looks like. *Most*
-others, not one — an earlier version rested every probe at once during an outage and blanked
-the readout exactly when the network was worst.
+connection worked and returned a body, which is what a captive portal looks like. Resting
+needs *most* other probes answering: resting every probe at once during an outage blanks the
+readout while the network is worst.
 
 **Trace bodies are validated.** A response is accepted only if the egress parses as an
 address, `colo` is a three-letter PoP code, the scheme is still HTTPS, and the echoed host
-matches the one requested. Otherwise a middlebox answering on Cloudflare's behalf passes as a
-measurement. RTR's suite has the same check, under "unmodified content".
+matches the one requested. A middlebox answering on Cloudflare's behalf fails all four checks. RTR's suite has the same check, under "unmodified content".
 
 **UDP needs a peer connection.** ICE candidate gathering is the only way a browser puts a UDP
 packet on the wire. Gathering alone cannot carry data — sending needs a data channel, a track
@@ -273,12 +267,12 @@ where RTR's three-stream test read 320:
 ```
 180 kB / 39 ms   =  37 Mb/s     what one flow can carry there
 320 Mb/s x 39 ms = 1.56 MB      what one flow would need in flight
-1.56 MB / 180 kB =  8.7x        the gap, and it is not slow start
+1.56 MB / 180 kB =  8.7x        the gap; slow start does not explain it
 ```
 
 The same code read 230-560 Mb/s on a desktop from the identical request, because the round
-trip there is ~5 ms. So a single flow measures latency as much as capacity. RTR's Open-RMBT
-opens three connections for exactly this reason, and this now does the same:
+trip there is ~5 ms. A single flow measures latency as much as capacity. RTR's Open-RMBT
+opens three connections for that reason, and this opens three:
 
 | phase | what happens | why |
 |---|---|---|
@@ -291,22 +285,24 @@ than `B × 8 ÷ T`, which here is **25 Mb/s**. Reaching it proves the link carri
 and says nothing about how much more, so the reading saturates there, the row prints `≥`, and
 the round is flagged `saturated` in the file. Below the ceiling the number is the link's own.
 
-That is a deliberate trade. It answers "is this connection good enough" — 25 Mb/s is two and a
-half times the edge video is graded on, so a healthy link is always provably green — and it
-cannot answer "how fast is this cell". A run costs up to 914 MB for 40 minutes on Fine and
-proportionally less on a link slower than the ceiling.
+The trade is deliberate. It answers "is this connection good enough" — 25 Mb/s is two and a
+half times the edge video is graded on, so a healthy link is always provably green. It cannot
+answer "how fast is this cell". What a run costs is under [Data usage](#data-usage).
 
 Phases run one at a time, as RMBT's do. Latency, DNS and UDP go first with the link otherwise
 idle; the download follows alone, with one round trip sampled across it. That second figure is
-`loaded_rtt_ms`, and the gap between the two is what this link queues under load — which is
-felt as much as throughput is.
+`loaded_rtt_ms`, and the gap between the two is what this link queues under load. Queueing is
+felt as much as throughput.
 
 **Deadlines and scheduling.** Every TCP probe gets 8 s, capped at the interval minus half a
 second; `udp` gets 3 s, since a STUN binding answers within a round trip or not at all. Eight
-rather than four because journey data showed probes succeeding at 3885 ms against a 4000 ms
-ceiling — anything slower was filed as a failure, which collapses "slow" into "gone". Rounds are scheduled from when the previous one fired, not onto a grid: on a
-grid, lateness pulls the next slot closer, so after a freeze two rounds fire moments apart and
-measure the same instant twice at twice the price.
+seconds because journey data shows probes succeeding at 3885 ms against a 4000 ms
+ceiling, and a 4000 ms deadline files anything slower as a failure, collapsing "slow" into
+"gone".
+
+Rounds are scheduled from when the previous one fired. On a fixed grid, lateness pulls the next
+slot closer, so after a freeze two rounds fire moments apart and measure the same instant twice
+at twice the price.
 
 **iOS limits.**
 
@@ -341,12 +337,12 @@ npm run test:unit / test:security / test:browser
 ```
 
 Unit, grading and edge-case suites run with no browser and no network. `tests/replay.mjs`
-runs three anonymised real journeys through the grading and rollup.
+runs four anonymised real journeys through the grading and rollup.
 
 `tests/browser.mjs` drives a real browser for IndexedDB, crash recovery, the service worker,
 the CSP and the phone layout, and it runs **once per engine** — Chromium for desktop and
-Android Chrome, WebKit for Safari and iOS. The parts most likely to differ between engines are
-exactly what it covers, and running WebKit first caught behaviour Chromium never showed.
+Android Chrome, WebKit for Safari and iOS. It covers the parts most likely to differ between
+engines; WebKit shows behaviour Chromium does not.
 `WTS_ENGINES=chromium,webkit,firefox npm test` picks the set; each needs
 `npx playwright install <engine>`. A missing engine is a note locally and a failure on CI,
 where the workflow decides what is installed and a quiet skip would report coverage that does
@@ -381,10 +377,9 @@ A push to `main` publishes to Pages; a new version number also tags and releases
 Data leaves only when you export it.
 
 The page pins scripts, styles, images, the manifest and the worker to its own origin under
-`default-src 'none'`. `connect-src` is `'self' https:` rather than an allowlist: the CSP
-host-source grammar cannot express a bracketed IPv6 literal, and naming the IPv6 probe
-endpoint makes the browser block that probe outright. The enforced allowlist is the URL check
-in `tests/security.mjs`.
+`default-src 'none'`. `connect-src` is `'self' https:`. The CSP host-source grammar cannot
+express a bracketed IPv6 literal, and naming the IPv6 probe endpoint makes the browser block
+that probe outright. The enforced allowlist is the URL check in `tests/security.mjs`.
 
 ## The exported file
 

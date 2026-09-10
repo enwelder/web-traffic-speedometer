@@ -15,7 +15,7 @@ let failed = 0;
 
 // The browser suite runs once per engine. The app is opened in whatever browser someone has,
 // and the parts that differ between engines — streaming reads, connection reuse, storage, the
-// service worker — are exactly what that suite covers.
+// service worker — are what that suite covers.
 const ENGINES = (process.env.WTS_ENGINES || 'chromium,webkit').split(',');
 
 for (const name of suites) {

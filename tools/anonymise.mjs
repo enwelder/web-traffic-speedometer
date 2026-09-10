@@ -32,8 +32,8 @@ export function anonymise(doc) {
 
   const samples = doc.samples.map(s => {
     const out = {...s, t: t(s.t), pos_t: t(s.pos_t)};
-    // Coordinates are dropped rather than fuzzed. Accuracy is kept, since the
-    // accuracy-class rules are tested against it.
+    // Coordinates are dropped. Accuracy is kept, since the accuracy-class rules are tested
+    // against it.
     out.lat = null;
     out.lon = null;
     delete out.heading;
@@ -74,8 +74,7 @@ export function anonymise(doc) {
 }
 
 // The probe endpoints are public infrastructure and appear in the recorded configuration.
-// Removing them before the scan keeps it aimed at subscriber data rather than at the
-// addresses the tool contacts by design.
+// Removing them before the scan keeps it aimed at subscriber data.
 const PUBLIC_ENDPOINTS = [
   '1.1.1.1', '2606:4700:4700::1111', 'stun:stun.cloudflare.com:3478',
   'speed.cloudflare.com', 'www.gstatic.com', 'wts-dns-control.github.io'
@@ -163,8 +162,7 @@ export function assertClean(fixture) {
     for (const e of PUBLIC_ENDPOINTS) t = t.split(e).join('<endpoint>');
     return t;
   };
-  // Values are checked in place, so a failure names the field rather than an offset into the
-  // JSON.
+  // Values are checked in place, so a failure names the field it is in.
   const scan = (v, where, textAllowed = false) => {
     if (v == null) return;
     if (typeof v === 'string') {

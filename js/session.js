@@ -13,15 +13,21 @@ import * as realStore from './store.js';
 const PATHS = [['ip6', 'ipv6_available', 'IPv6'], ['ip4', 'ipv4_available', 'IPv4']];
 const LITERAL_IPS = {ip6: '2606:4700:4700::1111', ip4: '1.1.1.1'};
 
-// Byte estimates for the data-used figure. Safari opens a fresh connection per request, so
-// every repeat contact is charged a resumed TLS handshake and only the first contact with an
-// origin is charged a full one.
+// Byte estimates for the data-used figure, taken at the worst case a browser presents: Safari
+// opens a fresh connection per request, so every sample is charged its own handshake, full for
+// the session's first contact with an origin and resumed after that. A `fresh` probe reaches a
+// host no one has seen, so each of its samples pays the full one.
 const FIRST_CONTACT_BYTES = 5000;
 const RESUMED_BYTES = 1500;
 const WARM_BYTES = {trace: 420, opaque: 220, download: 400, stun: 400};
 const REFUSED_BYTES = 100;      // an IPv4 literal with no path never gets a connection up
 // STUN is UDP: no handshake to charge and no connection to resume.
-const cost = p => (WARM_BYTES[p.kind] * (p.samples || 1)) + (p.kind === 'stun' ? 0 : RESUMED_BYTES);
+const handshakes = (probe, attempts, first) =>
+  probe.kind === 'stun' ? 0
+  : probe.fresh ? FIRST_CONTACT_BYTES * attempts
+  : (first ? FIRST_CONTACT_BYTES : RESUMED_BYTES) + RESUMED_BYTES * (attempts - 1);
+// The projection is steady state: by the second round every origin has been contacted.
+const cost = p => (WARM_BYTES[p.kind] * (p.samples || 1)) + handshakes(p, p.samples || 1, false);
 
 export const APP_VERSION = '3.12.0';
 
@@ -32,7 +38,7 @@ export const PROFILES = {
 };
 
 // What a round streams, and therefore what it can report. Copied into every export so a file
-// states its own saturation point rather than leaving a reader to infer one.
+// states its own saturation point.
 export const DOWNLOAD_DEFAULTS = {
   streams: DOWN_STREAMS,
   windowMs: DOWN_WINDOW_MS,
@@ -43,7 +49,7 @@ export const DOWNLOAD_DEFAULTS = {
 
 // A round streams the ramp and then the window, and the window stops at the cap. So the most
 // a round can cost is knowable in advance, and a link slower than the ceiling costs less in
-// proportion. This is the worst case, which a link at or above the ceiling actually pays.
+// proportion. A link at or above the ceiling pays this worst case in full.
 export function projectedBytes(intervalMs, settings = DOWNLOAD_DEFAULTS, minutes = 40) {
   const rounds = Math.round((minutes * 60000) / intervalMs);
   const small = PROBES.reduce((n, p) => n + cost(p), 0);
@@ -77,11 +83,9 @@ function probeBytes(probe, r, contacted) {
   if (r.expected && !r.ok) return REFUSED_BYTES;
   if (r.fail === 'resting') return 0;
   const attempts = r.ms_samples ? r.ms_samples.length : 1;
-  let n = WARM_BYTES[probe.kind] * attempts + (probe.kind === 'download' ? r.bytes || 0 : 0);
-  if (probe.kind !== 'stun') {
-    n += contacted.has(probe.id) ? RESUMED_BYTES : FIRST_CONTACT_BYTES;
-    contacted.add(probe.id);
-  }
+  const n = WARM_BYTES[probe.kind] * attempts + (probe.kind === 'download' ? r.bytes || 0 : 0)
+          + handshakes(probe, attempts, !contacted.has(probe.id));
+  contacted.add(probe.id);
   return n;
 }
 
@@ -91,7 +95,7 @@ function roundBytes(row, contacted) {
 }
 
 // Bytes already charged by the rows on disk, so a resumed session continues its running
-// total rather than restarting at zero.
+// total.
 export function spentSoFar(samples) {
   const contacted = new Set();
   let bytes = 0, downloadBytes = 0;
@@ -243,8 +247,8 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
     }
   }
 
-  // A radio still waking at session start can refuse the preflight, so one success overturns
-  // the result rather than leaving the probe exempt for the whole journey.
+  // A radio still waking at session start can refuse the preflight, so one later success
+  // overturns the result.
   function settle(key, label, why) {
     if (session[key] === true) return;
     session[key] = true;
@@ -367,10 +371,9 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
               lat: p.lat, lon: p.lon, text: `${(late / 1000).toFixed(1)}s bridged`});
     }
 
-    // Scheduled from when this round fired rather than from a fixed grid: on a grid,
-    // lateness pulls the next slot closer, so a 13.7 s delay on a 10 s interval fires the
-    // next tick 11 ms later, into the round still running. Even spacing matters here, grid
-    // phase does not.
+    // Scheduled from when this round fired. On a fixed grid, lateness pulls the next slot
+    // closer, so a 13.7 s delay on a 10 s interval fires the next tick 11 ms later, into the
+    // round still running. Even spacing is what this needs; grid phase is not.
     due = now + interval();
     timer = setTimeout(tick, Math.max(0, due - mono()));
 

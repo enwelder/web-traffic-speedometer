@@ -99,7 +99,7 @@ s.test('a rate no train reaches is discarded, and the coordinates are kept', () 
   geo.send(52.0143, 4.4777, t0 + 20000);
   const row = tracker.read();
   assert.ok(metresBetween({lat: 51.9244, lon: 4.4777}, {lat: 52.0143, lon: 4.4777}) / 20
-            > MAX_PLAUSIBLE_MS, 'the pair really is implausible');
+            > MAX_PLAUSIBLE_MS, 'the pair is implausible');
   assert.equal(row.speed_derived, null, 'so no speed is reported');
   assert.equal(row.lat, 52.0143, 'while the coordinates stay for the analysis');
 });

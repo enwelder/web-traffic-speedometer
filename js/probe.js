@@ -1,34 +1,30 @@
-// Seven probes run in parallel every round, each isolating a different layer. The README
-// argues each one; this file implements them.
-// The download follows RMBT, the method RTR-NetTest uses, at a fraction of its size. One TCP
-// flow carries its receive window divided by its round trip and no more, which is why a single
-// request read 41 Mb/s on a cell a multi-stream test read 320 Mb/s on. Several connections
-// carry several windows.
+// Seven probes run in parallel every round, each isolating a different layer.
+// The download follows RMBT, the method RTR-NetTest uses, at a fraction of its size: one TCP
+// flow carries its receive window divided by its round trip and no more, and several
+// connections carry several windows.
 export const DOWN_STREAMS = 3;
 
-// Discarded. RMBT spends two seconds here and says what for: to get the radio into an active
-// state, so a result does not depend on what the connection was doing beforehand.
+// Discarded. RMBT spends two seconds here to get the radio into an active state, so a result
+// does not depend on what the connection was doing beforehand.
 export const DOWN_RAMP_MS = 300;
 export const DOWN_RAMP_BYTES = 1000000;
 
 // The measurement. A fixed window makes rounds comparable with each other, and a byte cap
-// makes what a round costs knowable in advance — at the price of a ceiling, below.
+// makes what a round costs knowable in advance. The cap sets the ceiling below.
 export const DOWN_WINDOW_MS = 1500;
 export const DOWN_CAP_BYTES = 4700000;
 
 // The fastest this can report. Reaching the cap before the window closes proves the link
 // carries at least this much and says nothing about how much more, so the reading saturates
-// here and is flagged. Stated rather than discovered: 25 Mb/s is two and a half times the
-// edge video is graded on, so a healthy link is always provably green.
+// here and is flagged. 25 Mb/s is two and a half times the edge video is graded on, so a
+// healthy link is always provably green.
 export const DOWN_CEILING_BPS = Math.round((DOWN_CAP_BYTES * 8) / (DOWN_WINDOW_MS / 1000));
 
-// Per stream, and only ever partly read: three of these comfortably outlast a window that
-// stops at the cap. Asking for the endpoint's maximum instead — 99,999,999 — and abandoning it
-// every round got the requests refused without CORS headers, which is a fair reading of what
-// that looks like from the other side.
+// Per stream, and only ever partly read: three of these outlast a window that stops at the
+// cap. Asking for the endpoint's maximum, 99,999,999, and abandoning it every round gets the
+// requests refused without CORS headers.
 export const DOWN_REQUEST_BYTES = 8000000;
-// Added to a duration taken from the wall clock, which brackets more than the body. Resource
-// timing reports the body's own span, and is charged nothing.
+// Added to a deadline taken from the wall clock, which brackets more than the body.
 export const DOWN_SLACK_MS = 50;
 export const TIMEOUT_MS = 8000;
 export const STUN_TIMEOUT_MS = 3000;      // UDP answers within a round trip or not at all
@@ -40,13 +36,12 @@ export const STUN_SERVER = 'stun:stun.cloudflare.com:3478';
 export const PREFLIGHT_MS = 2000;
 export const PREFLIGHT_RETRY_MS = 1500;
 
-// `label` names the test performed, not what it is used for: a probe measures one thing and
-// the activities in grade.js decide what that means. It travels in the recording so a reader
-// does not have to infer the test from a URL.
-// One round trip is not a measurement: a cold connection, a retransmission or a scheduling
-// delay moves it by an order of magnitude. RMBT takes between 10 and 200 samples and reports
-// the median; ten puts this in the same range, and a latency sample is about 1.2 kB against
-// the megabytes the download already spends.
+// `label` names the test performed. A probe measures one thing; the activities in grade.js
+// decide what it means. It travels in the recording, so the test is readable without the URL.
+// A cold connection, a retransmission or a scheduling delay moves one round trip by an order
+// of magnitude. RMBT takes between 10 and 200 samples and reports the median; ten puts this in
+// the same range, and a latency sample is about 1.2 kB against the megabytes the download
+// already spends.
 const LATENCY_SAMPLES = 10;
 
 // Each of these opens a connection to a host never used before, so a sample costs a full
@@ -59,9 +54,9 @@ export const PROBES = [
   // samples that fit in the budget and every sample is kept.
   {id: 'ip6',     label: 'GET to an IPv6 literal, no lookup',   kind: 'trace',  url: 'https://[2606:4700:4700::1111]/cdn-cgi/trace', samples: LATENCY_SAMPLES},
   {id: 'ip4',     label: 'GET to an IPv4 literal, no lookup',   kind: 'trace',  url: 'https://1.1.1.1/cdn-cgi/trace', samples: LATENCY_SAMPLES},
-  // A different name every sample, so no repeat is answered from a cache and every one of
-  // them is what it claims to be: a host never contacted before.
-  {id: 'dns',     label: 'HEAD to a name no resolver has seen', kind: 'opaque', url: 'https://%RANDOM%.github.io/',      method: 'HEAD', samples: FIRST_CONTACT_SAMPLES},
+  // A different name every sample, so no repeat is answered from a cache and every sample
+  // reaches a host never contacted before.
+  {id: 'dns',     label: 'HEAD to a name no resolver has seen', kind: 'opaque', url: 'https://%RANDOM%.github.io/',      method: 'HEAD', samples: FIRST_CONTACT_SAMPLES, fresh: true},
   // Sampled like the other latency probes, so their medians cover the same thing.
   {id: 'dns_ctl', label: 'HEAD to that host under a cached name', kind: 'opaque', url: 'https://wts-dns-control.github.io/', method: 'HEAD', samples: LATENCY_SAMPLES},
   {id: 'web',     label: 'HEAD to a host the phone knows',       kind: 'opaque', url: 'https://www.gstatic.com/generate_204', samples: LATENCY_SAMPLES},
@@ -119,7 +114,7 @@ function parseServerTiming(header) {
 
 // On a reused connection the spec sets connectStart, connectEnd and secureConnectionStart
 // all equal to fetchStart, so a handshake is indicated by a connect window with a TLS phase
-// inside it rather than by a non-zero secureConnectionStart. These fields are zeroed
+// inside it. These fields are zeroed
 // cross-origin unless the server sends timing-allow-origin; of the seven endpoints only the
 // download one does.
 async function readTiming(url) {
@@ -148,14 +143,14 @@ async function readTiming(url) {
 }
 
 function probeUrl(probe) {
-  const base = probe.id === 'dns' ? probe.url.replace('%RANDOM%', rand())
+  const base = probe.fresh ? probe.url.replace('%RANDOM%', rand())
              : probe.bytes ? `${probe.url}?bytes=${probe.bytes}`
              : probe.url;
   return base + (base.includes('?') ? '&' : '?') + '_=' + Date.now() + rand().slice(0, 4);
 }
 
 // A resolver that gets no answer retries on a fixed timer, so a lookup time within
-// tolerance of one of those timers indicates packet loss rather than a slow lookup.
+// tolerance of one of those timers indicates packet loss.
 const RETRY_TIMERS_MS = [2000, 5000];
 const RETRY_TOLERANCE_MS = 300;
 export function looksLikeRetry(ms) {
@@ -239,12 +234,12 @@ function finishTrace(r, trace, url) {
   return r;
 }
 
-// Returned instead of a chunk when the budget ran out first.
+// Marks a read whose budget ran out before a chunk arrived.
 const EXPIRED = Symbol('expired');
 
-// One chunk, or EXPIRED. The budget bounds each read and not just the loop: checking only
-// between chunks leaves a stalled stream running to the fetch timeout, which records a
-// congested cell as a failure instead of as a slow measurement.
+// One chunk, or EXPIRED. The budget bounds every individual read: checking only between
+// chunks leaves a stalled stream running to the fetch timeout, which files a congested cell as
+// a failure.
 async function readWithin(reader, ms) {
   let timer;
   const budget = new Promise(resolve => { timer = setTimeout(() => resolve(EXPIRED), ms); });
@@ -265,12 +260,9 @@ function cancelQuietly(reader) {
 // Reads the body to its end, or until the budget runs out, and reports how much arrived and
 // why it stopped: eof | time | aborted | network. The response carries exactly the bytes that
 // were asked for, so a healthy link reaches eof and nothing is aborted.
-// When each chunk landed, so the ramp can be cut once the whole transfer is known. Keeping
-// arrival times costs one entry per chunk and settles the question after the fact rather than
-// guessing at it in advance.
-// Counts every stream's bytes against one clock, so the streams are one measurement rather
-// than three. The ramp is discarded; the window that follows is the measurement, and it ends
-// on whichever comes first, the clock or the cap.
+// Counts every stream's bytes against one clock, so the three streams are one measurement.
+// The ramp is discarded; the window that follows is the measurement, and it ends on whichever
+// comes first, the clock or the cap.
 function downloadMeter({rampMs, rampBytes, windowMs, capBytes}) {
   const t0 = performance.now();
   let total = 0, markT = null, markBytes = 0, stopped = null;
@@ -279,7 +271,7 @@ function downloadMeter({rampMs, rampBytes, windowMs, capBytes}) {
     take(n) {
       const now = performance.now();
       // Judged on what arrived before this chunk, so the chunk that ends the ramp is the
-      // window's first rather than falling between the two.
+      // window's first.
       if (markT == null) {
         if (now - t0 < rampMs && total < rampBytes) { total += n; return null; }
         markT = now;
@@ -321,14 +313,6 @@ async function pumpStream(res, meter, deadline) {
   }
 }
 
-// What the transfer proves the link carries, and never more. Every uncertainty is charged
-// against the figure, so slow start, the browser handing the body over in lumps and clock
-// jitter can only make it smaller — which is why none of them has to be corrected for.
-//
-// `bodyMs` is the body's own span from resource timing and is used as measured. Without it
-
-// The download probe's fields. `elapsed` is the caller's clock, so `ms` covers the whole
-// request rather than the read alone.
 const median = xs => {
   const v = [...xs].sort((a, b) => a - b);
   return v.length % 2 ? v[(v.length - 1) / 2] : Math.round((v[v.length / 2 - 1] + v[v.length / 2]) / 2);
@@ -365,8 +349,8 @@ const downUrl = (probe, i, cfg) =>
 function downloadResult(meter) {
   const m = meter.read();
   // A body handed over in one piece leaves no window to measure across — WebKit does this
-  // whenever the whole response is already buffered. The transfer still happened, so it is
-  // measured over its own span instead, and anything past the ceiling saturates as usual.
+  // whenever the whole response is already buffered. The transfer is then measured over its
+  // own span, and anything past the ceiling saturates as usual.
   const span = m.window_ms > 0 ? m.window_ms : m.ramp_ms + m.window_ms;
   const bytes = m.window_ms > 0 ? m.window_bytes : m.bytes;
   const rate = span > 0 && bytes > 0 ? Math.round((bytes * 8) / (span / 1000)) : null;
@@ -375,13 +359,13 @@ function downloadResult(meter) {
           bps: saturated ? DOWN_CEILING_BPS : rate};
 }
 
-// The worst thing that happened to any stream, since one stream stalling is the round's story
-// even when the others finished.
+// The worst thing that happened to any stream. One stream stalling decides the round.
 function downReason(reasons) {
   for (const r of ['network', 'aborted', 'time', 'eof']) if (reasons.includes(r)) return r;
   return 'done';
 }
 
+// `elapsed` is the caller's clock, so `ms` covers the whole request, handshake included.
 async function readDownload(streams, meter, {url, elapsed, deadline}) {
   const first = streams[0];
   const server = parseServerTiming(first.headers.get('server-timing'));
@@ -414,7 +398,7 @@ async function readDownload(streams, meter, {url, elapsed, deadline}) {
 
 // Several connections, one clock. A single flow carries its receive window divided by its
 // round trip, which on a mobile link is a fraction of what the link can do; RMBT opens three
-// for that reason and this follows it.
+// for that reason, and so does this.
 async function measureDownload(probe, opts) {
   const cfg = downloadConfig(opts.download);
   const ctl = new AbortController();
@@ -489,8 +473,6 @@ export async function runProbe(probe, opts = {}) {
   return last;
 }
 
-// Run once per session: on an IPv6-only network the ip4 probe would otherwise report the
-// same failure every round.
 // Both address families are established once per session. A network carrying only one of them
 // is ordinary — mobile carriers are commonly IPv6-only with NAT64, and plenty of networks
 // elsewhere have no IPv6 at all — so the absent family must not read as an outage.
@@ -498,14 +480,14 @@ export async function checkPaths(signal) {
   const attempt = () => Promise.all(['ip6', 'ip4'].map(id =>
     runProbe(PROBES.find(p => p.id === id), {timeoutMs: PREFLIGHT_MS, signal})));
   let [v6, v4] = await attempt();
-  // Both failing at once usually means the radio is still waking rather than that the network
-  // carries neither family, and the answer is kept for the whole session. Ask again.
+  // Both failing at once usually means the radio is still waking. The answer is kept for the
+  // whole session, so ask again.
   if (!v6.ok && !v4.ok) {
     await new Promise(r => setTimeout(r, PREFLIGHT_RETRY_MS));
     [v6, v4] = await attempt();
   }
-  // Still nothing: unknown, not absent. Marking a path absent excuses its failures all
-  // session, and a network that answers neither literal has told us nothing about either.
+  // Still nothing leaves both paths unknown. Marking a path absent excuses its failures all
+  // session, and a network that answers neither literal has said nothing about either.
   const settled = v6.ok || v4.ok;
   const one = r => ({available: settled ? r.ok : null, ms: r.ms, fail: r.fail});
   return {ip6: one(v6), ip4: one(v4)};
@@ -589,7 +571,7 @@ function carriedFamilies(out) {
     if (!r) continue;
     if (id === 'ip6' || id === 'ip4') {
       // A literal names its own family: the address is in the URL. Reading it from the egress
-      // instead would credit whichever family the far end happened to report.
+      // would credit whichever family the far end reported.
       if (r.ok || r.fail === 'http' || r.fail === 'parse') carried.add(id);
     } else if (r.egress_ip) {
       // Everything else reaches a hostname, so the family is only knowable from the address
@@ -605,10 +587,10 @@ function carriedFamilies(out) {
 // The test is what the person using this would notice: while any address family is carrying
 // their traffic, a literal failing costs them nothing, whatever the reason for it.
 //
-// Decided from this round alone. Inferring that a family is absent from its silence needed a
-// session-long verdict, and that verdict was wrong on a network with no route to the IPv6
-// literal, wrong again across a handover between networks, and wrong when both literals were
-// blocked at once. Nothing here remembers anything.
+// Decided from this round alone. A session-long verdict inferring absence from silence is
+// wrong on a network with no route to the IPv6 literal, wrong across a handover between
+// networks, and wrong when both literals are blocked at once. Nothing here remembers
+// anything.
 function markLiterals(out) {
   const carried = carriedFamilies(out);
   for (const id of ['ip6', 'ip4']) {
@@ -617,14 +599,13 @@ function markLiterals(out) {
     // This family reached the far end, so the address alone is refused — a public resolver is
     // a common thing to intercept.
     if (carried.has(id)) r.blocked = true;
-    // The other one carried the traffic instead. Recorded with its reason, and charged to
-    // nothing, because nobody waited on it.
+    // The other family carried the traffic. Recorded with its reason and charged to nothing,
+    // because nobody waited on it.
     else if (carried.size) r.unused = true;
   }
 }
 
-// A resting probe still produces a row, so the round is complete and carries the reason
-// instead of another timeout.
+// A resting probe still produces a row, so the round is complete and carries the reason.
 const runOrRest = (p, opts, resting) => (resting?.has(p.id)
   ? Promise.resolve({ok: false, ms: null, status: null, fail: 'resting', stuck: true})
   : runProbe(p, opts));
@@ -656,13 +637,12 @@ export async function runRound({signal, download = {}, intervalMs = 5000,
   return {probes: out, loaded_rtt_ms: loaded[0] ?? null, loaded_rtt_from: loaded[1] ?? null};
 }
 
-// One round trip taken while the download is running. It grades nothing yet; it is recorded
-// because the gap between it and the idle figure is the answer to "why does this feel slow
-// when the speed looks fine".
+// One round trip taken while the download is running. It grades nothing; the gap between it
+// and the idle figure is what this link queues under load.
 // Repeats whichever probe just answered on its own, so the pair is the same measurement taken
 // twice: once with the link idle and once with the download on it. Started alongside the
-// download rather than after its ramp — a link fast enough to reach the cap is done inside
-// 150 ms, and a sample waiting for the ramp would find nothing running.
+// download, since a link fast enough to reach the cap is done inside 150 ms and a sample
+// waiting for the ramp would find nothing running.
 async function sampleUnderLoad(into, idle, opts, cfg) {
   const id = ['ip6', 'ip4', 'web'].find(x => idle[x]?.ok);
   if (!id) return;

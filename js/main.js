@@ -98,7 +98,7 @@ function syncSetup() {
   const mb = projectedBytes(intervalMs, DOWNLOAD_DEFAULTS) / 1048576;
   const el = $('budget');
   // A round streams a ramp and then a window, and the window stops at a byte cap, so this is
-  // the worst case rather than a guess. A link slower than the ceiling costs less in proportion.
+  // the exact worst case. A link slower than the ceiling costs less in proportion.
   el.textContent = `up to ≈ ${Math.round(mb)} MB for a 40-minute run, almost all of it the ` +
     `speed probe, and less on a link slower than ` +
     `${Math.round(DOWNLOAD_DEFAULTS.ceilingBps / 1e6)} Mb/s — which is the fastest this can ` +

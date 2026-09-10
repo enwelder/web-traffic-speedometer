@@ -6,21 +6,21 @@ lines to derive from it.
 
 | version | what changed |
 |---|---|
-| 3 | grades keyed by activity; the download reports a bound rather than a rate |
+| 3 | grades keyed by activity; the download reports a bound |
 | 4 | every round carries its per-probe grades beside its activity grades |
 | 5 | either address family can be flagged `expected`; the session records both |
-| 6 | throughput is graded on the largest of `bps`, `bps_server` and `bps_min`, rather than on the whole-transfer floor alone |
+| 6 | throughput is graded on the largest of `bps`, `bps_server` and `bps_min` |
 | 7 | throughput is streamed on several connections for a fixed window and saturates at a stated ceiling; `bps_min`, `bps_server` and `warmup_only` are gone |
 | 8 | a failing address-family literal is judged on its own round: `unused` replaces `expected` on `ip6`/`ip4`, which no longer carry a session-long verdict |
-| 9 | an activity whose term could not be measured is unrated rather than graded on the rest; the fresh-name probe is graded on `ttfb` and the `dns_delta` scale is gone |
+| 9 | an activity whose term could not be measured is unrated; the fresh-name probe is graded on `ttfb`, and the `dns_delta` scale is gone |
 
-Version 5 matters to a reader counting failures: before it, `expected` appeared only on `ip4`,
-so an `ip6` failure was always a real one. On a network carrying no IPv6 it now marks a path
-that was never there.
+Version 5 changes failure counts. Files below it carry `expected` only on `ip4`, so every
+`ip6` failure in them is a real one. From 5, `expected` on `ip6` marks a path that was never
+there.
 
 ## Per session, under `session`
 
-Everything the run was told or settled once, rather than measured per round.
+Everything the run was told or settled once.
 
 | Field | Meaning |
 |---|---|
@@ -36,17 +36,16 @@ Everything the run was told or settled once, rather than measured per round.
 
 `summary` holds per-probe p50, p90, max, ok and failure counts, the download's rate-bound
 percentiles and total bytes, and counts of skipped, paused and degraded rounds. It defines no
-outage, and every figure is recomputable from the samples. It exists so a reader does not
-rebuild the same six aggregates every time.
+outage, and every figure is recomputable from the samples.
 
 The scales, the activities composed from them, and which scale reads each probe
-(`summary.probe_scales`) are copied in beside it, because a file read a year later has to say
-which version graded its rows. `summary.grades` and `summary.grades_by_probe` tally the grades
-the run actually produced.
+(`summary.probe_scales`) are copied in beside it, so a file read a year later states which
+version graded its rows. `summary.grades` and `summary.grades_by_probe` tally the grades the
+run produced.
 
 ## Every attempt is recorded
 
-A round that fails is the measurement. Nothing is dropped, skipped or summarised away, and no
+A failed round is written in full. Nothing is dropped, skipped or summarised away, and no
 failure is represented only by an absence.
 
 `fail` gives the reason:
@@ -55,7 +54,7 @@ failure is represented only by an absence.
 |---|---|
 | `timeout` `network` | the transport |
 | `http` | a status the server chose |
-| `parse` | a body that was not the endpoint's |
+| `parse` | a body that failed validation |
 | `abort` | the session ended mid-probe |
 | `stalled` | headers arrived, body never did |
 | `empty` | a 200 with nothing in it |
@@ -63,7 +62,7 @@ failure is represented only by an absence.
 | `resting` | the recorder stood the probe down; flagged `expected` |
 | `unsupported` | the browser has no such API; flagged `expected` |
 
-`resting` and `unsupported` are not network failures and stay out of every tally.
+`resting` and `unsupported` stay out of every tally.
 
 `ms` is recorded on failure too: how long a probe took to fail separates a refused connection
 from a link that hung until the deadline.
@@ -72,7 +71,7 @@ A round that could not start because the previous one was still in flight is wri
 `skipped: "overlap"`.
 
 If an IndexedDB write fails, rows stay in memory and are retried, with the pending count on
-screen. Silent data loss is the one failure this tool cannot have.
+screen.
 
 ## Per round
 
@@ -86,8 +85,8 @@ screen. Silent data loss is the one failure this tool cannot have.
 | `round_error` | exception message if the round itself threw |
 | `visible` | whether the tab was foregrounded |
 | `lat` `lon` `accuracy` `speed` `heading` | GPS fix; `speed` in m/s, often absent |
-| `accuracy_class` | `gps` under 100 m, `coarse` above. A coarse fix is a tower estimate: usable as a rough location, not for speed or distance |
-| `pos_t` | timestamp **of the fix**, not of the round. A stale fix on a moving train is off by a kilometre |
+| `accuracy_class` | `gps` under 100 m, `coarse` above. A coarse fix is a tower estimate: usable as a rough location, unusable for speed or distance |
+| `pos_t` | timestamp **of the fix**, which can precede the round. A stale fix on a moving train is off by a kilometre |
 | `pos_error` | `denied`, `timeout` or `unavailable` when there is no position |
 | `intervalMs` | interval in force for this round |
 | `in_pause` | this round followed a bridged gap, so it can be filtered without matching timestamps |
@@ -95,9 +94,9 @@ screen. Silent data loss is the one failure this tool cannot have.
 | `prev_round_ms` | how long the previous round took. A frozen tab suspends the abort timers, so a round can outlast every deadline in it; without this an overlap cannot be told from the app stalling |
 | `speed_derived` `speed_source` | speed computed from consecutive fixes, and whether the reported value is `gps` or `derived` |
 | `loaded_rtt_ms` `loaded_rtt_from` | a round trip taken while the download was running, and which probe took it — the same one that answered idle, so the pair is one measurement made twice. The gap between them is what this link queues under load |
-| `grades` | the three activity grades this round produced, as shown. `null` means unrated: some term it needs had no measurement, and a grade may not rest on one that was never taken |
+| `grades` | the three activity grades this round produced, as shown. `null` means unrated: a term the activity needs had no measurement |
 | `pgrades` | the seven per-probe grades |
-| `first_packet_ms` | quickest first response in the round: the closest thing to the cost of waking the radio. Reported, never graded |
+| `first_packet_ms` | quickest first response in the round, approximating the cost of waking the radio. Reported, never graded |
 
 ## Per probe, under `probes.<id>`
 
@@ -110,11 +109,11 @@ screen. Silent data loss is the one failure this tool cannot have.
 | `expected` | `udp` | the browser has no such API. Excluded from tallies |
 | `stuck` | any | the probe was failing alone and has been rested |
 | `egress_ip` `colo` | `ip6` `ip4` `down` | the operator's public address and the Cloudflare PoP |
-| `ms_samples` `samples_ok` `ms_min` `ms_max` | `ip6` `dns_ctl` `web` `udp` | every latency sample, how many succeeded, and the spread; `ms` is their median. A median of [893, 4275, 52] hides the round's story |
-| `parse_reason` | `ip6` `ip4` | why a trace body was rejected as not Cloudflare's |
+| `ms_samples` `samples_ok` `ms_min` `ms_max` | `ip6` `ip4` `dns` `dns_ctl` `web` `udp` | every latency sample, how many succeeded, and the spread; `ms` is their median. A median of [893, 4275, 52] hides the spread |
+| `parse_reason` | `ip6` `ip4` | which check the trace body failed |
 | `public_ips` `candidates` | `udp` | the NAT mapping per address family, and how many ICE candidates were gathered |
 | `host` | `dns` `dns_ctl` | the hostname used: random each round for `dns`, constant for `dns_ctl` |
-| `retry_suspected` | `dns` | the answer arrived within 300 ms of a resolver retry timer (2 s or 5 s), so the first query was lost. Loss, not slowness, and red regardless of the number |
+| `retry_suspected` | `dns` | the answer arrived within 300 ms of a resolver retry timer (2 s or 5 s), so the first query was lost. Red regardless of the number |
 | `bytes` `duration_ms` `ttfb_ms` | `down` | bytes counted, how long the read ran, time to first byte |
 | `bps` | `down` | the rate over the window, across every stream. The figure that is graded |
 | `saturated` | `down` | the window hit its byte cap first, so `bps` is the ceiling and the link carries at least that. The screen prints a `≥` |
@@ -122,23 +121,20 @@ screen. Silent data loss is the one failure this tool cannot have.
 | `streams` | `down` | how many connections carried it |
 | `window_bytes` `window_ms` | `down` | what `bps` was computed over |
 | `ramp_ms` | `down` | how long was streamed before the window opened, and discarded |
-| `warmup_only` | `down` | the link was too slow for a second request; the warm-up is the measurement |
 | `refused_by` | `down` | on a `network` failure: `server` or `connection` |
 | `aborted_reason` | `down` | how the read ended: `eof`, `time`, `aborted` or `network` |
-| `truncated` | `down` | the 8 s deadline cut the body short. Unlike the budget, this is a failure |
+| `truncated` | `down` | the 8 s deadline cut the body short; the round is a failure |
 | `handshake` `reused` `protocol` `lookup_ms` `connect_ms` `tls_ms` | `down` | connection setup, phase by phase |
 | `server` | `down` | Cloudflare's `cfL4` view: `rtt_us`, `min_rtt_us`, `rtt_var_us`, `lost`, `retrans`, `delivery_rate`, `cwnd` |
 
 Connection setup and `server` are readable only because `speed.cloudflare.com` sends
 `timing-allow-origin`; the other five endpoints report zeroed timing cross-origin.
-`handshake` is not simply a non-zero `secureConnectionStart` — on a reused connection the
-specification sets that field to `fetchStart` — so it is counted only when a TLS phase falls
-inside a real connect window.
+`handshake` is counted only when a TLS phase falls inside a real connect window: on a reused
+connection the specification sets `secureConnectionStart` to `fetchStart`.
 
 **`server` can be all zeros.** Those fields need a connection that has accumulated round-trip
-samples. With a page-sized download every round they are populated; with a small or
-infrequent one the header can arrive before any samples exist. Read an all-zero `cfL4` block
-as *no data*, never as a measurement of zero.
+samples. With a page-sized download every round they are populated; with a small or infrequent
+one the header can arrive before any samples exist. An all-zero `cfL4` block means *no data*.
 
 `environment.user_agent` is stored raw and should be treated as untrusted: some browsers
 freeze or fake it, so an OS version parsed out of it may be fiction.
@@ -149,6 +145,6 @@ Only what cannot be derived from the samples.
 
 | event | meaning |
 |---|---|
-| `mark` | pressed when a failure is noticed, not when the probes see it. The premise of the exercise is that those two disagree |
+| `mark` | pressed when a person notices a failure. The probes may see it at another time, or not at all |
 | `pause` | JavaScript frozen, with the bridged duration |
 | `note` | free text, plus the recorder's own notices: a wake lock lost or regained, position quality changing, a probe rested, an egress address changing under an unchanged operator label |

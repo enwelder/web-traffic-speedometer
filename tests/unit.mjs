@@ -107,7 +107,7 @@ s.test('a literal is judged on the round it ran in, and nothing else', async () 
   assert.equal(r.ip4.blocked, undefined);
 
   // A network with no route to the IPv6 literal. The same rule, the other way round, and it
-  // applies from the first round rather than after three.
+  // applies from the first round.
   r = await round(u => (v6(u) ? netError() : trace('1.2.3.4')));
   assert.equal(r.ip6.unused, true, 'and none on IPv6');
 
@@ -177,7 +177,7 @@ s.test('a repeated probe reports the median and keeps every sample', async () =>
                    'and the spread is kept, since a median alone hides it');
 });
 
-s.test('repetition stops at the first failure rather than spending the round on it', async () => {
+s.test('repetition stops at the first failure', async () => {
   let calls = 0;
   globalThis.fetch = async () => { calls++; throw netError(); };
   const r = await probe.runProbe(P.ip6, {timeoutMs: 3000});
@@ -201,7 +201,7 @@ s.test('sampling never overruns the probe deadline', async () => {
   assert.equal(r.fail, 'timeout');
 });
 
-s.test('a trace body must describe the request that was actually made', async () => {
+s.test('a trace body must describe the request that was made', async () => {
   const body = extra => `fl=1\nip=2a09:bac5::9\nts=1\ncolo=AMS\nvisit_scheme=https\n${extra}`;
   const check = async (text, expected) => {
     globalThis.fetch = async () => ({ok: true, status: 200, text: async () => text});
@@ -243,7 +243,7 @@ s.test('the UDP probe gathers candidates and can send nothing', async () => {
   delete globalThis.RTCPeerConnection;
 });
 
-s.test('a blocked UDP path fails rather than hanging the round', async () => {
+s.test('a blocked UDP path fails inside the round', async () => {
   globalThis.RTCPeerConnection = class {
     addTransceiver() {}
     async createOffer() { return {}; }
@@ -291,7 +291,7 @@ s.test('the reading never claims more than the link delivered', async () => {
   assert.equal(r.aborted_reason, 'eof', 'the body ends on its own');
   assert.ok(r.bps > 0, `a rate is reported: ${r.bps}`);
   // The window is the fast stretch, so it may sit above the average of the whole transfer,
-  // but never above what the link actually delivered inside that window.
+  // but never above what the link delivered inside that window.
   const inWindow = (r.window_bytes * 8) / (r.window_ms / 1000);
   assert.ok(r.bps <= inWindow * 1.01,
             `${(r.bps / 1e6).toFixed(1)} must not exceed ${(inWindow / 1e6).toFixed(1)} Mb/s`);
@@ -331,7 +331,7 @@ s.test('every link in range is measured, and none of them flattered', async () =
 });
 
 
-s.test('a resolver retry timer is flagged as loss rather than latency', () => {
+s.test('a resolver retry timer is flagged as loss', () => {
   assert.equal(probe.looksLikeRetry(2207), true, 'the cluster seen in a journey');
   assert.equal(probe.looksLikeRetry(2000), true);
   assert.equal(probe.looksLikeRetry(5100), true, 'the other common timer');
@@ -341,9 +341,9 @@ s.test('a resolver retry timer is flagged as loss rather than latency', () => {
 });
 
 s.test('every probe that reports a latency is sampled', () => {
-  // One round trip is not a measurement, and an unsampled probe beside sampled ones is worse
-  // than either: the IPv4 literal ran once while IPv6 ran three times, so on a network where
-  // IPv4 was the route, the same row carried a single noisy sample instead of a median.
+  // One round trip is not a measurement, and one unsampled probe beside sampled ones is worse
+  // than either: whichever row it is, it carries a single noisy sample where its neighbours
+  // carry medians, and the route can be exactly that row.
   for (const p of probe.PROBES) {
     if (p.kind === 'download') continue;
     assert.ok(p.samples > 1, `${p.id} takes more than one sample`);
@@ -382,7 +382,7 @@ s.test('a truncated download still reports what it pulled', async () => {
   globalThis.fetch = async () => ({ok: true, status: 200, headers: {get: () => null},
     body: {getReader: () => ({read: async () => { throw new Error('cut'); }, cancel: async () => {}})}});
   const r = await probe.runProbe(P.down, {timeoutMs: 50});
-  assert.equal(r.truncated, true, 'truncation is recorded rather than discarded');
+  assert.equal(r.truncated, true, 'truncation is recorded');
 });
 
 await s.run();
@@ -425,7 +425,7 @@ l.test('a blocked literal does not make its path absent', async () => {
   assert.equal(sess.ipv4_available, true,
                'but a round egressed over IPv4, which settles it whatever the literal did');
   assert.ok(store.written.samples.some(x => x.probes.ip4?.ok === false && !x.probes.ip4.expected),
-            'and its failures stay real rather than being excused');
+            'and its failures stay counted');
 });
 
 l.test('every scheduled round produces a row, healthy or not', async () => {
@@ -496,7 +496,7 @@ l.test('a frozen tab is recorded as a pause, not read as an outage', async () =>
   assert.ok(parseFloat(pauses[0].text) >= 0.4, `with the bridged duration: ${pauses[0].text}`);
 });
 
-l.test('a failing store holds rows in memory and retries rather than dropping them', async () => {
+l.test('a failing store holds rows in memory and retries', async () => {
   globalThis.fetch = async () => ({ok: true, status: 200, type: 'opaque', headers: {get: () => null},
                                    body: bodyOf(25000), text: async () => TRACE});
   const store = fakeStore();
@@ -511,8 +511,8 @@ l.test('a failing store holds rows in memory and retries rather than dropping th
   assert.ok(notices.some(n => n.includes('Storage write failed')), 'the failure reaches the screen');
   assert.ok(store.written.samples.length > held, 'and the held rows land on retry');
 
-  // Checked by sequence number rather than by count: dropping the rejected batch and
-  // carrying on also grows the total.
+  // Checked by sequence number: dropping the rejected batch and carrying on also grows the
+  // total.
   const seqs = store.written.samples.map(x => x.seq).sort((a, b) => a - b);
   assert.equal(new Set(seqs).size, seqs.length, 'no round is written twice');
   assert.deepEqual(seqs, produced.map(x => x.seq).sort((a, b) => a - b),
@@ -573,7 +573,7 @@ l.test('a resumed session keeps counting from what it has already spent', async 
   await rec.start(session(), {resumeSeq: 12, monoBase: 1000, spent: {bytes: 900, downloadBytes: 7e6}});
   const st = rec.status();
   await rec.stop();
-  assert.ok(st.bytes >= 900, `the estimate resumes rather than restarting: ${st.bytes}`);
+  assert.ok(st.bytes >= 900, `the estimate resumes from the stored rows: ${st.bytes}`);
   assert.ok(st.downloadMB >= 7, `and so does the figure on screen: ${st.downloadMB} MB`);
 });
 
@@ -658,14 +658,14 @@ r.test('the log speaks only when something moved', () => {
   assert.ok(!moved.some(l => /calling|articles|streaming/.test(l)));
 });
 
-r.test('a skipped round says so instead of comparing', () => {
+r.test('a skipped round says so', () => {
   const skipped = {...round(), skipped: 'overlap', late_ms: 900};
   const lines = ui.changes(skipped, round());
   assert.equal(lines.length, 1);
   assert.match(lines[0], /skipped: overlap \(900 ms late\)/);
 });
 
-r.test('the elapsed clock stops rather than resetting', async () => {
+r.test('the elapsed clock stops when the session does', async () => {
   const store = fakeStore();
   const {rec} = recorder(store);
   const sess = session();
@@ -675,7 +675,7 @@ r.test('the elapsed clock stops rather than resetting', async () => {
   await rec.stop();
   assert.ok(running >= 0, 'a running session reports its elapsed time');
   assert.equal(rec.status().elapsed, running,
-               'and a finished one still reports it rather than zero');
+               'and a finished one still reports its span');
 });
 
 await r.run();

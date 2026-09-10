@@ -63,8 +63,8 @@ export function articleMs(probes) {
 export function activeRoute(probes = {}) {
   // In order of what the round can say about a family: its literal answered, or the family
   // carried traffic while the literal was refused, or the literal genuinely failed. A family
-  // that is merely absent has said nothing and is the last thing worth showing, so a network
-  // with no IPv6 reports the IPv4 that is doing the work rather than the IPv6 that is not.
+  // that is merely absent has said nothing and ranks last, so a network with no IPv6 reports
+  // the IPv4 carrying the traffic.
   const rank = [f => probes[f]?.ok, f => probes[f]?.blocked, f => failed(probes[f]),
                 f => probes[f] && !probes[f].expected];
   for (const better of rank) {
@@ -111,8 +111,8 @@ const TERMS = {
 
 function terms(activity, p) {
   const rate = throughput(p.down);
-  // A download the far end refused is a fact about the endpoint, so it leaves the activities
-  // that read it with one fewer term rather than with a red one.
+  // A download the far end refused says nothing about the link, so it leaves the activities
+  // that read it with one fewer term.
   const noThroughput = failed(p.down) && !ourFault(p.down) ? 'red' : null;
   return TERMS[activity]?.({p, rate, noThroughput}) ?? [];
 }

