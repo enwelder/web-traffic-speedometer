@@ -431,6 +431,39 @@ s.test('runProbe MUST set truncated WHEN the body read throws mid-stream', async
   assert.equal(r.truncated, true, 'truncation is recorded');
 });
 
+s.test('runProbe MUST record why sampling ended and the wall time it took WHEN sampling stops on count, failure or budget', async () => {
+  globalThis.fetch = async () => ({ok: true, status: 200, text: async () => TRACE});
+  const all = await probe.runProbe(P.ip6, {timeoutMs: 8000});
+  assert.equal(all.samples_end, 'count');
+
+  globalThis.fetch = async () => { throw netError(); };
+  assert.equal((await probe.runProbe(P.ip6, {timeoutMs: 3000})).samples_end, 'failure');
+
+  globalThis.fetch = async () => { await sleep(300); return {ok: true, status: 200, type: 'opaque'}; };
+  const slow = await probe.runProbe(P.dns, {timeoutMs: 1000});
+  assert.equal(slow.samples_end, 'budget');
+  assert.ok(slow.wall_ms >= slow.ms_samples.reduce((a, b) => a + b, 0),
+            `the wall time holds every sample: ${slow.wall_ms} ms for ${slow.ms_samples}`);
+});
+
+s.test('runRound MUST hold every started probe in pending until it settles WHEN given a pending set', async () => {
+  globalThis.fetch = async () => {
+    await sleep(15);
+    return {ok: true, status: 200, type: 'opaque', headers: {get: () => null}, body: bodyOf(2000),
+            text: async () => TRACE};
+  };
+  const pending = new Set();
+  const seen = new Set();
+  const watch = setInterval(() => pending.forEach(id => seen.add(id)), 2);
+  const round = await probe.runRound({pending, intervalMs: 3000,
+                                      download: {windowMs: 50, rampMs: 0, streams: 1}});
+  clearInterval(watch);
+  assert.ok(['ip6', 'dns', 'web', 'down'].every(id => seen.has(id)), `held: ${[...seen]}`);
+  assert.equal(pending.size, 0, 'and none once the round returns');
+  assert.ok(round.phase_idle_ms > 0 && round.phase_down_ms >= 0,
+            `phases ${round.phase_idle_ms} and ${round.phase_down_ms} ms`);
+});
+
 await s.run();
 
 /* ---------------- the round loop ---------------- */
@@ -489,10 +522,9 @@ l.test('createRecorder MUST fit both round phases inside the interval WHEN a dea
   await rec.start({...session(), intervalMs: 2000, download: {windowMs: 60, rampMs: 0, streams: 1}});
   await sleep(2600);
   await rec.stop();
-  const row = store.written.samples.find(x => !x.skipped && x.probes.down);
+  const row = store.written.samples.find(x => x.probes.down);
   assert.ok(row, 'the round produced a row');
-  assert.ok(row.prev_round_ms == null || row.prev_round_ms < 2600,
-            `the round fits its slot: ${row.prev_round_ms} ms`);
+  assert.ok(row.round_ms < 2600, `the round fits its slot: ${row.round_ms} ms`);
   assert.ok(Date.now() - t0 < 5000, 'and the two phases together stay inside the interval');
 });
 
@@ -608,7 +640,7 @@ l.test('createRecorder MUST write a row with a contiguous seq for every schedule
   assert.deepEqual(seqs, seqs.map((_, i) => i), 'seq is contiguous; a gap would be a lost attempt');
 });
 
-l.test('createRecorder MUST write a row with skipped overlap and late_ms WHEN the previous round is still running', async () => {
+l.test('createRecorder MUST record a skip event and write no row WHEN a slot comes due while a round is running', async () => {
   globalThis.fetch = (url, o) => new Promise((res, rej) => {
     const t = setTimeout(() => res({ok: true, status: 200, type: 'opaque', headers: {get: () => null},
                                     body: bodyOf(25000), text: async () => TRACE}), 260);
@@ -619,9 +651,11 @@ l.test('createRecorder MUST write a row with skipped overlap and late_ms WHEN th
   await rec.start(session());
   await sleep(800);
   await rec.stop();
-  const skipped = store.written.samples.filter(x => x.skipped === 'overlap');
-  assert.ok(skipped.length > 0, 'overlapped rounds appear as rows');
-  assert.ok(skipped.every(x => x.late_ms != null), 'with their lateness recorded');
+  const skips = store.written.events.filter(e => e.type === 'skip');
+  assert.ok(skips.length > 0, 'a slot came due mid-round');
+  const seqs = store.written.samples.map(x => x.seq).sort((a, b) => a - b);
+  assert.deepEqual(seqs, seqs.map((_, i) => i), 'rows are numbered by the rounds that ran');
+  assert.ok(skips.every(e => seqs.includes(e.round)), 'and each skip names a round that has a row');
 });
 
 l.test('createRecorder MUST record a pause event carrying the bridged duration WHEN the event loop is blocked', async () => {
@@ -789,6 +823,89 @@ l.test('createRecorder MUST record null loaded_rtt_ms WHEN the body ends inside 
   assert.equal(row.loaded_rtt_ms, null, 'so no round trip claims to be under load');
 });
 
+l.test('createRecorder MUST record round_ms covering both phases and visible_end WHEN a round completes', async () => {
+  globalThis.fetch = async () => {
+    await sleep(20);
+    return {ok: true, status: 200, type: 'opaque', headers: {get: () => null}, body: bodyOf(25000),
+            text: async () => TRACE};
+  };
+  const store = fakeStore();
+  const {rec} = recorder(store);
+  await rec.start({...session(), intervalMs: 1500});
+  await sleep(1200);
+  await rec.stop();
+  const row = store.written.samples.find(x => x.phase_down_ms != null);
+  assert.ok(row, 'a round completed');
+  assert.ok(row.round_ms >= row.phase_idle_ms + row.phase_down_ms && row.phase_idle_ms > 0,
+            `${row.round_ms} ms spans ${row.phase_idle_ms} + ${row.phase_down_ms} ms`);
+  assert.equal(row.visible_end, true);
+});
+
+l.test('createRecorder.stop MUST set end_reason to stop WHEN it ends a session', async () => {
+  globalThis.fetch = async () => ({ok: true, status: 200, type: 'opaque', headers: {get: () => null},
+                                   body: bodyOf(25000), text: async () => TRACE});
+  const {rec} = recorder(fakeStore());
+  const sess = session();
+  await rec.start(sess);
+  await rec.stop();
+  assert.equal(sess.end_reason, 'stop');
+});
+
+l.test('createRecorder MUST record page and network events WHEN the tab hides and the interface goes offline', async () => {
+  const doc = Object.assign(new EventTarget(), {visibilityState: 'visible'});
+  const win = new EventTarget();
+  const saved = {document: globalThis.document, listen: globalThis.addEventListener};
+  globalThis.document = doc;
+  globalThis.addEventListener = win.addEventListener.bind(win);
+  try {
+    globalThis.fetch = async () => ({ok: true, status: 200, type: 'opaque', headers: {get: () => null},
+                                     body: bodyOf(25000), text: async () => TRACE});
+    const store = fakeStore();
+    const {rec} = recorder(store);
+    await rec.start(session());
+    doc.visibilityState = 'hidden';
+    doc.dispatchEvent(new Event('visibilitychange'));
+    win.dispatchEvent(new Event('offline'));
+    win.dispatchEvent(new Event('online'));
+    doc.visibilityState = 'visible';
+    doc.dispatchEvent(new Event('visibilitychange'));
+    await rec.stop();
+    const seen = store.written.events.filter(e => e.type === 'page' || e.type === 'network')
+                                     .map(e => `${e.type} ${e.text}`);
+    assert.deepEqual(seen, ['page hidden', 'network offline', 'network online', 'page visible']);
+  } finally {
+    globalThis.document = saved.document;
+    if (saved.listen) globalThis.addEventListener = saved.listen;
+    else delete globalThis.addEventListener;
+  }
+});
+
+l.test('createRecorder MUST record a connection change once per change of type or class WHEN navigator.connection reports it', async () => {
+  const connection = Object.assign(new EventTarget(),
+                                   {type: 'cellular', effectiveType: '4g', downlink: 10, rtt: 50});
+  const saved = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+  Object.defineProperty(globalThis, 'navigator', {
+    value: {userAgent: 'node-test', language: 'en', geolocation: null, connection}, configurable: true
+  });
+  try {
+    globalThis.fetch = async () => ({ok: true, status: 200, type: 'opaque', headers: {get: () => null},
+                                     body: bodyOf(25000), text: async () => TRACE});
+    const store = fakeStore();
+    const {rec} = recorder(store);
+    await rec.start(session());
+    connection.downlink = 7.5;
+    connection.dispatchEvent(new Event('change'));
+    Object.assign(connection, {effectiveType: '3g', downlink: 1.2, rtt: 300});
+    connection.dispatchEvent(new Event('change'));
+    await rec.stop();
+    assert.deepEqual(store.written.events.filter(e => e.type === 'network').map(e => e.text),
+                     ['connection cellular 3g, 1.2 Mb/s, 300 ms']);
+  } finally {
+    if (saved) Object.defineProperty(globalThis, 'navigator', saved);
+    else delete globalThis.navigator;
+  }
+});
+
 await l.run();
 
 /* ---------------- classification and export ---------------- */
@@ -857,13 +974,6 @@ r.test('changes MUST return one line per changed probe WHEN compared with the pr
   assert.ok(!moved.some(l => /calling|articles|streaming/.test(l)));
 });
 
-r.test('changes MUST return one line carrying the skip reason and lateness WHEN the round was skipped', () => {
-  const skipped = {...round(), skipped: 'overlap', late_ms: 900};
-  const lines = ui.changes(skipped, round());
-  assert.equal(lines.length, 1);
-  assert.match(lines[0], /skipped: overlap \(900 ms late\)/);
-});
-
 r.test('createRecorder.status MUST report the same elapsed span WHEN the session has stopped', async () => {
   const store = fakeStore();
   const {rec} = recorder(store);
@@ -912,7 +1022,6 @@ c.test('counts MUST return false WHEN the probe result is expected, resting, emp
 c.test('classify MUST return the worst activity grade WHEN one probe degrades', () => {
   assert.equal(ui.classify({probes: {...healthy(), dns: OK(2500)}}), 'orange');
   assert.equal(ui.classify({probes: {...healthy(), udp: BAD()}}), 'red', 'no UDP path sinks voice');
-  assert.equal(ui.classify({probes: healthy(), skipped: 'overlap'}), 'skip');
 });
 
 c.test('gradeFor MUST grade each activity independently WHEN one probe degrades', () => {
@@ -922,7 +1031,6 @@ c.test('gradeFor MUST grade each activity independently WHEN one probe degrades'
   assert.equal(ui.gradeFor('news', oneBadLookup), 'orange');
   assert.equal(ui.gradeFor('voice', oneBadLookup), 'green', 'calls are unaffected by a lookup');
   assert.equal(ui.gradeFor('streaming', oneBadLookup), 'green');
-  assert.equal(ui.gradeFor('voice', {probes: healthy(), skipped: 'overlap'}), 'skip');
 });
 
 c.test('classify MUST return the stored grade WHEN the row carries grades', () => {
@@ -1061,6 +1169,15 @@ e.test('counts and countsAsFailure MUST return the same verdict WHEN given the s
   }
   assert.equal(countsAsFailure({ok: false, fail: 'resting'}), false);
   assert.equal(countsAsFailure({ok: false, fail: 'timeout'}), true);
+});
+
+e.test('summarise MUST count each skip event as a skipped slot WHEN the session records them', () => {
+  const rows = [0, 1].map(seq => ({seq, probes: {ip6: {ok: true, ms: 20}}}));
+  const events = [{type: 'skip', round: 1, running_ms: 16000, waiting_on: ['down']},
+                  {type: 'mark', text: 'mark 1'}];
+  const sum = summarise(rows, events);
+  assert.equal(sum.skipped, 1);
+  assert.equal(sum.ran, 2, 'a skip writes no row, so every row ran');
 });
 
 await e.run();

@@ -38,16 +38,14 @@ export function notice(text) { $('notice').textContent = text || ''; }
 // count in the file agree.
 export {countsAsFailure as counts} from './export.js';
 
-// One activity's colour for one round. A skipped round has no measurement to grade.
+// One activity's colour for one round.
 export function gradeFor(activity, sample) {
-  if (sample.skipped) return 'skip';
   return (sample.grades || gradeActivities(sample))?.[activity] ?? 'none';
 }
 
 // The colour of a round taken as a whole: its worst activity. Used for the log line, which
 // carries one line per round.
 export function classify(sample) {
-  if (sample.skipped) return 'skip';
   const g = sample.grades || gradeActivities(sample);
   let worstGrade = null;
   for (const activity of ACTIVITY_IDS) worstGrade = worse(worstGrade, g?.[activity] ?? null);
@@ -66,7 +64,7 @@ const PROBE_LABELS = {
 };
 // The row id a reading comes from, and the label it carries, both depend on the round.
 const rowProbe = (row, sample) =>
-  (row === 'route' ? activeRoute(sample && !sample.skipped ? sample.probes : {}) : row);
+  (row === 'route' ? activeRoute(sample ? sample.probes : {}) : row);
 
 const ROUTE_EXPLAIN = 'GET to an address literal, no lookup. Whichever family is carrying traffic: a network with only one of them is ordinary.';
 
@@ -139,12 +137,12 @@ export function setProbes(sample) {
     if (!cell) continue;
     const probe = rowProbe(id, sample);
     cell.classList.remove(...GRADES);
-    const reading = sample && !sample.skipped ? probeReading(probe, sample) : null;
+    const reading = sample ? probeReading(probe, sample) : null;
     if (reading?.grade) cell.classList.add(reading.grade);
     // A word in place of a number is a reason, and is styled apart from a measurement.
     cell.classList.toggle('words', !!reading?.note);
     $(`pname-${id}`).textContent = PROBE_LABELS[probe] ?? probe;
-    $(`pval-${id}`).textContent = sample?.skipped ? '–' : displayReading(reading);
+    $(`pval-${id}`).textContent = displayReading(reading);
     $(`punit-${id}`).textContent = displayUnit(reading);
   }
 }
@@ -195,13 +193,6 @@ export function pushStripPause() {
   }
 }
 
-export function setStripWindow(intervalMs) {
-  const minutes = Math.round((STRIP_BARS * intervalMs) / 60000);
-  $('strip-span').textContent = minutes >= 1
-    ? `${minutes} min ago`
-    : `${Math.round(STRIP_BARS * intervalMs / 1000)}s ago`;
-}
-
 // Newest first: the controls sit over the bottom of the log.
 export function pushLog(text, cls) {
   const log = $('log');
@@ -238,16 +229,14 @@ function transitions(ids, {label, now, then, fine}) {
 
 export function changes(sample, prev) {
   const time = clock(sample.t);
-  if (sample.skipped) return [`${time}  skipped: ${sample.skipped} (${sample.late_ms} ms late)`];
   if (sample.round_error) return [`${time}  round error: ${sample.round_error}`];
 
   // Only what a strip cannot already show. An activity changing colour is on screen as a bar;
   // which probe moved, and to what, is not anywhere else.
-  const before = prev && !prev.skipped ? prev : null;
   return transitions(PROBES.map(p => p.id), {
     label: id => id,
     now: id => probeReading(id, sample).state,
-    then: id => (before ? probeReading(id, before).state : null),
+    then: id => (prev ? probeReading(id, prev).state : null),
     fine: 'ok'
   }).map(line => `${time}  ${line}`);
 }

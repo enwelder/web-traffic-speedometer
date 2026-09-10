@@ -88,27 +88,28 @@ const KEYS = {
   session: ['id', 'name', 'operator', 'connection', 'note', 'started', 'stopped', 'intervalMs',
             'downloadBytes', 'download', 'profile', 'ipv6_available', 'ipv6_check',
             'ipv4_available', 'ipv4_check',
-            'environment', 'exportedAt'],
+            'environment', 'exportedAt', 'end_reason'],
   environment: ['app_version', 'user_agent', 'language', 'timezone', 'screen', 'interval_ms',
                 'download_bytes', 'download', 'timeouts_ms', 'probes', 'network_information'],
   sample: ['sessionId', 'seq', 't', 'mono', 'late_ms', 'skipped', 'round_error', 'visible',
            'in_pause', 'wake_lock', 'prev_round_ms', 'intervalMs', 'lat', 'lon', 'accuracy',
            'accuracy_class', 'speed', 'speed_derived', 'speed_source', 'heading', 'pos_t',
-           'pos_error', 'probes', 'grades', 'pgrades', 'first_packet_ms', 'loaded_rtt_ms', 'loaded_rtt_from'],
+           'pos_error', 'probes', 'grades', 'pgrades', 'first_packet_ms', 'loaded_rtt_ms', 'loaded_rtt_from',
+           'round_ms', 'phase_idle_ms', 'phase_down_ms', 'visible_end'],
   probe: ['ok', 'ms', 'status', 'fail', 'egress_ip', 'colo', 'ms_samples', 'samples_ok',
-          'ms_min', 'ms_max', 'expected', 'blocked', 'unused', 'stuck', 'host', 'bytes', 'truncated', 'server',
+          'ms_min', 'ms_max', 'sample_fail', 'expected', 'blocked', 'unused', 'stuck', 'host', 'bytes', 'truncated', 'server',
           'ttfb_ms', 'transfer_ms', 'handshake', 'reused', 'protocol', 'lookup_ms',
           'connect_ms', 'tls_ms', 'retry_suspected', 'parse_reason', 'bps_min', 'complete',
           'warmup_only', 'refused_by', 'bps', 'bps_server', 'saturated', 'ceiling_bps', 'streams', 'ramp_ms',
           'window_bytes', 'window_ms',
           'duration_ms', 'aborted_reason', 'public_ips',
-          'candidates',
+          'candidates', 'per_stream', 'wall_ms', 'samples_end',
           // Written by releases up to 3.3.1 and still present in recordings kept for replay.
           // The current app writes none of them; removing them makes those files
           // un-anonymisable.
           'bps_transfer', 'bps_end_to_end', 'bps_steady', 'bps_peak', 'warmup_ms',
           'warmup_bytes', 'insufficient_sample'],
-  event: ['sessionId', 'id', 't', 'mono', 'type', 'lat', 'lon', 'text']
+  event: ['sessionId', 'id', 't', 'mono', 'type', 'lat', 'lon', 'text', 'late_ms', 'round', 'running_ms', 'waiting_on']
 };
 
 // A typed note saying where someone got off is as identifying as a coordinate, so text is
@@ -123,7 +124,10 @@ const MACHINE_TEXT = [
   /^screen stays awake again$/,
   /^location (degraded|improved) to \d+ m$/,
   /^[a-z_0-9]+ has failed \d+ rounds while the others answer; resting it for \d+ rounds to clear the connection\.$/,
-  /^egress address changed$/
+  /^egress address changed$/,
+  /^round \d+ still running after \d+\.\d s(, waiting on [a-z_0-9, ]+)?$/,
+  /^(hidden|visible|pagehide|pageshow|freeze|resume|online|offline)$/,
+  /^connection [a-z0-9?-]+ [a-z0-9?-]+, [0-9.?]+ Mb\/s, [0-9?]+ ms$/
 ];
 
 const fail = why => { throw new Error(why); };

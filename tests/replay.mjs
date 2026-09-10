@@ -103,6 +103,27 @@ r.test('assertClean MUST throw WHEN a document carries coordinates, a bearing, t
   assert.doesNotThrow(() => assertClean(base), 'and a clean fixture still passes');
 });
 
+r.test('assertClean MUST accept the fields format 11 adds WHEN an anonymised export carries them', () => {
+  const doc = anonymise({
+    session: {started: 1700000000000, stopped: 1700000100000, name: 'x', note: '', end_reason: 'stop',
+              environment: {app_version: '3.14.0', user_agent: 'Mozilla/5.0', timezone: 'Europe/Amsterdam',
+                            screen: '393x852@3'}},
+    samples: [{seq: 0, t: 1700000000000, mono: 0, round_ms: 2400, phase_idle_ms: 900, phase_down_ms: 1500,
+               visible: true, visible_end: true,
+               probes: {ip6: {ok: true, ms: 30, ms_samples: [30], samples_ok: 1, samples_end: 'count', wall_ms: 31},
+                        down: {ok: true, bps: 2e7,
+                               per_stream: [{headers_ms: 120, first_byte_ms: 140, bytes: 900000, end: 'done'}]}}}],
+    events: [
+      {t: 1700000015000, mono: 15000, type: 'skip', round: 0, running_ms: 15000, waiting_on: ['down', 'loaded_rtt'],
+       text: 'round 0 still running after 15.0 s, waiting on down, loaded_rtt'},
+      {t: 1700000016000, mono: 16000, type: 'page', text: 'hidden'},
+      {t: 1700000017000, mono: 17000, type: 'network', text: 'offline'},
+      {t: 1700000018000, mono: 18000, type: 'network', text: 'connection cellular 3g, 1.2 Mb/s, 300 ms'}
+    ]
+  });
+  assert.doesNotThrow(() => assertClean(doc));
+});
+
 r.test('gradeActivities MUST return a known grade or null for every round WHEN replayed over each recording', () => {
   for (const [name, j] of Object.entries(journeys)) {
     let graded = 0;
@@ -141,7 +162,8 @@ r.test('summarise MUST produce finite non-negative figures WHEN replayed over ev
   for (const [name, j] of Object.entries(journeys)) {
     for (const s of j.samples) {
       const at = `${name} seq ${s.seq}`;
-      for (const k of ['late_ms', 'mono', 'accuracy', 'prev_round_ms', 'first_packet_ms']) {
+      for (const k of ['late_ms', 'mono', 'accuracy', 'prev_round_ms', 'first_packet_ms', 'round_ms',
+                       'phase_idle_ms', 'phase_down_ms']) {
         nonNegative(s[k], `${at}.${k}`);
       }
       nonNegative(s.speed_derived, `${at}.speed_derived`);

@@ -40,14 +40,14 @@ const recorder = createRecorder({
     ui.pushStrip(sample);
     // Only what changed. The first round states anything that is not already fine.
     for (const line of ui.changes(sample, lastSample)) {
-      ui.pushLog(line, sample.skipped ? 'warn' : kind === 'green' || kind === 'yellow' ? '' : 'bad');
+      ui.pushLog(line, kind === 'green' || kind === 'yellow' ? '' : 'bad');
     }
     lastSample = sample;
   },
   onEvent(event) {
     if (event.type === 'pause') ui.pushStripPause();
     ui.pushLog(`${ui.clock(event.t)}  ← ${event.type}${event.text ? ': ' + event.text : ''}`,
-               event.type === 'pause' ? 'warn' : 'mark');
+               event.type === 'pause' || event.type === 'skip' ? 'warn' : 'mark');
   },
   onStatus(s) {
     const c = s.pos?.coords;
@@ -151,18 +151,17 @@ function newSession() {
 
 // Everything on screen that belongs to one session. Both ways into a session reset the
 // same set, so state added here cannot carry from one session into the next.
-function resetReadout(intervalMs) {
+function resetReadout() {
   lastSample = null;
   ui.clearLog();
   ui.clearStrip();
-  ui.setStripWindow(intervalMs);
   $('readout').hidden = false;
 }
 
 async function begin() {
   // A recovery offer on screen must not survive into a new session.
   dismissRecovery();
-  resetReadout(profile().intervalMs);
+  resetReadout();
   ui.notice('');
   writePrefs();
 
@@ -205,7 +204,7 @@ async function checkRecovery() {
     // Start may have been pressed while the banner was up.
     if (busy || recorder.status().running) return;
     $('recover').hidden = true;
-    resetReadout(session.intervalMs);
+    resetReadout();
     ui.pushLog(`${ui.clock(Date.now())}  resumed "${session.name}" at round ${last ? last.seq + 1 : 0}`, 'mark');
     // performance.now() restarts on reload, so the monotonic clock is carried across the gap
     // with the wall clock. Both clocks are in the data, so the bridge is checkable.
@@ -222,6 +221,7 @@ async function checkRecovery() {
   $('recover-close').onclick = async () => {
     $('recover').hidden = true;
     session.stopped = last ? last.t : session.started;
+    session.end_reason = 'recovered';
     await store.putSession(session);
     store.setActive(null);
     listDirty = true;

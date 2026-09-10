@@ -332,8 +332,14 @@ function downloadMeter({rampMs, rampBytes, windowMs, capBytes}) {
 }
 
 // One stream, pulling until the measurement is over, the deadline passes or the far end runs
-// out. Every stream reports why it stopped; the round takes the worst of those.
-async function pumpStream(res, meter, deadline) {
+// out. Every stream reports why it stopped; the round takes the worst of those. `stat` is the
+// stream's own entry in `per_stream`.
+async function pumpStream(res, meter, {deadline, stat, elapsed}) {
+  stat.end = await pull(res, meter, {deadline, stat, elapsed});
+  return stat.end;
+}
+
+async function pull(res, meter, {deadline, stat, elapsed}) {
   let reader = null;
   // The window closing is the measurement finishing; the deadline passing is the round giving
   // up. Which bound the budget came from says which happened, without re-reading a clock that
@@ -347,6 +353,8 @@ async function pumpStream(res, meter, deadline) {
       const next = await readWithin(reader, left);
       if (next === EXPIRED) return over();
       if (next.done) { meter.threadEnded(); return 'eof'; }
+      stat.first_byte_ms ??= elapsed();
+      stat.bytes += next.value.byteLength;
       if (meter.take(next.value.byteLength)) return 'done';
     }
   } catch (e) {
@@ -414,10 +422,11 @@ function downReason(reasons) {
 }
 
 // `elapsed` is the caller's clock, so `ms` covers the whole request, handshake included.
-async function readDownload(streams, meter, {url, elapsed, deadline, cfg}) {
-  const first = streams[0];
+async function readDownload(streams, meter, {url, elapsed, deadline, cfg, perStream}) {
+  const first = streams[0].res;
   const server = parseServerTiming(first.headers.get('server-timing'));
-  const reasons = await Promise.all(streams.map(res => pumpStream(res, meter, deadline)));
+  const reasons = await Promise.all(streams.map(({res, stat}) =>
+    pumpStream(res, meter, {deadline, stat, elapsed})));
   const m = downloadResult(meter, cfg);
   // Present only for a body read to its end: WebKit files no entry for an aborted fetch.
   const timing = await readTiming(url) || {};
@@ -425,6 +434,7 @@ async function readDownload(streams, meter, {url, elapsed, deadline, cfg}) {
   const out = {
     ms: elapsed(),
     streams: streams.length,
+    per_stream: perStream,
     duration_ms: m.ramp_ms + m.window_ms,
     aborted_reason: reason,
     truncated: reason === 'network',
@@ -460,11 +470,20 @@ async function measureDownload(probe, opts) {
   const deadline = t0 + (opts.timeoutMs ?? TIMEOUT_MS);
   const urls = Array.from({length: cfg.streams}, (_, i) => downUrl(probe, i, cfg));
 
+  // One entry per stream: when its headers arrived, its first byte, what it carried and why it
+  // stopped. A round held up by one connection shows which one.
+  const perStream = urls.map(() => ({headers_ms: null, first_byte_ms: null, bytes: 0, end: null}));
+
   try {
-    const opened = await Promise.allSettled(urls.map(u => openDown(u, ctl)));
-    const live = opened.filter(o => o.status === 'fulfilled').map(o => o.value);
-    if (!live.length) return downFailed(opened, elapsed());
-    return await readDownload(live, meter, {url: urls[0], elapsed, deadline, cfg});
+    const opened = await Promise.allSettled(urls.map((u, i) => openDown(u, ctl).then(res => {
+      perStream[i].headers_ms = elapsed();
+      return res;
+    })));
+    opened.forEach((o, i) => { if (o.status === 'rejected') perStream[i].end = openFailure(o.reason); });
+    const live = opened.flatMap((o, i) =>
+      (o.status === 'fulfilled' ? [{res: o.value, stat: perStream[i]}] : []));
+    if (!live.length) return {...downFailed(opened, elapsed()), per_stream: perStream};
+    return await readDownload(live, meter, {url: urls[0], elapsed, deadline, cfg, perStream});
   } finally {
     ctl.abort();
     meter.open();
@@ -477,6 +496,8 @@ async function openDown(url, ctl) {
   if (!res.ok) throw Object.assign(new Error(`http ${res.status}`), {status: res.status});
   return res;
 }
+
+const openFailure = e => (e?.status ? 'http' : e?.name === 'AbortError' ? 'aborted' : 'network');
 
 // Nothing opened. An HTTP status is the server's answer and is reported as one; anything else
 // never reached it.
@@ -502,18 +523,20 @@ export async function runProbe(probe, opts = {}) {
   if (!probe.samples || probe.samples < 2) return runOnce(probe, opts);
 
   const budget = opts.timeoutMs ?? TIMEOUT_MS;
-  const deadline = performance.now() + budget;
+  const started = performance.now();
+  const deadline = started + budget;
   const runs = [];
   let slowest = 0;
+  let end = 'count';
   for (let i = 0; i < probe.samples; i++) {
     const left = deadline - performance.now();
     // Twice the slowest so far: a sample admitted with less time than its predecessors needed
     // times out on the budget and reports the failure as the link's.
-    if (i > 0 && left < Math.max(MIN_TIMEOUT_MS, 2 * slowest)) break;
+    if (i > 0 && left < Math.max(MIN_TIMEOUT_MS, 2 * slowest)) { end = 'budget'; break; }
     const r = await runOnce(probe, {...opts, timeoutMs: left});
     runs.push(r);
     slowest = Math.max(slowest, r.ms ?? 0);
-    if (!r.ok) break;
+    if (!r.ok) { end = 'failure'; break; }
   }
 
   const good = runs.filter(r => r.ok);
@@ -521,6 +544,10 @@ export async function runProbe(probe, opts = {}) {
   const out = {...(good[good.length - 1] ?? runs[runs.length - 1])};
   out.ms_samples = runs.map(r => r.ms);
   out.samples_ok = good.length;
+  // A STUN sample reports its first candidate long before gathering ends, so the samples alone
+  // cannot say where the budget went.
+  out.samples_end = end;
+  out.wall_ms = Math.round(performance.now() - started);
   if (good.length) {
     const ms = good.map(r => r.ms);
     out.ok = true;
@@ -672,16 +699,25 @@ const runOrRest = (p, opts, resting) => (resting?.has(p.id)
   ? Promise.resolve({ok: false, ms: null, status: null, fail: 'resting', stuck: true})
   : runProbe(p, opts));
 
+// `pending` holds what a round has started and not yet settled, so a slot that comes due
+// mid-round can name what the round is waiting on.
+function tracked(pending, id, promise) {
+  pending?.add(id);
+  return promise.finally(() => pending?.delete(id));
+}
+
 // Latency first with the link otherwise idle, then the download. RMBT orders its phases this
 // way and keeps the other connections quiet while it measures latency; running everything at
 // once measures the round trip under this tool's own load, which reads high and moves with
 // whatever the download happens to be doing.
 export async function runRound({signal, download = {}, intervalMs = 5000,
-                                resting = null} = {}) {
+                                resting = null, pending = null} = {}) {
   const opts = p => ({signal, download, timeoutMs: timeoutFor(p, intervalMs)});
   const t0 = performance.now();
   const idle = PROBES.filter(p => p.kind !== 'download');
-  const results = await Promise.all(idle.map(p => runOrRest(p, opts(p), resting)));
+  const results = await Promise.all(idle.map(p =>
+    tracked(pending, p.id, runOrRest(p, opts(p), resting))));
+  const idleMs = Math.round(performance.now() - t0);
 
   const out = {};
   idle.forEach((p, i) => { out[p.id] = results[i]; });
@@ -699,22 +735,25 @@ export async function runRound({signal, download = {}, intervalMs = 5000,
   if (signal?.aborted) {
     out[down.id] = {ok: false, ms: null, status: null, fail: 'abort'};
     markLiterals(out);
-    return {probes: out, loaded_rtt_ms: null, loaded_rtt_from: null};
+    return {probes: out, loaded_rtt_ms: null, loaded_rtt_from: null,
+            phase_idle_ms: idleMs, phase_down_ms: null};
   }
 
+  const downT0 = performance.now();
   let openWindow, downDone = false;
   const windowOpened = new Promise(resolve => { openWindow = resolve; });
-  const downRun = runOrRest(down, {...downOpts, onWindow: openWindow}, resting)
+  const downRun = tracked(pending, down.id, runOrRest(down, {...downOpts, onWindow: openWindow}, resting))
     // A rested or refused download opens no window; nothing may wait on one.
     .finally(() => { downDone = true; openWindow(Promise.resolve(false)); });
   const [downResult] = await Promise.all([
     downRun,
-    sampleUnderLoad(loaded, out, downOpts, {windowOpened, live: () => !downDone})
+    sampleUnderLoad(loaded, out, downOpts, {windowOpened, live: () => !downDone, pending})
   ]);
   out[down.id] = downResult;
 
   markLiterals(out);
-  return {probes: out, loaded_rtt_ms: loaded[0] ?? null, loaded_rtt_from: loaded[1] ?? null};
+  return {probes: out, loaded_rtt_ms: loaded[0] ?? null, loaded_rtt_from: loaded[1] ?? null,
+          phase_idle_ms: idleMs, phase_down_ms: Math.round(performance.now() - downT0)};
 }
 
 // One round trip taken while the download is running. It grades nothing; the gap between it
@@ -723,15 +762,15 @@ export async function runRound({signal, download = {}, intervalMs = 5000,
 // twice: once with the link idle and once with the download on it. Held until the window
 // opens: started with the download, it races three TLS handshakes and answers before a
 // payload byte arrives, which measures the idle link a second time.
-async function sampleUnderLoad(into, idle, opts, {windowOpened, live}) {
+async function sampleUnderLoad(into, idle, opts, {windowOpened, live, pending}) {
   const id = ['ip6', 'ip4', 'web'].find(x => idle[x]?.ok);
   if (!id) return;
   const open = await windowOpened;
   // The window opened and the transfer is still on the link. A body that ended in the same
   // breath leaves nothing to measure under, and a sample taken then measures the idle link.
   if (!open || !live()) return;
-  const r = await runOnce(PROBES.find(x => x.id === id),
-                          {...opts, timeoutMs: Math.min(opts.timeoutMs, LOADED_RTT_MS)});
+  const r = await tracked(pending, 'loaded_rtt', runOnce(PROBES.find(x => x.id === id),
+                          {...opts, timeoutMs: Math.min(opts.timeoutMs, LOADED_RTT_MS)}));
   into.push(r.ok ? r.ms : null);
   into.push(id);
 }

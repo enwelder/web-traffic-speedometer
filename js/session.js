@@ -1,5 +1,5 @@
-// The round loop. Every scheduled round produces a row, including rounds that failed and
-// rounds that could not run: a failed attempt is a measurement, so it is never left out.
+// The round loop. Every round that runs produces a row, failed ones included: a failed attempt
+// is a measurement. A slot that comes due while a round is still running is a `skip` event.
 
 import {PROBES, runRound, checkPaths, clearTimings, timeoutFor,
         DOWN_STREAMS, DOWN_WINDOW_MS, DOWN_CAP_BYTES, DOWN_CEILING_BPS,
@@ -29,7 +29,7 @@ const handshakes = (probe, attempts, first) =>
 // The projection is steady state: by the second round every origin has been contacted.
 const cost = p => (WARM_BYTES[p.kind] * (p.samples || 1)) + handshakes(p, p.samples || 1, false);
 
-export const APP_VERSION = '3.13.0';
+export const APP_VERSION = '3.14.0';
 
 // The download runs every round, so the interval is what controls data use.
 export const PROFILES = {
@@ -107,6 +107,30 @@ export function spentSoFar(samples) {
   return {bytes, downloadBytes};
 }
 
+const connectionKind = () => {
+  const c = navigator.connection;
+  return c ? `${c.type ?? '?'} ${c.effectiveType ?? '?'}` : null;
+};
+
+// What the page and the network did around the rounds. A hidden or frozen tab and a lost
+// interface each explain a gap the probes cannot see. `note(type, text)` receives each one.
+function watchPage(note) {
+  document.addEventListener('visibilitychange', () => note('page', document.visibilityState));
+  for (const type of ['freeze', 'resume']) document.addEventListener(type, () => note('page', type));
+  for (const type of ['pagehide', 'pageshow']) globalThis.addEventListener?.(type, () => note('page', type));
+  for (const type of ['online', 'offline']) globalThis.addEventListener?.(type, () => note('network', type));
+  // Chrome revises its downlink and rtt estimates continually. A change of connection type or
+  // class is the signal; each revision beside it is noise.
+  let last = connectionKind();
+  navigator.connection?.addEventListener?.('change', () => {
+    const kind = connectionKind();
+    if (kind === last) return;
+    last = kind;
+    const c = navigator.connection;
+    note('network', `connection ${kind}, ${c.downlink ?? '?'} Mb/s, ${c.rtt ?? '?'} ms`);
+  });
+}
+
 // `store` is injectable so the round loop can run against a fake one.
 export function createRecorder({onSample, onEvent, onStatus, onNotice, store = realStore}) {
   let session = null;
@@ -124,7 +148,10 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
   let bytes = 0;
   let marks = 0;
   let inPause = false;
-  let lastRoundMs = null;
+  // The running round: its number, when it started, and what it has not yet settled.
+  let runningSeq = null;
+  let runningSince = 0;
+  const pending = new Set();
   let lastSpeed = null;
   let lastSpeedSource = null;
   const egressIp = {};
@@ -208,7 +235,7 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
     flush();
   }
 
-  function baseRow(late, skipped) {
+  function baseRow(late) {
     const pos = position.read();
     lastSpeed = pos.speed ?? pos.speed_derived ?? null;
     lastSpeedSource = pos.speed_source;
@@ -218,18 +245,22 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
       t: Date.now(),
       mono: Math.round(mono()),
       late_ms: late,
-      skipped,
       round_error: null,
       // iOS suspends a hidden tab; a column filters more easily than the pause events.
       visible: document.visibilityState === 'visible',
+      // A tab hidden mid-round explains a probe cut short.
+      visible_end: null,
       // Set on the round following a bridged gap, so those rows can be filtered without
       // matching timestamps against the event list.
       in_pause: inPause,
       // Whether the screen was held awake for this round, which accounts for gaps.
       wake_lock: wake.held(),
-      // Wall time the previous round took. A frozen tab suspends the abort timer, so a round
-      // can outlast every deadline in it; this separates an overlap from a stalled app.
-      prev_round_ms: lastRoundMs,
+      // The round's own wall time and its two phases. A frozen tab suspends the abort timers,
+      // so a round can outlast every deadline in it; these separate a slow phase from a
+      // stalled app.
+      round_ms: null,
+      phase_idle_ms: null,
+      phase_down_ms: null,
       intervalMs: interval(),
       ...pos,
       probes: {}
@@ -309,18 +340,23 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
   async function measure(late) {
     inFlight = true;
     const startedAt = mono();
-    const row = baseRow(late, null);
+    const row = baseRow(late);
+    runningSeq = row.seq;
+    runningSince = startedAt;
     inPause = false;
     try {
       const round = await runRound({
         signal: abort.signal,
         download: session.download || DOWNLOAD_DEFAULTS,
         intervalMs: interval(),
-        resting: stuck.resting(seq)
+        resting: stuck.resting(seq),
+        pending
       });
       row.probes = round.probes;
       row.loaded_rtt_ms = round.loaded_rtt_ms;
       row.loaded_rtt_from = round.loaded_rtt_from;
+      row.phase_idle_ms = round.phase_idle_ms;
+      row.phase_down_ms = round.phase_down_ms;
     } catch (e) {
       // The round threw, so nothing was measured. 'error' keeps it out of the network tallies
       // and out of the wedge count; the grades below are left null.
@@ -330,7 +366,9 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
       }
     } finally {
       inFlight = false;
-      lastRoundMs = Math.round(mono() - startedAt);
+      pending.clear();
+      row.round_ms = Math.round(mono() - startedAt);
+      row.visible_end = document.visibilityState === 'visible';
     }
 
     if (!wake.held()) wake.acquire();
@@ -390,9 +428,16 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
     timer = setTimeout(tick, Math.max(0, due - mono()));
 
     if (inFlight) {
-      // The previous round had not returned when this one came due, which at a short
-      // interval is itself a measurement.
-      keep(baseRow(late, 'overlap'));
+      // The running round keeps the link and this slot starts nothing; the next regular slot
+      // does. What the round is waiting on is what held it up.
+      const p = position.read();
+      const ranFor = Math.round(now - runningSince);
+      const waiting = [...pending];
+      record({sessionId: session.id, t: wall, mono: Math.round(now), type: 'skip',
+              lat: p.lat, lon: p.lon, late_ms: late, round: runningSeq, running_ms: ranFor,
+              waiting_on: waiting,
+              text: `round ${runningSeq} still running after ${(ranFor / 1000).toFixed(1)} s` +
+                    (waiting.length ? `, waiting on ${waiting.join(', ')}` : '')});
       return;
     }
     current = measure(late);
@@ -434,7 +479,6 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
     if (!resumeSeq) {
       stuck.reset();
       marks = 0;
-      lastRoundMs = null;
       inPause = false;
       position.reset();
       for (const k of Object.keys(egressIp)) delete egressIp[k];
@@ -491,6 +535,7 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
     await wake.release();
 
     session.stopped = Date.now();
+    session.end_reason = 'stop';
     // Each pass awaits any flush already running, so a row written during one is picked up
     // by the next.
     for (let i = 0; i < 5 && (pendingSamples.length || pendingEvents.length); i++) await flush();
@@ -516,6 +561,7 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
             lat: p.lat, lon: p.lon, text});
   }
 
+  watchPage((type, text) => running && event(type, text));
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible' && running) wake.acquire();
   });

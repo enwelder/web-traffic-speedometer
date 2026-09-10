@@ -94,10 +94,7 @@ main{flex:1;overflow-y:auto;overscroll-behavior:contain;-webkit-overflow-scrolli
        background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:3px;overflow:hidden}
 .strip i{min-width:0;border-radius:1px;background:var(--grade,var(--line))}
 .strip i.none{opacity:.3}
-.strip i.skip{background:var(--muted);opacity:.5}
 .strip i.pause{background:repeating-linear-gradient(45deg,var(--muted),var(--muted) 2px,transparent 2px,transparent 4px)}
-.strip-axis{display:flex;justify-content:space-between;font-size:10.5px;color:var(--muted);
-            font-family:var(--num);padding:1px 2px 0 112px}
 
 .stats{background:var(--panel);border:1px solid var(--line);border-radius:10px;
        padding:11px 13px;display:grid;grid-template-columns:1fr 1fr;gap:9px 16px;font-size:12.5px}

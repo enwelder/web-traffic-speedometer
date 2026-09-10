@@ -327,6 +327,36 @@ d.test('runProbe MUST grade within one band of the link WHEN the link runs from 
   }
 });
 
+d.test('runProbe MUST record when each stream opened, its first byte, its bytes and why it ended WHEN the download runs on several streams', async () => {
+  let call = 0;
+  globalThis.fetch = async () => {
+    await sleep(40 * call++);
+    return {ok: true, status: 200, headers: {get: () => null},
+            body: stream(Array.from({length: 40}, () => ({after: 10, bytes: 20000})))};
+  };
+  const r = await probe.runProbe(P.down, {timeoutMs: 3000,
+    download: {windowMs: 400, rampMs: 0, streams: 3, capBytes: 1e9}});
+  assert.equal(r.per_stream.length, 3);
+  assert.ok(r.per_stream[2].headers_ms >= r.per_stream[0].headers_ms + 60,
+            `the late stream is visible: ${r.per_stream.map(s => s.headers_ms)}`);
+  assert.ok(r.per_stream.every(s => s.first_byte_ms >= s.headers_ms), 'a byte follows its headers');
+  assert.equal(r.per_stream.reduce((n, s) => n + s.bytes, 0), r.bytes, 'the streams add up to the round');
+  assert.ok(r.per_stream.every(s => ['eof', 'done', 'time'].includes(s.end)), JSON.stringify(r.per_stream));
+});
+
+d.test('runProbe MUST record a stream whose request never opened WHEN the other streams carry the download', async () => {
+  let call = 0;
+  globalThis.fetch = async () => {
+    if (call++ === 1) throw netError();
+    return {ok: true, status: 200, headers: {get: () => null},
+            body: stream(Array.from({length: 40}, () => ({after: 10, bytes: 20000})))};
+  };
+  const r = await probe.runProbe(P.down, {timeoutMs: 3000,
+    download: {windowMs: 300, rampMs: 0, streams: 3, capBytes: 1e9}});
+  assert.equal(r.streams, 2);
+  assert.deepEqual([r.per_stream[1].headers_ms, r.per_stream[1].end], [null, 'network']);
+});
+
 await d.run();
 
 /* ---------------- mobile network events ---------------- */
@@ -435,18 +465,15 @@ n.test('createRecorder MUST record both colo values and keep grading WHEN the Po
   assert.ok(rows.every(x => x.grades), 'and a routing change is not graded as a fault');
 });
 
-n.test('createRecorder MUST write an overlap row carrying late_ms and prev_round_ms WHEN a round comes due mid-flight', async () => {
-  // Every request takes 200 ms, so a round runs about 600 ms against an 80 ms interval: the
-  // idle phase, the download, and the round trip taken across it. Long enough for one round to
-  // finish, so a later overlap has a duration to record.
-  const {rows, store} = await record(async () => { await sleep(200); return okResponse(); }, 1400);
-  const skipped = store.written.samples.filter(x => x.skipped === 'overlap');
-  assert.ok(skipped.length > 0, 'a round that came due mid-flight leaves a row');
-  assert.ok(skipped.every(x => x.late_ms != null), 'carrying how late it was');
-  assert.ok(skipped.some(x => x.prev_round_ms > 0),
-            'and how long the round it collided with took, once one has finished — without ' +
-            'that, a stalling app cannot be told from a slow network');
-  assert.ok(rows.every(x => x.grades), 'the rounds that did run are unaffected');
+n.test('createRecorder MUST record a skip event naming what the running round waits on WHEN a slot comes due mid-round', async () => {
+  // Every request takes 200 ms against an 80 ms interval, so every round outlasts its slot.
+  const {rows, events} = await record(async () => { await sleep(200); return okResponse(); }, 1400);
+  const skips = events.filter(e => e.type === 'skip');
+  assert.ok(skips.length > 0, 'a slot came due mid-round');
+  assert.ok(skips.some(e => e.waiting_on.length > 0), JSON.stringify(skips.map(e => e.waiting_on)));
+  assert.ok(skips.every(e => e.waiting_on.every(id => PROBE_IDS.includes(id) || id === 'loaded_rtt')),
+            'and names only what a round runs');
+  assert.ok(rows.every(x => x.grades), 'the rounds that ran are graded');
 });
 
 n.test('countsAsFailure MUST return true for network reasons and false for resting, expected and unsupported WHEN given each failure reason', () => {

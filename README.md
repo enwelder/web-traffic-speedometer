@@ -154,7 +154,7 @@ Six rows on top, one per reading, then one history strip per activity. The two a
 families share a row — the one carrying traffic is the one worth reading, and its label says
 which it is. Tapping a row says what it measures; **?** does all six at once.
 
-The strips carry the activity verdicts: one bar per round, newest on the right. The header
+The strips carry the activity verdicts: one bar per round that ran, newest on the right. The header
 shows the running build, so a tester can tell one from another without opening a file.
 
 Nothing on the readout summarises the session; the useful summaries are aggregates over a
@@ -320,7 +320,9 @@ ceiling, and a 4000 ms deadline files anything slower as a failure, collapsing "
 
 Rounds are scheduled from when the previous one fired. On a fixed grid, lateness pulls the next
 slot closer, so after a freeze two rounds fire moments apart and measure the same instant twice
-at twice the price.
+at twice the price. A slot that comes due while a round is still running starts nothing: a
+`skip` event names the running round, how long it has run and what it is waiting on, and the
+next slot starts on schedule.
 
 Lateness is read from the wall clock as well as the monotonic one. `performance.now()` stops
 while an iOS device sleeps: across seq 7 to 8 of one recording the wall clock advanced

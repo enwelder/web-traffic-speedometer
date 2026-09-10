@@ -81,11 +81,13 @@ function gradeTally(ran, keys, field) {
   return grades;
 }
 
-// 10: the download summary reports `bps` and `saturated`; a probe survives one failed sample;
-// a round that threw grades nothing.
-const FORMAT_VERSION = 10;
+// 11: a slot that could not start is a `skip` event; rows, sampled probes and download streams
+// carry their own timings.
+const FORMAT_VERSION = 11;
 
-export function summarise(samples) {
+// A row carrying `skipped` comes from a file written before format 11, where a slot that could
+// not start was a row.
+export function summarise(samples, events = []) {
   const ran = samples.filter(s => !s.skipped && !s.round_error);
   const probes = {};
   for (const p of PROBES) {
@@ -105,7 +107,7 @@ export function summarise(samples) {
     generated_by: `wts ${APP_VERSION}`,
     rounds: samples.length,
     ran: ran.length,
-    skipped: samples.filter(s => s.skipped).length,
+    skipped: samples.filter(s => s.skipped).length + events.filter(e => e.type === 'skip').length,
     round_errors: samples.filter(s => s.round_error).length,
     in_pause: ran.filter(s => s.in_pause).length,
     // Rounds with at least one failure outside a known-absent path.
@@ -126,7 +128,7 @@ export function sessionJson(session, samples, events) {
     app_version: APP_VERSION,
     exported: new Date().toISOString(),
     probes: PROBES.map(p => ({id: p.id, label: p.label, url: p.url, kind: p.kind})),
-    summary: summarise(samples),
+    summary: summarise(samples, events),
     session, samples, events
   }, null, 1);
 }

@@ -1,6 +1,6 @@
 # Exported session format
 
-`format: "wts/session"`, `version: 10`. One button per session writes one JSON file: session
+`format: "wts/session"`, `version: 11`. One button per session writes one JSON file: session
 metadata, environment, a rollup, every sample, every event. CSV, GPX or GeoJSON are a few
 lines to derive from it.
 
@@ -14,6 +14,7 @@ lines to derive from it.
 | 8 | a failing address-family literal is judged on its own round: `unused` replaces `expected` on `ip6`/`ip4`, which no longer carry a session-long verdict |
 | 9 | an activity whose term could not be measured is unrated; the fresh-name probe is graded on `ttfb`, and the `dns_delta` scale is gone |
 | 10 | the download summary reports `bps_p10`, `bps_p50` and `saturated`; a probe survives one failed sample and records it in `sample_fail`; a round that threw grades nothing and marks its probes `error`; `short` joins the failure reasons |
+| 11 | a slot that comes due while a round is still running is a `skip` event and writes no row, so `skipped` and `prev_round_ms` are gone; rows carry `round_ms`, `phase_idle_ms`, `phase_down_ms` and `visible_end`; sampled probes carry `samples_end` and `wall_ms`; the download carries `per_stream`; `page` and `network` events; `session.end_reason` |
 
 Version 5 changes failure counts. Files below it carry `expected` only on `ip4`, so every
 `ip6` failure in them is a real one. From 5, `expected` on `ip6` marks a path that was never
@@ -32,11 +33,12 @@ Everything the run was told or settled once.
 | `ipv6_check` `ipv4_check` | the evidence behind each verdict: time to answer, and the failure reason if it did not |
 | `environment` | app version, user agent, language, timezone, screen, the deadlines in force, and `download` — the streams, window, cap and ceiling the run measured with |
 | `exportedAt` | null until the session has been written out; never-exported sessions are flagged on screen |
+| `end_reason` | `stop` when Stop ended the run, `recovered` when it was closed after a reload; absent on a session never closed |
 
 ## Rollup
 
 `summary` holds per-probe p50, p90, max, ok and failure counts, the download's rate-bound
-percentiles and total bytes, and counts of skipped, paused and degraded rounds. It defines no
+percentiles and total bytes, and counts of skipped slots, paused and degraded rounds. It defines no
 outage, and every figure is recomputable from the samples.
 
 The scales, the activities composed from them, and which scale reads each probe
@@ -70,8 +72,8 @@ failure is represented only by an absence.
 `ms` is recorded on failure too: how long a probe took to fail separates a refused connection
 from a link that hung until the deadline.
 
-A round that could not start because the previous one was still in flight is written with
-`skipped: "overlap"`.
+A slot that comes due while the previous round is still running starts nothing and writes no
+row; a `skip` event names that round, how long it has run, and what it is waiting on.
 
 If an IndexedDB write fails, rows stay in memory and are retried, with the pending count on
 screen.
@@ -84,9 +86,8 @@ screen.
 | `t` | wall clock, epoch ms |
 | `mono` | monotonic ms since session start; survives wall-clock jumps, bridged across a reload using `t` |
 | `late_ms` | how far behind schedule the round ran |
-| `skipped` | `overlap` when the previous round had not returned; otherwise null |
 | `round_error` | exception message if the round itself threw |
-| `visible` | whether the tab was foregrounded |
+| `visible` `visible_end` | whether the tab was foregrounded when the round started, and when it ended |
 | `lat` `lon` `accuracy` `speed` `heading` | GPS fix; `speed` in m/s, often absent |
 | `accuracy_class` | `gps` under 100 m, `coarse` above. A coarse fix is a tower estimate: usable as a rough location, unusable for speed or distance |
 | `pos_t` | timestamp **of the fix**, which can precede the round. A stale fix on a moving train is off by a kilometre |
@@ -94,7 +95,7 @@ screen.
 | `intervalMs` | interval in force for this round |
 | `in_pause` | this round followed a bridged gap, so it can be filtered without matching timestamps |
 | `wake_lock` | whether the screen was held awake |
-| `prev_round_ms` | how long the previous round took. A frozen tab suspends the abort timers, so a round can outlast every deadline in it; without this an overlap cannot be told from the app stalling |
+| `round_ms` `phase_idle_ms` `phase_down_ms` | the round's wall time, and its two phases: the idle probes, then the download with the round trip taken across it. A frozen tab suspends the abort timers, so a round can outlast every deadline in it |
 | `speed_derived` `speed_source` | speed computed from consecutive fixes, and whether the reported value is `gps` or `derived` |
 | `loaded_rtt_ms` `loaded_rtt_from` | a round trip taken while the download was running, and which probe took it — the same one that answered idle, so the pair is one measurement made twice. The gap between them is what this link queues under load. Null when no window opened, or when the transfer ended before the sample could start |
 | `grades` | the three activity grades this round produced, as shown. `null` in place of the object means the round threw and measured nothing; `null` for one activity means unrated, where a term it needs had no measurement |
@@ -114,6 +115,7 @@ screen.
 | `egress_ip` `colo` | `ip6` `ip4` `down` | the operator's public address and the Cloudflare PoP |
 | `ms_samples` `samples_ok` `ms_min` `ms_max` | `ip6` `ip4` `dns` `dns_ctl` `web` `udp` | every latency sample, how many succeeded, and the spread; `ms` is the median of the ones that succeeded. A median of [893, 4275, 52] hides the spread |
 | `sample_fail` | sampled probes | the reason the last sample failed, on a probe whose earlier samples answered. The probe is a measurement; this is the packet it lost |
+| `samples_end` `wall_ms` | sampled probes | why sampling stopped — the `count` was reached, the `budget` could not hold another sample, or a `failure` — and the wall time all the samples took. A STUN sample reports its first candidate before gathering ends, so `ms_samples` alone cannot account for the budget |
 | `parse_reason` | `ip6` `ip4` | which check the trace body failed |
 | `public_ips` `candidates` | `udp` | the NAT mapping per address family, and how many ICE candidates were gathered |
 | `host` | `dns` `dns_ctl` | the hostname used: random each round for `dns`, constant for `dns_ctl` |
@@ -123,6 +125,7 @@ screen.
 | `saturated` | `down` | the window hit its byte cap first, so `bps` is the ceiling and the link carries at least that. The screen prints a `≥` |
 | `ceiling_bps` | `down` | the fastest this round could have reported |
 | `streams` | `down` | how many connections carried it |
+| `per_stream` | `down` | one entry per connection: `headers_ms` and `first_byte_ms` from the start of the download, `bytes` read, and `end` — `eof`, `done`, `time`, `aborted` or `network` for a stream that opened, `http`, `aborted` or `network` for one that never did |
 | `window_bytes` `window_ms` | `down` | what `bps` was computed over. The window ends on its own clock, so a stream that stalls inside it shortens no span and lengthens none |
 | `ramp_ms` | `down` | how long was streamed before the window opened, and discarded |
 | `refused_by` | `down` | on a `network` failure: `server` or `connection` |
@@ -152,3 +155,6 @@ Only what cannot be derived from the samples.
 | `mark` | pressed when a person notices a failure. The probes may see it at another time, or not at all |
 | `pause` | JavaScript frozen, with the bridged duration |
 | `note` | free text, plus the recorder's own notices: a wake lock lost or regained, position quality changing, a probe rested, an egress address changing under an unchanged operator label |
+| `skip` | a slot came due `late_ms` behind schedule while round `round` was still running: `running_ms` so far, and `waiting_on`, what it had not settled — probe ids, and `loaded_rtt` for the round trip taken under load |
+| `page` | the tab `hidden` or `visible`, `pagehide` or `pageshow`, `freeze` or `resume` |
+| `network` | the browser reporting `online` or `offline`, and, where it exposes the connection, a change of its type or class |

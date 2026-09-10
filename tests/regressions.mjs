@@ -36,7 +36,7 @@ const session = (over = {}) => ({id: 's', name: 't', operator: 'KPN', connection
 // Adding one interval to a due time already further behind than that leaves it in the past,
 // so the next timer fires immediately and collides with the round still running. Observed as
 // a round 13.7 s late on a 10 s interval followed by a tick 11 ms later.
-r.test('createRecorder MUST keep rounds evenly spaced and record no overlap WHEN the loop freezes for under two intervals', async () => {
+r.test('createRecorder MUST keep rounds evenly spaced and record no skip WHEN the loop freezes for under two intervals', async () => {
   stubStun();
   globalThis.fetch = async () => okResponse();
   const store = fakeStore();
@@ -51,19 +51,19 @@ r.test('createRecorder MUST keep rounds evenly spaced and record no overlap WHEN
   await rec.stop();
 
   const rows = store.written.samples;
-  const overlaps = rows.filter(x => x.skipped === 'overlap');
-  assert.equal(overlaps.length, 0, `a missed slot must not manufacture an overlap: ${overlaps.length}`);
+  const skips = store.written.events.filter(e => e.type === 'skip');
+  assert.equal(skips.length, 0, `a missed slot must not manufacture a skip: ${skips.length}`);
 
   // Rounds stay evenly spaced.
-  const gaps = rows.filter(x => !x.skipped).map(x => x.mono).sort((a, b) => a - b)
+  const gaps = rows.map(x => x.mono).sort((a, b) => a - b)
                    .map((v, i, all) => (i ? v - all[i - 1] : null)).filter(Boolean);
   assert.ok(gaps.every(g => g >= 80), `no round follows another instantly: ${gaps.join(',')}`);
 });
 
 // A frozen tab suspends the abort timer, so a round can outlast every deadline in it: every
-// probe hit its 4 s deadline in a round that took 16.7 s. prev_round_ms is what separates an
-// overlap from a stalled app.
-r.test('createRecorder MUST record prev_round_ms on an overlap row WHEN the previous round outlasted its slot', async () => {
+// probe hit its 4 s deadline in a round that took 16.7 s. How long the running round has run
+// separates a slow round from a stalled app.
+r.test('createRecorder MUST record how long the running round has run on each skip event WHEN the round outlasts its slot', async () => {
   stubStun();
   globalThis.fetch = (url, o) => new Promise((res, rej) => {
     const t = setTimeout(() => res(okResponse()), 260);
@@ -75,10 +75,10 @@ r.test('createRecorder MUST record prev_round_ms on an overlap row WHEN the prev
   await sleep(900);
   await rec.stop();
 
-  const skipped = store.written.samples.filter(x => x.skipped === 'overlap');
-  assert.ok(skipped.length > 0, 'a slow round still overlaps the next one');
-  assert.ok(store.written.samples.some(x => typeof x.prev_round_ms === 'number' && x.prev_round_ms > 0),
-            'and the duration of the round before it is on the row');
+  const skips = store.written.events.filter(e => e.type === 'skip');
+  assert.ok(skips.length > 0, 'a slow round still outlasts the next slot');
+  assert.ok(skips.every(e => e.running_ms >= 90),
+            `every skip carries the running time: ${skips.map(e => e.running_ms)}`);
 });
 
 // After an outage a single probe can keep timing out while every other one recovers:
@@ -211,12 +211,14 @@ r.test('createRecorder MUST record one pause per missed slot and set in_pause on
 
   assert.ok(store.written.events.some(e => e.type === 'pause'), 'the gap is still an event');
   // The threshold is one missed slot: at two, a 13.7 s delay on a 10 s interval goes
-  // unlogged. Counting against late_ms pins the number to the schedule.
-  const missed = store.written.samples.filter(x => x.late_ms >= 100);
+  // unlogged. Counting against late_ms pins the number to the schedule. A slot that comes due
+  // while a round is running carries its lateness on the skip event.
+  const missed = [...store.written.samples, ...store.written.events.filter(e => e.type === 'skip')]
+    .filter(x => x.late_ms >= 100);
   const pauses = store.written.events.filter(e => e.type === 'pause');
   assert.ok(missed.length > 0, 'the freeze produced a late round to judge');
   assert.equal(pauses.length, missed.length,
-               `one pause per missed slot: ${pauses.length} events, ${missed.length} rounds ` +
+               `one pause per missed slot: ${pauses.length} events, ${missed.length} slots ` +
                `late by ${missed.map(x => x.late_ms)} ms`);
   assert.ok(store.written.samples.some(x => x.in_pause === true),
             'and the round that follows it is filterable without matching timestamps');
