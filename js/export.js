@@ -80,7 +80,7 @@ const FORMAT_VERSION = 11;
 // A row carrying `skipped` comes from a file written before format 11, where a slot that could
 // not start was a row.
 export function summarise(samples, events = []) {
-  const ran = samples.filter(s => !s.skipped && !s.round_error);
+  const ran = samples.filter(s => !s.skipped && !s.round_error && !s.interrupted);
   const skips = events.filter(e => e.type === 'skip').length;
   const probes = {};
   for (const p of PROBES) {
@@ -104,6 +104,8 @@ export function summarise(samples, events = []) {
     slots: samples.length + skips,
     skipped: samples.filter(s => s.skipped).length + skips,
     round_errors: samples.filter(s => s.round_error).length,
+    // Rounds the page left mid-way; their probes enter no tally.
+    interrupted: samples.filter(s => s.interrupted && !s.skipped && !s.round_error).length,
     in_pause: ran.filter(s => s.in_pause).length,
     // Rounds with at least one failure outside a known-absent path.
     degraded: ran.filter(s => PROBES.some(p => countsAsFailure(s.probes[p.id]))).length,

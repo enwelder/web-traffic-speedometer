@@ -1,7 +1,7 @@
 // The round loop. Every round that runs produces a row, failed ones included: a failed attempt
 // is a measurement. A slot that comes due while a round is still running is a `skip` event.
 
-import {PROBES, runRound, checkPaths, clearTimings, timeoutFor,
+import {PROBES, runRound, checkPaths, clearTimings, timeoutFor, relayAbort,
         DOWN_STREAMS, DOWN_WINDOW_MS, DOWN_CAP_BYTES, DOWN_CEILING_BPS,
         DOWN_RAMP_BYTES} from './probe.js';
 import {gradeActivities, gradeProbes, roundTripFailed} from './grade.js';
@@ -133,6 +133,49 @@ function watchPage(note) {
   });
 }
 
+// iOS suspends JS while the app is in the background or the screen is locked. A timer that fires
+// a second late was held by that suspension. performance.now() stops in device sleep while the
+// wall clock continues, so a gap takes the larger of the two clocks.
+const WATCH_MS = 250;
+const SUSPENDED_GAP_MS = 1000;
+
+// Calls `onGap` for every gap over SUSPENDED_GAP_MS between timer firings. `end` stops the timer
+// and returns the largest gap over the threshold, or null.
+function watchGaps(onGap) {
+  let lastPerf = performance.now();
+  let lastWall = Date.now();
+  let largest = 0;
+  const check = () => {
+    const perf = performance.now();
+    const wall = Date.now();
+    const gap = Math.max(perf - lastPerf, wall - lastWall);
+    lastPerf = perf;
+    lastWall = wall;
+    largest = Math.max(largest, gap);
+    if (gap > SUSPENDED_GAP_MS) onGap();
+  };
+  const timer = setInterval(check, WATCH_MS);
+  return {
+    check,
+    end() {
+      clearInterval(timer);
+      check();
+      return largest > SUSPENDED_GAP_MS ? Math.round(largest) : null;
+    }
+  };
+}
+
+// Fastest first response in the round, an estimate of radio wake-up cost. Zero values are
+// excluded: connect_ms is zero for a reused connection and for unreadable timing. A probe without
+// a successful sample stopped at its first failure, so its first sample is a time to fail.
+function firstPacket(row) {
+  const firsts = [row.probes.ip6, row.probes.dns_ctl, row.probes.udp]
+                 .filter(r => r?.samples_ok > 0)
+                 .map(r => r.ms_samples[0])
+                 .filter(v => v != null && v > 0);
+  return firsts.length ? Math.min(...firsts) : null;
+}
+
 // `store` is injectable so the round loop can run against a fake one.
 export function createRecorder({onSample, onEvent, onStatus, onNotice, store = realStore}) {
   let session = null;
@@ -165,13 +208,19 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
   let flushing = null;
   let writeFailed = false;
   let current = null;
+  // The round in flight: its abort controller, the cause of an interruption, and its gap watchdog.
+  let round = null;
+  // The seq of an interrupted round whose absence has no pause event yet.
+  let absentRound = null;
+  let chained = false;
 
   const contacted = new Set();
   const pendingSamples = [];
   const pendingEvents = [];
   const stuck = createStuckTracker({onNotice});
   // The event carries the position and the session id, so it is the recorder's to write.
-  const wake = createWakeLock({onNotice, onEvent: text => running && noteEvent(text)});
+  const wake = createWakeLock({onNotice, onEvent: text => running && noteEvent(text),
+                               onRelease: () => interrupt('wake_lock')});
   const position = createPositionTracker({onNotice, onChange: () => emit(),
                                           onNote: text => running && noteEvent(text)});
 
@@ -247,6 +296,10 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
       mono: Math.round(mono()),
       late_ms: late,
       round_error: null,
+      // Set when the page left mid-round, `wake_lock` or `suspended`: the row keeps its probes and
+      // carries no grades. `suspended_ms` is the largest timer gap the round saw.
+      interrupted: null,
+      suspended_ms: null,
       // iOS suspends a hidden tab; a column filters more easily than the pause events.
       visible: document.visibilityState === 'visible',
       // Visibility at round end; a tab hidden mid-round cuts probes short.
@@ -334,6 +387,48 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
   }
 
 
+  // A round the page left mid-way measured the suspension: it keeps its probes and carries no
+  // grades. The session abort stays untouched, so the next round runs.
+  function interrupt(cause) {
+    if (!round || round.interrupted) return;
+    round.interrupted = cause;
+    absentRound = runningSeq;
+    round.ctl.abort();
+  }
+
+  // Each round aborts on its own controller, which a stop reaches through the session abort.
+  function beginRound() {
+    const ctl = new AbortController();
+    return {ctl, unlink: relayAbort(abort.signal, ctl), interrupted: null,
+            watch: watchGaps(() => interrupt('suspended'))};
+  }
+
+  function endRound(row, startedAt) {
+    inFlight = false;
+    pending.clear();
+    // The final gap check runs before the cause is read, so a suspension that ended the round counts.
+    row.suspended_ms = round.watch.end();
+    row.interrupted = round.interrupted;
+    round.unlink();
+    round = null;
+    row.round_ms = Math.round(mono() - startedAt);
+    row.visible_end = document.visibilityState === 'visible';
+  }
+
+  // Grades, path notes, the stuck tracker and the readout values come from measured rounds only.
+  function settleMeasured(row) {
+    // Resolved once and stored on the row, so the file and the screen carry the same grade.
+    row.grades = row.round_error ? null : gradeActivities(row);
+    row.pgrades = gradeProbes(row);
+    lastGrades = row.grades;
+    revisePaths(row);
+    noteInterference(row);
+    noteEgressChange(row);
+    stuck.note(row, seq);
+    if (row.probes.down?.ok) throughput = row.probes.down.bps;
+    if (row.probes.udp) udpMs = row.probes.udp.ok ? row.probes.udp.ms : null;
+  }
+
   async function measure(late) {
     inFlight = true;
     const startedAt = mono();
@@ -341,21 +436,23 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
     runningSeq = row.seq;
     runningSince = startedAt;
     inPause = false;
+    absentRound = null;
+    round = beginRound();
     try {
-      const round = await runRound({
-        signal: abort.signal,
+      const measured = await runRound({
+        signal: round.ctl.signal,
         download: session.download || DOWNLOAD_DEFAULTS,
         intervalMs: interval(),
         resting: stuck.resting(seq),
         pending
       });
-      row.probes = round.probes;
-      row.loaded_rtt_ms = round.loaded_rtt_ms;
-      row.loaded_rtt_from = round.loaded_rtt_from;
-      row.phase_idle_ms = round.phase_idle_ms;
-      row.phase_down_ms = round.phase_down_ms;
-      row.phase_up_ms = round.phase_up_ms;
-      row.reference = round.reference;
+      row.probes = measured.probes;
+      row.loaded_rtt_ms = measured.loaded_rtt_ms;
+      row.loaded_rtt_from = measured.loaded_rtt_from;
+      row.phase_idle_ms = measured.phase_idle_ms;
+      row.phase_down_ms = measured.phase_down_ms;
+      row.phase_up_ms = measured.phase_up_ms;
+      row.reference = measured.reference;
     } catch (e) {
       // The round threw before measuring. 'error' excludes it from network tallies and the wedge
       // count; its grades stay null.
@@ -364,44 +461,28 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
         if (!row.probes[p.id]) row.probes[p.id] = {ok: false, ms: null, status: null, fail: 'error'};
       }
     } finally {
-      inFlight = false;
-      pending.clear();
-      row.round_ms = Math.round(mono() - startedAt);
-      row.visible_end = document.visibilityState === 'visible';
+      endRound(row, startedAt);
     }
 
     if (!wake.held()) wake.acquire();
     downloadBytesUsed += row.probes.down?.bytes || 0;
-
-    // Fastest first response in the round, an estimate of radio wake-up cost. Zero values are
-    // excluded: connect_ms is zero for a reused connection and for unreadable timing. A probe without
-    // a successful sample stopped at its first failure, so its first sample is a time to fail.
-    const firsts = [row.probes.ip6, row.probes.dns_ctl, row.probes.udp]
-                   .filter(r => r?.samples_ok > 0)
-                   .map(r => r.ms_samples[0])
-                   .filter(v => v != null && v > 0);
-    row.first_packet_ms = firsts.length ? Math.min(...firsts) : null;
-
-    // Resolved once and stored on the row, so the file and the screen carry the same grade.
-    row.grades = row.round_error ? null : gradeActivities(row);
-    row.pgrades = gradeProbes(row);
-    lastGrades = row.grades;
-
-    revisePaths(row);
-    noteInterference(row);
-
-    noteEgressChange(row);
-    stuck.note(row, seq);
+    row.first_packet_ms = firstPacket(row);
+    if (row.interrupted) {
+      row.grades = null;
+      row.pgrades = null;
+    } else {
+      settleMeasured(row);
+    }
+    // The bytes were spent whether or not the round was interrupted.
     charge(row);
     clearTimings();
-    if (row.probes.down?.ok) throughput = row.probes.down.bps;
-    if (row.probes.udp) udpMs = row.probes.udp.ok ? row.probes.udp.ms : null;
-
     keep(row);
   }
 
   function tick() {
     if (!running) return;
+    // A return from suspension is flagged before lateness is read, whichever timer fires first.
+    round?.watch.check();
     const now = mono();
     const wall = Date.now();
     // Timer rounding can fire a tick early; lateness is clamped at zero.
@@ -413,8 +494,11 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
     if (late >= interval()) {
       const p = position.read();
       inPause = true;
+      // `round` names the interrupted round that already stands for this absence on the strip.
       record({sessionId: session.id, t: Date.now(), mono: Math.round(now), type: 'pause',
-              lat: p.lat, lon: p.lon, text: `${(late / 1000).toFixed(1)}s bridged`});
+              lat: p.lat, lon: p.lon, ...(absentRound == null ? {} : {round: absentRound}),
+              text: `${(late / 1000).toFixed(1)}s bridged`});
+      absentRound = null;
     }
 
     // Scheduled from when this round fired. On a fixed grid, lateness pulls the next slot closer: a
@@ -424,6 +508,15 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
     dueWall = wall + interval();
     timer = setTimeout(tick, Math.max(0, due - mono()));
 
+    if (inFlight && round?.interrupted) {
+      // The interrupted round is settling its aborts; the next round starts once it has, with no
+      // skip and no wait for the following slot.
+      if (!chained) {
+        chained = true;
+        current = current.then(() => { chained = false; return running ? measure(late) : null; });
+      }
+      return;
+    }
     if (inFlight) {
       // The running round keeps the link; this slot starts no round and records a skip event with the
       // probes still pending.
@@ -489,6 +582,9 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
     said.clear();
     lastGrades = null;
     inFlight = false;
+    round = null;
+    absentRound = null;
+    chained = false;
     contacted.clear();
     abort = new AbortController();
     store.setActive(session.id);

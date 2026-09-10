@@ -40,6 +40,13 @@ s.test('gradeActivities MUST return identical grades WHEN called repeatedly with
   assert.equal(first.news, 'red');
 });
 
+s.test('gradeActivities and gradeProbes MUST return null WHEN the row carries interrupted', () => {
+  const left = {...round(), interrupted: 'wake_lock'};
+  assert.equal(g.gradeActivities(left), null);
+  assert.equal(g.gradeProbes(left), null);
+  assert.equal(g.probeReading('ip6', left).state, 'none', 'the probe rows show no reading');
+});
+
 s.test('gradeActivities MUST leave the round unchanged WHEN it grades one', () => {
   const input = round({ip6: ok(900), down: {ok: false, fail: 'network', refused_by: 'server'}});
   const before = JSON.parse(JSON.stringify(input));

@@ -220,8 +220,8 @@ r.test('summarise MUST produce finite non-negative figures WHEN replayed over ev
       if (v && typeof v === 'object') for (const [k, x] of Object.entries(v)) walk(x, `${where}.${k}`);
     };
     walk(sum, `${name}.summary`);
-    assert.equal(sum.ran + sum.skipped, j.samples.length,
-                 `${name}: every round is either a measurement or a skip, never neither`);
+    assert.equal(sum.ran + sum.skipped + sum.round_errors + sum.interrupted, j.samples.length,
+                 `${name}: every row is a measurement, a skip, an error or an interruption`);
     assert.ok(sum.degraded <= sum.ran, `${name}: more degraded rounds than rounds`);
   }
 });

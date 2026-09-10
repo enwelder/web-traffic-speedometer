@@ -1158,6 +1158,17 @@ const round = over => ({t: Date.parse('2026-09-09T12:00:00Z'), probes: {
   ...over
 }});
 
+r.test('hatchesStrip MUST return false WHEN the pause event names an interrupted round', () => {
+  // The interrupted row draws the hatch for that absence.
+  assert.equal(ui.hatchesStrip({type: 'pause', round: 4}), false);
+  assert.equal(ui.hatchesStrip({type: 'pause'}), true);
+  assert.equal(ui.hatchesStrip({type: 'skip'}), false);
+});
+
+r.test('changes MUST return no line WHEN the row carries interrupted', () => {
+  assert.deepEqual(ui.changes({...round({ip6: gone()}), interrupted: 'wake_lock'}, round()), []);
+});
+
 r.test('probeReading MUST return a value or a note for every probe and flag a saturated download WHEN the round is healthy', () => {
   const s = round();
   for (const id of ['ip6', 'dns', 'dns_ctl', 'udp']) {
@@ -1326,6 +1337,14 @@ e.test('filename MUST strip quotes, commas, newlines and backslashes WHEN the se
   assert.ok(!/["',\n\\]/.test(f), `filename is sanitised: ${f}`);
   assert.match(f, /^wts-20260903-\d{4}-k-p-n\.json$/, f);
   assert.deepEqual(JSON.parse(sessionJson(sess, [], [])).session.name, 'x", y\n\\');
+});
+
+e.test('summarise MUST exclude an interrupted round from ran and count it WHEN a row carries interrupted', () => {
+  const rows = [1, 2, 3].map(i => ({seq: i, t: i, probes: {ip6: {ok: false, fail: 'abort'}}}));
+  rows[1].interrupted = 'wake_lock';
+  const sum = summarise(rows);
+  assert.deepEqual([sum.rounds, sum.ran, sum.interrupted], [3, 2, 1]);
+  assert.equal(sum.probes.ip6.n, 2, 'its probes enter no tally');
 });
 
 e.test('summarise MUST report rate percentiles and bytes for up WHEN rows carry an upload rate', () => {

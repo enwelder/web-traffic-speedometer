@@ -167,11 +167,12 @@ export function clearStrip() {
   }
 }
 
+// An interrupted round draws the pause hatch: the page was suspended and the round holds no grade.
 export function pushStrip(sample) {
   for (const activity of ACTIVITY_IDS) {
     const strip = $(`strip-${activity}`);
     const bar = document.createElement('i');
-    bar.className = gradeFor(activity, sample);
+    bar.className = sample.interrupted ? 'pause' : gradeFor(activity, sample);
     strip.appendChild(bar);
     while (strip.children.length > STRIP_BARS) strip.removeChild(strip.firstChild);
   }
@@ -187,6 +188,9 @@ export function pushStripPause() {
     while (strip.children.length > STRIP_BARS) strip.removeChild(strip.firstChild);
   }
 }
+
+// A pause event draws a hatch unless it names an interrupted round, whose row drew one.
+export const hatchesStrip = e => e.type === 'pause' && e.round == null;
 
 // Newest first: the controls sit over the bottom of the log.
 export function pushLog(text, cls) {
@@ -220,6 +224,7 @@ function transitions(ids, {label, now, then, fine}) {
 }
 
 export function changes(sample, prev) {
+  if (sample.interrupted) return [];
   const time = clock(sample.t);
   if (sample.round_error) return [`${time}  round error: ${sample.round_error}`];
 

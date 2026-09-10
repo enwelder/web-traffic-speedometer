@@ -351,6 +351,134 @@ r.test('createRecorder MUST record a pause sized from the wall clock WHEN perfor
             `and its length comes from the wall clock: ${pauses.map(e => e.text).join(' ')}`);
 });
 
+// Round 87 and round 236 of the 10 Sep session: the app went to the background 2.2 s and 0.3 s into
+// a round, iOS suspended it, and the rounds finished on return after 97 s and 470 s.
+
+// A platform wake lock the test can take back, and a promise for the first request of a round.
+function interruptible() {
+  const grants = [];
+  const wakeLock = {request: async () => {
+    const listeners = [];
+    const sentinel = {released: false, addEventListener: (_, fn) => listeners.push(fn),
+                      release: async () => { sentinel.released = true; },
+                      systemRelease() { this.released = true; listeners.forEach(fn => fn()); }};
+    grants.push(sentinel);
+    return sentinel;
+  }};
+  Object.defineProperty(globalThis, 'navigator', {
+    value: {userAgent: 'node-test', language: 'en', geolocation: null, wakeLock}, configurable: true
+  });
+  let started;
+  const inRound = new Promise(resolve => { started = resolve; });
+  const restore = () => Object.defineProperty(globalThis, 'navigator', {
+    value: {userAgent: 'node-test', language: 'en', geolocation: null}, configurable: true
+  });
+  return {grants, inRound, started: () => started(), restore};
+}
+
+r.test('createRecorder MUST store a round interrupted by wake_lock with null grades and pgrades WHEN the wake lock is released mid-round', async () => {
+  stubStun();
+  const platform = interruptible();
+  globalThis.fetch = async () => { platform.started(); await sleep(150); return okResponse(); };
+  try {
+    const store = fakeStore();
+    const rec = createRecorder({store});
+    await rec.start(session({intervalMs: 2000, ipv6_available: true}));
+    await platform.inRound;
+    platform.grants[0].systemRelease();
+    await sleep(500);
+    await rec.stop();
+    const row = store.written.samples[0];
+    assert.deepEqual([row.interrupted, row.grades, row.pgrades], ['wake_lock', null, null]);
+    assert.ok(row.probes.ip6, 'the probes the round took are kept');
+  } finally {
+    platform.restore();
+  }
+});
+
+r.test('createRecorder MUST store a round interrupted as suspended with suspended_ms above 1000 WHEN performance.now stands still and the wall clock advances during a round', async () => {
+  stubStun();
+  let started;
+  const inRound = new Promise(resolve => { started = resolve; });
+  globalThis.fetch = async () => { started(); await sleep(300); return okResponse(); };
+  const store = fakeStore();
+  const rec = createRecorder({store});
+  await rec.start(session({intervalMs: 5000, ipv6_available: true}));
+  await inRound;
+  const realNow = performance.now.bind(performance);
+  const realDate = Date.now.bind(Date);
+  const frozen = realNow();
+  performance.now = () => frozen;
+  Date.now = () => realDate() + 4000;
+  try {
+    await sleep(400);
+  } finally {
+    performance.now = realNow;
+    Date.now = realDate;
+  }
+  await rec.stop();
+  const row = store.written.samples[0];
+  assert.equal(row.interrupted, 'suspended');
+  assert.ok(row.suspended_ms > 1000, `largest gap ${row.suspended_ms} ms`);
+});
+
+r.test('createRecorder MUST start the next round as the interrupted round settles and record no skip for it WHEN a slot comes due during settling', async () => {
+  stubStun();
+  const platform = interruptible();
+  let slow = true;
+  globalThis.fetch = async () => { platform.started(); if (slow) await sleep(500); return okResponse(); };
+  try {
+    const store = fakeStore();
+    const rec = createRecorder({store});
+    await rec.start(session({intervalMs: 300, ipv6_available: true}));
+    await platform.inRound;
+    platform.grants[0].systemRelease();
+    slow = false;
+    await sleep(900);
+    await rec.stop();
+    const [first, second] = [...store.written.samples].sort((a, b) => a.seq - b.seq);
+    assert.equal(first.interrupted, 'wake_lock');
+    assert.ok(second, 'a round followed');
+    assert.equal(store.written.events.filter(e => e.type === 'skip' && e.round === first.seq).length, 0);
+    const gap = second.mono - (first.mono + first.round_ms);
+    assert.ok(gap < 150, `the next round started ${gap} ms after the interrupted one ended`);
+  } finally {
+    platform.restore();
+  }
+});
+
+r.test('createRecorder MUST set round on the pause event WHEN the absence interrupted a round', async () => {
+  stubStun();
+  let started;
+  const inRound = new Promise(resolve => { started = resolve; });
+  globalThis.fetch = async () => { started(); await sleep(50); return okResponse(); };
+  const store = fakeStore();
+  const rec = createRecorder({store});
+  await rec.start(session({intervalMs: 400, ipv6_available: true}));
+  await inRound;
+  const until = Date.now() + 1200;
+  while (Date.now() < until) { /* suspended */ }
+  await sleep(600);
+  await rec.stop();
+  const row = store.written.samples.find(x => x.interrupted);
+  const pause = store.written.events.find(e => e.type === 'pause');
+  assert.ok(row && pause, 'the suspension produced an interrupted round and a pause');
+  assert.equal(pause.round, row.seq);
+});
+
+r.test('createRecorder.stop MUST record the aborted round with interrupted null WHEN stop lands mid-round', async () => {
+  stubStun();
+  let started;
+  const inRound = new Promise(resolve => { started = resolve; });
+  globalThis.fetch = async () => { started(); await sleep(100); return okResponse(); };
+  const store = fakeStore();
+  const rec = createRecorder({store});
+  await rec.start(session({intervalMs: 2000, ipv6_available: true}));
+  await inRound;
+  await rec.stop();
+  assert.equal(store.written.samples[0].interrupted, null, 'a stop is the user ending the session');
+});
+
 r.test('createStuckTracker MUST leave the download unrested WHEN it fails alone for timeout, network, stalled or connect', () => {
   // A failed download holds no persistent connection; a rest would remove 90 s of throughput
   // failures from the record.

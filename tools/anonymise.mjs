@@ -92,7 +92,7 @@ const KEYS = {
            'in_pause', 'wake_lock', 'prev_round_ms', 'intervalMs', 'lat', 'lon', 'accuracy',
            'accuracy_class', 'speed', 'speed_derived', 'speed_source', 'heading', 'pos_t',
            'pos_error', 'probes', 'grades', 'pgrades', 'first_packet_ms', 'loaded_rtt_ms', 'loaded_rtt_from',
-           'round_ms', 'phase_idle_ms', 'phase_down_ms', 'phase_up_ms', 'visible_end', 'reference'],
+           'round_ms', 'phase_idle_ms', 'phase_down_ms', 'phase_up_ms', 'visible_end', 'reference', 'interrupted', 'suspended_ms'],
   probe: ['ok', 'ms', 'status', 'fail', 'egress_ip', 'colo', 'ms_samples', 'samples_ok',
           'ms_min', 'ms_max', 'sample_fail', 'expected', 'blocked', 'unused', 'stuck', 'host', 'bytes', 'truncated', 'server',
           'ttfb_ms', 'transfer_ms', 'handshake', 'reused', 'protocol', 'lookup_ms',

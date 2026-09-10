@@ -34,6 +34,27 @@ const track = () => {
   return {notices, events, onNotice: n => notices.push(n), onEvent: e => events.push(e)};
 };
 
+s.test('createWakeLock MUST call onRelease once WHEN the system releases the sentinel mid-session', async () => {
+  const platform = fakePlatform();
+  let released = 0;
+  const wake = createWakeLock({...track(), onRelease: () => released++});
+  await wake.acquire();
+  platform.grants[0].systemRelease();
+  await sleep(10);
+  assert.equal(released, 1);
+});
+
+s.test('createWakeLock MUST leave onRelease uncalled WHEN the caller released the lock first', async () => {
+  const platform = fakePlatform();
+  let released = 0;
+  const wake = createWakeLock({...track(), onRelease: () => released++});
+  await wake.acquire();
+  await wake.release();
+  platform.grants[0].systemRelease();
+  await sleep(10);
+  assert.equal(released, 0, 'a lock the session gave up interrupts no round');
+});
+
 s.test('createWakeLock MUST request a new lock and record the loss WHEN the system releases the sentinel', async () => {
   const platform = fakePlatform();
   const log = track();

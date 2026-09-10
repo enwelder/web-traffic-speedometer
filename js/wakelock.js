@@ -5,7 +5,7 @@
 // handler, so a request in flight is tracked: two concurrent requests orphan a sentinel
 // whose later release reports a loss that did not happen.
 
-export function createWakeLock({onNotice, onEvent} = {}) {
+export function createWakeLock({onNotice, onEvent, onRelease} = {}) {
   let sentinel = null;
   let lost = false;
   let pending = false;
@@ -23,7 +23,7 @@ export function createWakeLock({onNotice, onEvent} = {}) {
     try {
       const granted = await navigator.wakeLock.request('screen');
       sentinel = granted;
-      granted.addEventListener('release', () => onRelease(granted), {once: true});
+      granted.addEventListener('release', () => released(granted), {once: true});
       if (lost) {
         lost = false;
         onNotice?.('');
@@ -41,12 +41,14 @@ export function createWakeLock({onNotice, onEvent} = {}) {
     }
   }
 
-  function onRelease(granted) {
+  function released(granted) {
     if (sentinel === granted) sentinel = null;
     if (!active) return;
     lost = true;
     onNotice?.('The screen lock was released. Reacquiring — if it keeps happening, check Low Power Mode.');
     onEvent?.('screen wake lock released');
+    // iOS releases the lock before it suspends the page, so the round in flight hears of it first.
+    onRelease?.();
     acquire();
   }
 

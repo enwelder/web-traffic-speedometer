@@ -35,6 +35,9 @@ const uuid = () => (crypto.randomUUID ? crypto.randomUUID()
 
 const recorder = createRecorder({
   onSample(sample) {
+    // An interrupted round holds no reading: the strip shows the absence, and the probe rows and
+    // the log keep the last measured round.
+    if (sample.interrupted) { ui.pushStrip(sample); return; }
     ui.setProbes(sample);
     const kind = ui.classify(sample);
     ui.pushStrip(sample);
@@ -45,7 +48,7 @@ const recorder = createRecorder({
     lastSample = sample;
   },
   onEvent(event) {
-    if (event.type === 'pause') ui.pushStripPause();
+    if (ui.hatchesStrip(event)) ui.pushStripPause();
     ui.pushLog(`${ui.clock(event.t)}  ← ${event.type}${event.text ? ': ' + event.text : ''}`,
                event.type === 'pause' || event.type === 'skip' ? 'warn' : 'mark');
   },

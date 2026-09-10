@@ -165,7 +165,7 @@ export function looksLikeRetry(ms) {
 
 // A listener added to an already aborted signal never fires, so the caller's abort is applied
 // directly as well as subscribed to. Returns the unsubscribe.
-function relayAbort(signal, ctl) {
+export function relayAbort(signal, ctl) {
   if (!signal) return () => {};
   const relay = () => ctl.abort();
   if (signal.aborted) ctl.abort();

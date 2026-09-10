@@ -40,6 +40,9 @@ export function gradeValue(scale, value) {
 
 export const worse = (a, b) => (a == null ? b : b == null ? a : (RANK[a] >= RANK[b] ? a : b));
 
+// A skipped slot and a round the page left mid-way hold no measurement of the link.
+const unmeasured = s => !s || s.skipped || s.interrupted;
+
 // A resting probe sends no request, so it adds no red to the activity it feeds during the
 // cool-down.
 const failed = countsAsFailure;
@@ -197,7 +200,7 @@ function dnsMeasure(p) {
 
 // A probe's measurement this round and its grade.
 export function probeReading(id, sample) {
-  const p = sample && !sample.skipped ? (sample.probes || {}) : {};
+  const p = unmeasured(sample) ? {} : (sample.probes || {});
   const r = p[id];
   const state = probeState(r);
   if (state !== 'ok') {
@@ -214,7 +217,7 @@ export function probeReading(id, sample) {
 }
 
 export function gradeActivities(sample) {
-  if (!sample || sample.skipped) return null;
+  if (unmeasured(sample)) return null;
   const out = {};
   for (const activity of ACTIVITY_IDS) out[activity] = activityReading(activity, sample).grade;
   return out;
@@ -222,7 +225,7 @@ export function gradeActivities(sample) {
 
 // Every probe's own grade for one round, resolved once so the file and the screen agree.
 export function gradeProbes(sample) {
-  if (!sample || sample.skipped) return null;
+  if (unmeasured(sample)) return null;
   const out = {};
   for (const id of Object.keys(PROBE_SCALES)) out[id] = probeReading(id, sample).grade;
   return out;
