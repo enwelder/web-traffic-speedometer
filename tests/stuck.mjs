@@ -27,7 +27,7 @@ const feed = (tracker, seq, failing) => {
   return r;
 };
 
-s.test('a probe failing alone is rested, and only after STUCK_AFTER rounds', () => {
+s.test('createStuckTracker MUST rest a probe only after STUCK_AFTER consecutive failures WHEN the other probes answer', () => {
   const notices = [];
   const t = createStuckTracker({onNotice: n => notices.push(n)});
   for (let seq = 0; seq < STUCK_AFTER - 1; seq++) {
@@ -38,19 +38,19 @@ s.test('a probe failing alone is rested, and only after STUCK_AFTER rounds', () 
   const last = feed(t, STUCK_AFTER - 1, {web: 'timeout'});
   assert.equal(last.probes.web.stuck, true, `stuck on failure ${STUCK_AFTER}`);
   assert.deepEqual([...t.resting(STUCK_AFTER)], ['web'], 'and it is the only one rested');
-  assert.equal(notices.length, 1, 'said once');
+  assert.equal(notices.length, 1, 'one notice');
   assert.match(notices[0], /web has failed/, notices[0]);
 });
 
-s.test('a rest lasts STUCK_COOLDOWN rounds and then lapses', () => {
+s.test('createStuckTracker.resting MUST hold a rest for exactly STUCK_COOLDOWN rounds WHEN a probe was rested', () => {
   const t = createStuckTracker({});
   for (let seq = 0; seq < STUCK_AFTER; seq++) feed(t, seq, {web: 'timeout'});
   const from = STUCK_AFTER;
   assert.deepEqual([...t.resting(from + STUCK_COOLDOWN - 1)], ['web'], 'still resting');
-  assert.equal(t.resting(from + STUCK_COOLDOWN).size, 0, 'and asked again on the next round');
+  assert.equal(t.resting(from + STUCK_COOLDOWN).size, 0, 'and probed again on the next round');
 });
 
-s.test('a total outage rests nothing, so the failure stays visible', () => {
+s.test('createStuckTracker MUST leave every probe unrested WHEN all probes fail in the same round', () => {
   const t = createStuckTracker({});
   const everything = Object.fromEntries(PROBES.map(p => [p.id, 'timeout']));
   for (let seq = 0; seq < STUCK_AFTER + 3; seq++) {
@@ -60,7 +60,7 @@ s.test('a total outage rests nothing, so the failure stays visible', () => {
   assert.equal(t.resting(99).size, 0);
 });
 
-s.test('only a failure a fresh connection could fix is rested', () => {
+s.test('createStuckTracker MUST leave a probe unrested WHEN its failure reason is parse or http', () => {
   for (const fail of ['parse', 'http']) {
     const t = createStuckTracker({});
     for (let seq = 0; seq < STUCK_AFTER + 3; seq++) {
@@ -70,7 +70,7 @@ s.test('only a failure a fresh connection could fix is rested', () => {
   }
 });
 
-s.test('a known-absent path is never rested', () => {
+s.test('createStuckTracker MUST leave a probe unrested WHEN its failure is marked expected', () => {
   const t = createStuckTracker({});
   for (let seq = 0; seq < STUCK_AFTER + 3; seq++) {
     feed(t, seq, {ip4: {fail: 'network', expected: true}});
@@ -78,7 +78,7 @@ s.test('a known-absent path is never rested', () => {
   assert.equal(t.resting(99).size, 0);
 });
 
-s.test('one success clears the count', () => {
+s.test('createStuckTracker MUST restart the failure count WHEN the probe succeeds once', () => {
   const t = createStuckTracker({});
   let seq = 0;
   for (let i = 0; i < STUCK_AFTER - 1; i++) feed(t, seq++, {web: 'timeout'});
@@ -89,7 +89,7 @@ s.test('one success clears the count', () => {
   }
 });
 
-s.test('a resting probe is not counted as failing again', () => {
+s.test('createStuckTracker MUST emit one notice WHEN the rested probe reports resting for the whole cool-down', () => {
   const notices = [];
   const t = createStuckTracker({onNotice: n => notices.push(n)});
   let seq = 0;
@@ -98,7 +98,7 @@ s.test('a resting probe is not counted as failing again', () => {
   assert.equal(notices.length, 1, `rested rounds must not re-trigger: ${notices.length} notices`);
 });
 
-s.test('a rest does not survive into the next session', () => {
+s.test('createStuckTracker.reset MUST clear every rest WHEN a new session starts', () => {
   const t = createStuckTracker({});
   for (let seq = 0; seq < STUCK_AFTER; seq++) feed(t, seq, {web: 'timeout'});
   assert.equal(t.resting(STUCK_AFTER).size, 1, 'resting at the end of the first session');

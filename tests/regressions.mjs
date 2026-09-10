@@ -36,7 +36,7 @@ const session = (over = {}) => ({id: 's', name: 't', operator: 'KPN', connection
 // Adding one interval to a due time already further behind than that leaves it in the past,
 // so the next timer fires immediately and collides with the round still running. Observed as
 // a round 13.7 s late on a 10 s interval followed by a tick 11 ms later.
-r.test('a freeze shorter than two intervals does not fire the next round instantly', async () => {
+r.test('createRecorder MUST keep rounds evenly spaced and record no overlap WHEN the loop freezes for under two intervals', async () => {
   stubStun();
   globalThis.fetch = async () => okResponse();
   const store = fakeStore();
@@ -63,7 +63,7 @@ r.test('a freeze shorter than two intervals does not fire the next round instant
 // A frozen tab suspends the abort timer, so a round can outlast every deadline in it: every
 // probe hit its 4 s deadline in a round that took 16.7 s. prev_round_ms is what separates an
 // overlap from a stalled app.
-r.test('a skipped round records how long the round before it took', async () => {
+r.test('createRecorder MUST record prev_round_ms on an overlap row WHEN the previous round outlasted its slot', async () => {
   stubStun();
   globalThis.fetch = (url, o) => new Promise((res, rej) => {
     const t = setTimeout(() => res(okResponse()), 260);
@@ -84,7 +84,7 @@ r.test('a skipped round records how long the round before it took', async () => 
 // After an outage a single probe can keep timing out while every other one recovers:
 // observed over twenty consecutive rounds. Those rounds report the connection, not the
 // network.
-r.test('a probe failing alone is rested', async () => {
+r.test('createRecorder MUST rest a probe failing alone and rest none WHEN every probe fails together', async () => {
   stubStun();
   let webWedged = true;
   globalThis.fetch = async url => {
@@ -103,7 +103,7 @@ r.test('a probe failing alone is rested', async () => {
   assert.ok(rows.some(x => x.probes.web.fail === 'resting'),
             'and produces no further identical failures');
   assert.ok(rows.every(x => x.probes.ip6.ok), 'the probes that work are untouched');
-  assert.ok(notices.some(n => /resting/.test(n)), 'and the screen says why');
+  assert.ok(notices.some(n => /resting/.test(n)), 'and the notice carries the reason');
 
   // Resting applies only to a probe failing alone: when everything fails the network is
   // down, and resting every probe at once blanks the readout.
@@ -134,7 +134,7 @@ r.test('a probe failing alone is rested', async () => {
 
 // Small probes have succeeded at 3885, 3883 and 3878 ms, so a deadline near 4 s records
 // slow-but-working rounds as failures.
-r.test('a slow but working probe is not recorded as a failure', async () => {
+r.test('timeoutFor MUST allow at least 8000 ms per fetch probe WHEN the interval is 15 s or 30 s', async () => {
   for (const interval of [15000, 30000]) {
     for (const p of probe.PROBES) {
       const t = probe.timeoutFor(p, interval);
@@ -149,7 +149,7 @@ r.test('a slow but working probe is not recorded as a failure', async () => {
 
 // coords.speed is supplied sporadically (0, 2 and 51 of 158, 75 and 243 rounds), so speed is
 // computed from consecutive fixes and the row records which source it came from.
-r.test('speed is derived from consecutive fixes when the platform will not supply it', async () => {
+r.test('createRecorder MUST record speed_source derived from consecutive fine fixes and null speed_derived from tower fixes WHEN the platform supplies no speed', async () => {
   stubStun();
   globalThis.fetch = async () => okResponse();
   let watcher;
@@ -172,7 +172,7 @@ r.test('speed is derived from consecutive fixes when the platform will not suppl
   assert.ok(withSpeed.length > 0, 'a speed is produced without the platform supplying one');
   const s = withSpeed[0];
   assert.equal(s.speed, null, 'the measured field stays empty');
-  assert.equal(s.speed_source, 'derived', 'and the row says where the number came from');
+  assert.equal(s.speed_source, 'derived', 'and the row records the source of the number');
   assert.ok(Math.abs(s.speed_derived - 50) < 5, `~50 m/s over 1 km in 20 s, got ${s.speed_derived}`);
 
   // A pair of tower-class fixes produces no speed: two 1414 m estimates hundreds of metres
@@ -197,7 +197,7 @@ r.test('speed is derived from consecutive fixes when the platform will not suppl
 
 // in_pause makes the rounds around a bridged gap filterable without matching timestamps
 // against the event list.
-r.test('rounds inside a bridged gap are flagged on the row', async () => {
+r.test('createRecorder MUST record one pause per missed slot and set in_pause on the rounds inside it WHEN the loop freezes', async () => {
   stubStun();
   globalThis.fetch = async () => okResponse();
   const store = fakeStore();
@@ -226,7 +226,7 @@ r.test('rounds inside a bridged gap are flagged on the row', async () => {
 // The system can reclaim the wake lock without the page becoming hidden (Low Power Mode is
 // one trigger). The released sentinel stays in the variable, so a guard on the variable alone
 // blocks every retry for the rest of the session.
-r.test('a wake lock taken back by the system is reacquired, not lost for the session', async () => {
+r.test('createRecorder MUST reacquire the wake lock and record the loss WHEN the system reclaims it mid-session', async () => {
   stubStun();
   globalThis.fetch = async () => okResponse();
 
@@ -282,7 +282,7 @@ r.test('a wake lock taken back by the system is reacquired, not lost for the ses
 
 // Rounding the rank down puts a ten-sample window on its own last element, which reports the
 // maximum as p90.
-r.test('a percentile is the nearest rank, not the largest value that fits', async () => {
+r.test('quantile MUST return the nearest rank WHEN the series holds 3 to 20 samples', async () => {
   const exq = await import('../js/export.js');
   const asc = n => Array.from({length: n}, (_, i) => i + 1);
 
@@ -304,7 +304,7 @@ r.test('a percentile is the nearest rank, not the largest value that fits', asyn
 
 // The operator label is typed in and the egress address is measured, so a hotspot picked up
 // mid-journey shows only as an address change.
-r.test('a change of egress address under an unchanged label is written down', async () => {
+r.test('createRecorder MUST record one egress-change event WHEN the egress address changes under an unchanged operator label', async () => {
   stubStun();
   let ip = '2a02:a473::9';
   globalThis.fetch = async () => ({ok: true, status: 200, type: 'opaque',
@@ -319,11 +319,11 @@ r.test('a change of egress address under an unchanged label is written down', as
   await rec.stop();
 
   const notes = store.written.events.filter(e => /egress address changed/.test(e.text || ''));
-  assert.equal(notes.length, 1, `said once, not every round afterwards: ${notes.length}`);
+  assert.equal(notes.length, 1, `one event, not one per round: ${notes.length}`);
 });
 
 
-r.test('a gap made only of wall-clock time is still a pause', async () => {
+r.test('createRecorder MUST record a pause sized from the wall clock WHEN performance.now stands still through a device sleep', async () => {
   // iOS stops performance.now() while the device sleeps. Recorded on KPN, seq 7 to 8: the wall
   // clock advanced 4,331,556 ms and the monotonic clock 2,551,966 ms, so 29.7 minutes of the
   // gap were invisible to it. Read from the monotonic clock alone, a gap that is entirely
@@ -352,7 +352,7 @@ r.test('a gap made only of wall-clock time is still a pause', async () => {
             `and its length comes from the wall clock: ${pauses.map(e => e.text).join(' ')}`);
 });
 
-r.test('a stalled download is a congested cell, and is not rested', () => {
+r.test('createStuckTracker MUST rest the download for timeout and network failures and leave it unrested WHEN the failure is stalled', () => {
   // Resting stands a probe down for six rounds, which would blank the throughput for 90
   // seconds of the congestion the run exists to record.
   const rests = fail => {

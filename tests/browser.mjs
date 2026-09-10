@@ -114,7 +114,7 @@ const readDb = page => page.evaluate(async () => {
 
 const b = suite(`browser (${engineName})`);
 
-b.test('the rows and strips are named for what they are', async () => {
+b.test('the readout MUST label the strips from ACTIVITIES and show one row per probe pair WHEN the page loads', async () => {
   const {ctx} = await context();
   const page = await ctx.newPage();
   await page.goto(BASE, {waitUntil: 'networkidle'});
@@ -131,7 +131,7 @@ b.test('the rows and strips are named for what they are', async () => {
   await ctx.close();
 });
 
-b.test('the page loads clean, and the setup asks only what it cannot know', async () => {
+b.test('the page MUST load with no script error and offer only the fields it cannot derive WHEN opened', async () => {
   const {ctx} = await context();
   const page = await ctx.newPage();
   const errors = [];
@@ -142,15 +142,15 @@ b.test('the page loads clean, and the setup asks only what it cannot know', asyn
   assert.deepEqual(errors, []);
   assert.equal(await page.title(), 'Web Traffic Speedometer');
   for (const gone of ['#f-route', '#f-name', '#f-adaptive', '#f-interval', '#f-download']) {
-    assert.equal(await page.locator(gone).count(), 0, `${gone} is derived, not asked for`);
+    assert.equal(await page.locator(gone).count(), 0, `${gone} is derived from the session`);
   }
   await page.selectOption('#f-connection', 'wifi');
-  assert.equal(await page.locator('#row-operator').isHidden(), true, 'no operator asked for on Wi-Fi');
+  assert.equal(await page.locator('#row-operator').isHidden(), true, 'the operator field is hidden on Wi-Fi');
   await page.selectOption('#f-connection', 'cellular');
   await ctx.close();
 });
 
-b.test('the projection says what the run will cost before Start', async () => {
+b.test('the budget projection MUST double WHEN the interval halves', async () => {
   const {ctx} = await context();
   const page = await ctx.newPage();
   await page.goto(PLAIN, {waitUntil: 'networkidle'});
@@ -172,7 +172,7 @@ b.test('the projection says what the run will cost before Start', async () => {
   await ctx.close();
 });
 
-b.test('a session records, survives a reload, and exports losslessly', async () => {
+b.test('a session MUST record, resume across a reload with a contiguous seq, and export every stored round WHEN driven through the UI', async () => {
   const {ctx, state} = await context();
   const page = await ctx.newPage();
   await page.goto(BASE, {waitUntil: 'networkidle'});
@@ -272,7 +272,7 @@ b.test('a session records, survives a reload, and exports losslessly', async () 
   await ctx.close();
 });
 
-b.test('the shell and the recorded sessions survive with no network at all', async () => {
+b.test('the service worker MUST serve the shell and the stored sessions WHEN the context is offline', async () => {
   // Playwright's WebKit build fails a reload of an offline context with an internal error
   // before the page is reached, so this cannot run there. Chromium covers it; the worker
   // itself is checked against the shipped file list by tests/security.mjs on every engine.
@@ -299,7 +299,7 @@ b.test('the shell and the recorded sessions survive with no network at all', asy
   await ctx.close();
 });
 
-b.test('the content security policy blocks nothing the probes need', async () => {
+b.test('every probe MUST reach its endpoint with no policy violation logged WHEN a session runs under the CSP', async () => {
   const {ctx} = await context();
   const page = await ctx.newPage();
   const blocked = [];
@@ -321,7 +321,7 @@ b.test('the content security policy blocks nothing the probes need', async () =>
   await ctx.close();
 });
 
-b.test('stopping mid-round stops the transfer it had not started', async () => {
+b.test('the recorder MUST open no download connection WHEN the session is stopped during the idle phase', async () => {
   const {ctx} = await context();
   const page = await ctx.newPage();
   const asked = [];
@@ -337,7 +337,7 @@ b.test('stopping mid-round stops the transfer it had not started', async () => {
   await ctx.close();
 });
 
-b.test('the newest log line is on top and nothing hides behind the controls', async () => {
+b.test('the log MUST order the newest line first and the control bar MUST start where the scroll area ends WHEN a session runs', async () => {
   const {ctx} = await context();
   const page = await ctx.newPage();
   await page.goto(BASE, {waitUntil: 'networkidle'});
@@ -366,7 +366,7 @@ b.test('the newest log line is on top and nothing hides behind the controls', as
 });
 
 
-b.test('the header carries the build, and offers nothing to explain while idle', async () => {
+b.test('the header MUST show APP_VERSION and hide the help control WHEN no session is running', async () => {
   const {ctx} = await context();
   const page = await ctx.newPage();
   await page.goto(BASE, {waitUntil: 'networkidle'});
@@ -384,7 +384,7 @@ b.test('the header carries the build, and offers nothing to explain while idle',
   await ctx.close();
 });
 
-b.test('a grade is a colour on screen, not only a class name', async () => {
+b.test('a graded row and bar MUST compute a painted colour distinct from the neutral WHEN a session has produced grades', async () => {
   const {ctx} = await context();
   const page = await ctx.newPage();
   await page.goto(BASE, {waitUntil: 'networkidle'});
@@ -405,7 +405,7 @@ b.test('a grade is a colour on screen, not only a class name', async () => {
             rowPaint: graded.map(rail), barPaint: bars.map(bg)};
   });
 
-  assert.ok(paint.rows > 0, 'some row graded, or this proves nothing');
+  assert.ok(paint.rows > 0, 'at least one row graded, so the paint assertions have subjects');
   assert.ok(paint.bars > 0, 'and some bar too');
   for (const c of paint.rowPaint) {
     assert.ok(c && c !== 'rgba(0, 0, 0, 0)', `a graded row's rail is painted: ${c}`);
@@ -424,7 +424,7 @@ b.test('a grade is a colour on screen, not only a class name', async () => {
   await ctx.close();
 });
 
-b.test('the probe rows report each path without a sentence to read', async () => {
+b.test('the route row MUST show the family, its grade and its failure reason WHEN the path works and then fails', async () => {
   const {ctx, state} = await context();
   const page = await ctx.newPage();
   await page.goto(BASE, {waitUntil: 'networkidle'});
@@ -447,12 +447,12 @@ b.test('the probe rows report each path without a sentence to read', async () =>
   assert.match(await page.textContent('#log'), /IPv4 did not answer/,
                'what each family did at the start is logged once');
   assert.ok(!/IPv4 probe failures are expected/.test(await page.textContent('#notice')),
-            'and no longer occupies the screen');
+            'and the notice area stays clear');
   await page.click('#btn-start');
   await ctx.close();
 });
 
-b.test('the header, the tabs and the content share one column', async () => {
+b.test('the header, the tabs and the content MUST share one column WHEN the viewport is 1100 px or 393 px wide', async () => {
   for (const [w, h] of [[1100, 900], [393, 852]]) {
     const {ctx} = await context({viewport: {width: w, height: h}});
     const page = await ctx.newPage();
@@ -469,7 +469,7 @@ b.test('the header, the tabs and the content share one column', async () => {
   }
 });
 
-b.test('the log grows into the space a taller window gives it', async () => {
+b.test('the log MUST take more height WHEN the viewport is taller', async () => {
   const heights = {};
   for (const h of [852, 1100]) {
     const {ctx} = await context({viewport: {width: 393, height: h}});
@@ -485,7 +485,7 @@ b.test('the log grows into the space a taller window gives it', async () => {
             `a taller window gives the log more room: ${heights[852]} then ${heights[1100]}`);
 });
 
-b.test('a row explains itself on tap and gives the number back', async () => {
+b.test('a probe row MUST replace its number with an explanation and restore the number WHEN tapped twice', async () => {
   const {ctx} = await context();
   const page = await ctx.newPage();
   await page.goto(BASE, {waitUntil: 'networkidle'});
@@ -498,7 +498,7 @@ b.test('a row explains itself on tap and gives the number back', async () => {
   assert.equal(await value(), true);
 
   await page.click('#probe-dns');
-  assert.match(await explain(), /no resolver has seen/, 'tapping says what the row measures');
+  assert.match(await explain(), /no resolver has seen/, 'tapping shows what the row measures');
   assert.equal(await value(), false, 'in place of the number, not beside it');
   await page.waitForTimeout(2500);
   assert.match(await explain(), /no resolver has seen/, 'and the next round does not overwrite it');
@@ -511,11 +511,11 @@ b.test('a row explains itself on tap and gives the number back', async () => {
   await page.click('#btn-help');
   await page.waitForTimeout(200);
   const shown = await page.$$eval('.probe .explain', els => els.filter(e => e.textContent.trim()).length);
-  assert.equal(shown, 6, 'the help control explains every row at once');
+  assert.equal(shown, 6, 'the help control shows an explanation on every row');
   await ctx.close();
 });
 
-b.test('the layout holds and every control is reachable on a phone', async () => {
+b.test('the layout MUST avoid sideways scroll and keep every tap target at 44 px WHEN viewed at phone sizes', async () => {
   for (const [name, width, height] of [['SE', 375, 667], ['15 Pro', 393, 852], ['narrow', 320, 568], ['landscape', 852, 393]]) {
     const {ctx} = await context({viewport: {width, height}, isMobile: true, hasTouch: true});
     const page = await ctx.newPage();

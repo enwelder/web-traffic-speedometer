@@ -27,7 +27,7 @@ const ALLOWED_ORIGINS = [
 
 const s = suite('security');
 
-s.test('no outbound origin exists outside the declared probe allowlist', () => {
+s.test('the source files MUST contain no outbound origin outside ALLOWED_ORIGINS WHEN every URL literal is scanned', () => {
   const found = new Set();
   for (const [file, src] of sources) {
     for (const m of src.matchAll(/(?:https?|stun):(?:\/\/)?[^\s'"`)]+/g)) {
@@ -49,7 +49,7 @@ s.test('no outbound origin exists outside the declared probe allowlist', () => {
 // A scan for forbidden URL literals passes `fetch('https:' + '//elsewhere/?d=' + data)` and
 // protocol-relative `//elsewhere`. Enumerating the call sites is exhaustive instead: the
 // application reaches the network from one expression.
-s.test('the network can be reached from exactly one place, with a URL it did not invent', () => {
+s.test('js/ MUST contain one fetch call, taking a URL built by probeUrl WHEN the call sites are enumerated', () => {
   const calls = [];
   for (const [file, src] of sources) {
     for (const m of src.matchAll(/\bfetch\s*\(/g)) {
@@ -77,7 +77,7 @@ s.test('the network can be reached from exactly one place, with a URL it did not
   }
 });
 
-s.test('no request can carry a body, so nothing recorded can leave the device', () => {
+s.test('the source files MUST contain no write method, request body, sendBeacon or persistent channel WHEN scanned', () => {
   for (const [file, src] of sources) {
     // The bare identifiers are banned too: the shorthand `{method, body}` carries the same
     // meaning as `method: 'POST'`.
@@ -92,7 +92,7 @@ s.test('no request can carry a body, so nothing recorded can leave the device', 
 
 // An image, a stylesheet or a preload hint carries a URL to a third party without a fetch.
 // At runtime only CSP stops those; this keeps them out of the source.
-s.test('no other tag or API can be used to carry a URL off the device', () => {
+s.test('the source files MUST assign no URL sink and index.html MUST carry no resource tag WHEN scanned', () => {
   for (const [file, src] of sources) {
     for (const sink of ['new Image', 'new Audio', 'importScripts', 'navigator.sendBeacon',
                         'XMLHttpRequest']) {
@@ -118,7 +118,7 @@ s.test('no other tag or API can be used to carry a URL off the device', () => {
 // The UDP probe needs a peer connection to gather ICE candidates. Gathering alone carries no
 // data: sending requires a data channel, a track, or a remote description completing the
 // negotiation, all of which stay banned.
-s.test('the peer connection can gather candidates and nothing else', () => {
+s.test('the source files MUST use a recvonly transceiver and no data-carrying WebRTC API WHEN scanned', () => {
   for (const [file, src] of sources) {
     for (const sink of ['createDataChannel', 'setRemoteDescription', 'addTrack', 'addStream',
                         'getUserMedia', 'getDisplayMedia']) {
@@ -133,7 +133,7 @@ s.test('the peer connection can gather candidates and nothing else', () => {
   assert.match(probe, /pc\.close\(\)/, 'and every connection is closed again');
 });
 
-s.test('no request may carry credentials to a third party', () => {
+s.test('every fetch in js/probe.js MUST pass credentials omit and referrerPolicy no-referrer WHEN the calls are read', () => {
   const fetches = read('js/probe.js').match(/fetch\([\s\S]*?\}\)/g) || [];
   assert.ok(fetches.length > 0, 'found the fetch calls');
   for (const f of fetches) {
@@ -142,7 +142,7 @@ s.test('no request may carry credentials to a third party', () => {
   }
 });
 
-s.test('no dynamic code execution', () => {
+s.test('the source files MUST contain no eval, Function constructor, string timeout or dynamic import WHEN scanned', () => {
   for (const [file, src] of sources) {
     assert.ok(!/\beval\s*\(/.test(src), `${file} uses eval`);
     assert.ok(!/new\s+Function\s*\(/.test(src), `${file} uses new Function`);
@@ -151,7 +151,7 @@ s.test('no dynamic code execution', () => {
   }
 });
 
-s.test('untrusted text never reaches the DOM as markup', () => {
+s.test('the source files MUST contain no innerHTML, outerHTML, insertAdjacentHTML or document.write WHEN scanned', () => {
   for (const [file, src] of sources) {
     for (const sink of ['innerHTML', 'outerHTML', 'insertAdjacentHTML', 'document.write']) {
       assert.ok(!src.includes(sink), `${file} writes through ${sink}`);
@@ -159,7 +159,7 @@ s.test('untrusted text never reaches the DOM as markup', () => {
   }
 });
 
-s.test('the page loads no third-party resources and carries no inline handlers', () => {
+s.test('index.html MUST reference only same-origin resources and carry no inline handler or script WHEN parsed', () => {
   for (const m of html.matchAll(/(?:src|href)\s*=\s*"([^"]+)"/g)) {
     const v = m[1];
     assert.ok(!/^https?:|^\/\//.test(v), `index.html loads an external resource: ${v}`);
@@ -168,14 +168,14 @@ s.test('the page loads no third-party resources and carries no inline handlers',
   assert.ok(!/<script(?![^>]*\ssrc=)/i.test(html), 'index.html contains an inline script');
 });
 
-s.test('the content security policy locks down everything it can', () => {
+s.test('the CSP in index.html MUST set default-src none and limit script, style, manifest and worker sources to self WHEN parsed', () => {
   const m = /<meta http-equiv="Content-Security-Policy" content="([^"]+)"/.exec(html);
   assert.ok(m, 'a CSP is present');
   const csp = Object.fromEntries(m[1].split(';').map(d => {
     const [k, ...v] = d.trim().split(/\s+/);
     return [k, v.join(' ')];
   }));
-  assert.equal(csp['default-src'], "'none'", 'nothing is allowed by default');
+  assert.equal(csp['default-src'], "'none'", 'every source is denied by default');
   for (const d of ['script-src', 'style-src', 'manifest-src', 'worker-src']) {
     assert.equal(csp[d], "'self'", `${d} is limited to this origin`);
   }
@@ -191,7 +191,7 @@ s.test('the content security policy locks down everything it can', () => {
 
 // A module missing from the precache list loads online and breaks the app offline, which is
 // the condition recovery depends on.
-s.test('every file the app loads is in the offline shell', () => {
+s.test('sw.js MUST precache every js file, index.html, app.css and the manifest, and list only files that exist WHEN the shell is read', () => {
   const sw = read('sw.js');
   const shell = [...sw.matchAll(/'([^']+\.(?:js|css|html|svg|png|webmanifest))'/g)].map(m => m[1]);
   for (const f of readdirSync(new URL('../js', import.meta.url))) {
@@ -207,7 +207,7 @@ s.test('every file the app loads is in the offline shell', () => {
   }
 });
 
-s.test('the service worker never intercepts a probe', () => {
+s.test('sw.js MUST pass through cross-origin and non-GET requests and omit skipWaiting WHEN read', () => {
   const sw = read('sw.js');
   assert.match(sw, /url\.origin !== self\.location\.origin/, 'cross-origin requests pass through untouched');
   assert.match(sw, /e\.request\.method !== 'GET'/, 'and so does anything that is not a GET');
@@ -215,7 +215,7 @@ s.test('the service worker never intercepts a probe', () => {
   assert.ok(!/\bskipWaiting\s*\(/.test(sw), 'a new version never takes over a tab mid-session');
 });
 
-s.test('there are no runtime dependencies to trust', () => {
+s.test('package.json MUST declare no runtime dependencies and the sources MUST import nothing outside the repository WHEN read', () => {
   const pkg = JSON.parse(read('package.json'));
   assert.deepEqual(pkg.dependencies, undefined, 'no runtime dependencies');
   assert.ok(!/from\s+['"][^.]/.test(sources.map(([, s]) => s).join('\n')),
@@ -224,7 +224,7 @@ s.test('there are no runtime dependencies to trust', () => {
 
 // A recorded journey carries a home address, a workplace and a daily timetable, so .dev is
 // excluded as a directory.
-s.test('nothing under .dev is tracked, and the directory is ignored outright', () => {
+s.test('.dev MUST be untracked and ignored as a whole directory WHEN git ls-files and check-ignore are run', () => {
   const tracked = execFileSync('git', ['ls-files'], {cwd: root, encoding: 'utf8'})
     .split('\n').filter(Boolean);
   const leaked = tracked.filter(f => f.startsWith('.dev/'));
@@ -243,7 +243,7 @@ s.test('nothing under .dev is tracked, and the directory is ignored outright', (
 
 // Fixtures are committed deliberately and are safe only because the anonymiser stripped
 // them, so each is checked by name.
-s.test('every committed fixture has been through the anonymiser', async () => {
+s.test('every committed fixture MUST carry format wts/fixture and pass assertClean WHEN read from tests/fixtures', async () => {
   const {assertClean} = await import('../tools/anonymise.mjs');
   const dir = new URL('../tests/fixtures/', import.meta.url);
   const files = readdirSync(dir).filter(f => f.endsWith('.json'));
@@ -255,7 +255,7 @@ s.test('every committed fixture has been through the anonymiser', async () => {
   }
 });
 
-s.test('no journey recording is tracked anywhere in the tree', () => {
+s.test('the tracked text files MUST carry no session format marker and no coordinates WHEN each is scanned', () => {
   const tracked = execFileSync('git', ['ls-files'], {cwd: root, encoding: 'utf8'})
     .split('\n').filter(Boolean);
   // Matched on shape: a recording saved as .txt or pasted into a note carries the same
@@ -271,7 +271,7 @@ s.test('no journey recording is tracked anywhere in the tree', () => {
   }
 });
 
-s.test('no credential-shaped string is committed', () => {
+s.test('the tracked sources MUST match no credential pattern WHEN scanned for tokens, keys and inline secrets', () => {
   const patterns = [
     [/\bghp_[A-Za-z0-9]{36}\b/, 'GitHub token'],
     [/\bAKIA[0-9A-Z]{16}\b/, 'AWS key id'],
@@ -285,28 +285,28 @@ s.test('no credential-shaped string is committed', () => {
   }
 });
 
-s.test('the test seam cannot take effect on a deployed origin', () => {
+s.test('testInterval MUST return null WHEN the hostname is other than localhost', () => {
   const main = read('js/main.js');
   const fn = /function testInterval\(\)[\s\S]*?\n}/.exec(main);
   assert.ok(fn, 'the override is a single named function');
   assert.match(fn[0], /location\.hostname !== 'localhost'/, 'gated on localhost');
-  assert.match(fn[0], /return null/, 'and returns nothing anywhere else');
+  assert.match(fn[0], /return null/, 'and returns null on every other host');
   const uses = main.match(/testInterval\(\)/g) || [];
-  assert.equal(uses.length, 2, 'it is defined once and consulted once');
+  assert.equal(uses.length, 2, 'it is defined once and called once');
 });
 
 // One description, shared by the repository, the install prompt and the page.
-s.test('the description is stated once and matches everywhere', () => {
+s.test('the descriptions in manifest.webmanifest and index.html MUST equal the one in package.json WHEN each is read', () => {
   const desc = JSON.parse(read('package.json')).description;
   assert.ok(desc && desc.length > 40, 'package.json carries the canonical description');
   assert.equal(JSON.parse(read('manifest.webmanifest')).description, desc,
                'the install prompt says the same thing');
   const meta = /<meta name="description" content="([^"]*)">/.exec(html);
   assert.ok(meta, 'the page has a description');
-  assert.equal(meta[1], desc, 'and it says the same thing');
+  assert.equal(meta[1], desc, 'and it matches');
 });
 
-s.test('the published version is stated once and matches everywhere', () => {
+s.test('APP_VERSION and the service worker CACHE MUST match the package.json version WHEN each is read', () => {
   const version = JSON.parse(read('package.json')).version;
   assert.match(version, /^\d+\.\d+\.\d+$/, 'package.json carries a semantic version');
   const app = /APP_VERSION = '([^']+)'/.exec(read('js/session.js'))[1];

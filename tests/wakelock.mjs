@@ -34,7 +34,7 @@ const track = () => {
   return {notices, events, onNotice: n => notices.push(n), onEvent: e => events.push(e)};
 };
 
-s.test('a lock taken back by the system is reacquired', async () => {
+s.test('createWakeLock MUST request a new lock and record the loss WHEN the system releases the sentinel', async () => {
   const platform = fakePlatform();
   const log = track();
   const wake = createWakeLock(log);
@@ -51,7 +51,7 @@ s.test('a lock taken back by the system is reacquired', async () => {
   assert.ok(log.notices.some(n => /released/.test(n)), 'and on the screen');
 });
 
-s.test('a sentinel the system has flagged as released does not count as held', async () => {
+s.test('createWakeLock.held MUST return false WHEN the granted sentinel carries released', async () => {
   const platform = fakePlatform();
   const wake = createWakeLock({});
   await wake.acquire();
@@ -62,7 +62,7 @@ s.test('a sentinel the system has flagged as released does not count as held', a
   assert.equal(wake.held(), false);
 });
 
-s.test('a refusal is reported once, and recovers when the platform allows it', async () => {
+s.test('createWakeLock MUST log one refusal and one recovery WHEN the platform refuses the lock and later grants it', async () => {
   const platform = fakePlatform();
   const log = track();
   const wake = createWakeLock(log);
@@ -70,7 +70,7 @@ s.test('a refusal is reported once, and recovers when the platform allows it', a
   platform.refuse(true);
   await wake.acquire();
   assert.equal(wake.held(), false);
-  assert.equal(log.events.filter(e => /refused/.test(e)).length, 1, 'said once');
+  assert.equal(log.events.filter(e => /refused/.test(e)).length, 1, 'one refusal event');
   await wake.acquire();
   assert.equal(log.events.filter(e => /refused/.test(e)).length, 1, 'and not again on retry');
 
@@ -81,7 +81,7 @@ s.test('a refusal is reported once, and recovers when the platform allows it', a
   assert.equal(log.notices.at(-1), '', 'the warning is cleared');
 });
 
-s.test('releasing on purpose is not a loss', async () => {
+s.test('createWakeLock MUST leave the event log empty and request no replacement WHEN the caller released the lock before the system release', async () => {
   const platform = fakePlatform();
   const log = track();
   const wake = createWakeLock(log);
@@ -93,11 +93,11 @@ s.test('releasing on purpose is not a loss', async () => {
   // taking it, or every session would end by logging a loss and asking for it back.
   platform.grants[0].systemRelease();
   await sleep(10);
-  assert.deepEqual(log.events, [], 'nothing logged');
-  assert.equal(platform.grants.length, 1, 'and nothing reacquired');
+  assert.deepEqual(log.events, [], 'the event log is empty');
+  assert.equal(platform.grants.length, 1, 'and no replacement lock is requested');
 });
 
-s.test('a lost lock does not report a recovery in the next session', async () => {
+s.test('createWakeLock.reset MUST suppress the recovery event WHEN the refusal happened in the previous session', async () => {
   const platform = fakePlatform();
   const log = track();
   const wake = createWakeLock(log);
@@ -113,7 +113,7 @@ s.test('a lost lock does not report a recovery in the next session', async () =>
             'a new session starts clean');
 });
 
-s.test('a hidden page does not ask for a lock it cannot get', async () => {
+s.test('createWakeLock.acquire MUST request a lock only WHEN the page is visible', async () => {
   const platform = fakePlatform();
   document.visibilityState = 'hidden';
   const wake = createWakeLock({});

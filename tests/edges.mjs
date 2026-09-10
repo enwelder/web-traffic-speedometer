@@ -42,7 +42,7 @@ const okResponse = (body = trace()) => ({ok: true, status: 200, type: 'opaque',
 
 const t = suite('thresholds');
 
-t.test('a value on an edge belongs to the worse side, and only just', () => {
+t.test('gradeValue MUST return the worse grade at the edge and the better one just inside it WHEN every scale edge is read from both sides', () => {
   // Every edge is checked from both sides.
   for (const [scale, edges] of Object.entries(g.SCALES).map(([k, v]) => [k, v.edges])) {
     const low = g.SCALES[scale].dir === 'low';
@@ -57,7 +57,7 @@ t.test('a value on an edge belongs to the worse side, and only just', () => {
   }
 });
 
-t.test('nothing and nonsense are not grades', () => {
+t.test('gradeValue MUST return null WHEN the value is null, undefined, NaN, infinite, negative or a string', () => {
   for (const scale of Object.keys(g.SCALES)) {
     for (const v of [null, undefined, NaN, Infinity, -Infinity, -1, '30']) {
       assert.equal(g.gradeValue(scale, v), null,
@@ -69,7 +69,7 @@ t.test('nothing and nonsense are not grades', () => {
   assert.equal(g.gradeValue('rate', 0), 'red');
 });
 
-t.test('a percentile of a short series is not the maximum', () => {
+t.test('quantile MUST return the nearest rank inside the array WHEN the series is short', () => {
   assert.equal(ex.quantile([], 0.5), null, 'nothing has no median');
   assert.equal(ex.quantile([5], 0.9), 5);
   assert.deepEqual([ex.quantile([1, 2], 0.5), ex.quantile([1, 2], 0.9)], [1, 2]);
@@ -81,7 +81,7 @@ t.test('a percentile of a short series is not the maximum', () => {
 });
 
 
-t.test('the accuracy class turns over at exactly 100 m', async () => {
+t.test('createRecorder MUST record accuracy_class gps at 100 m and coarse at 101 m WHEN the fixes carry those accuracies', async () => {
   const rows = await withFixes([fix(51.9, 4.4, 100), fix(51.9001, 4.4, 100)]);
   assert.ok(rows.some(r => r.accuracy_class === 'gps'), '100 m is still a usable fix');
   const coarse = await withFixes([fix(51.9, 4.4, 101), fix(51.9001, 4.4, 101)]);
@@ -119,22 +119,22 @@ const download = async (chunks, opts = {}) => {
   return probe.runProbe(P.down, {timeoutMs: 8000, download: {windowMs: 400, rampMs: 0, streams: 1, maxBytes: 1e6, capBytes: 1e6, ...opts}});
 };
 
-d.test('a body that never arrives is a stalled cell, not a broken connection', async () => {
+d.test('runProbe MUST return fail stalled inside the download budget WHEN the headers arrive and the body never does', async () => {
   const r = await download([{stall: true}]);
   assert.equal(r.ok, false);
-  assert.equal(r.fail, 'stalled', 'the headers came back and then nothing did');
+  assert.equal(r.fail, 'stalled', 'the headers arrived and the body did not');
   assert.equal(r.bytes, 0);
   assert.ok(r.duration_ms >= 350, `the budget ended it before the 8 s deadline: ${r.duration_ms} ms`);
   assert.equal(countsAsFailure(r), true, 'and it counts against the connection');
 });
 
-d.test('a 200 with no body is not the radio', async () => {
+d.test('runProbe MUST return fail empty with zero bytes WHEN the response carries no body', async () => {
   const r = await download([]);
-  assert.equal(r.fail, 'empty', 'something answered for the endpoint with nothing to send');
+  assert.equal(r.fail, 'empty', 'the endpoint answered with an empty body');
   assert.equal(r.bytes, 0);
 });
 
-d.test('a stream cut mid-flight keeps what arrived', async () => {
+d.test('runProbe MUST keep the bytes received and set truncated WHEN the stream throws mid-flight', async () => {
   const r = await download([{after: 2, bytes: 200000}, {after: 2, error: true}]);
   assert.equal(r.ok, false);
   assert.equal(r.fail, 'network');
@@ -142,9 +142,9 @@ d.test('a stream cut mid-flight keeps what arrived', async () => {
   assert.equal(r.truncated, true);
 });
 
-d.test('a body too small to fill a window reports no rate', async () => {
-  // A single buffered chunk arriving in 2 ms once claimed 7.5 Gb/s through a whole-transfer
-  // bound. A window that never opened has measured nothing.
+d.test('runProbe MUST report no rate above DOWN_CEILING_BPS WHEN the body is too small to fill a window', async () => {
+  // A single buffered chunk arriving in 2 ms divides out to 7.5 Gb/s. A window that never
+  // opened has measured nothing.
   for (const [name, chunks] of [['one tiny chunk', [{after: 2, bytes: 10}]],
                                 ['one buffered chunk', [{after: 2, bytes: 5e6}]],
                                 ['a stall after one chunk', [{after: 2, bytes: 1000}, {stall: true}]]]) {
@@ -154,7 +154,7 @@ d.test('a body too small to fill a window reports no rate', async () => {
   }
 });
 
-d.test('several connections are opened, and counted as one measurement', async () => {
+d.test('runProbe MUST open DOWN_STREAMS requests and sum their bytes against one clock WHEN the download runs', async () => {
   // One TCP flow carries its receive window divided by its round trip and no more. A single
   // request read 41 Mb/s on a cell a three-stream reference test read 320 Mb/s on, and the
   // same code read 230-560 Mb/s on a desktop only because the round trip there is shorter.
@@ -166,11 +166,11 @@ d.test('several connections are opened, and counted as one measurement', async (
   };
   const r = await probe.runProbe(P.down, {timeoutMs: 8000});
   assert.equal(opened, probe.DOWN_STREAMS, 'one request per stream');
-  assert.equal(r.streams, probe.DOWN_STREAMS, 'and the row says how many carried it');
+  assert.equal(r.streams, probe.DOWN_STREAMS, 'and the row records how many carried it');
   assert.ok(r.window_bytes > 0, 'their bytes are summed against one clock');
 });
 
-d.test('reaching the cap saturates at the ceiling', async () => {
+d.test('runProbe MUST report DOWN_CEILING_BPS with saturated set WHEN the byte cap ends the window', async () => {
   // A window this short cannot tell 25 Mb/s from 300. What it can prove is that the link
   // carries at least the ceiling, so that is what it reports, and the row is flagged.
   globalThis.fetch = async () => ({ok: true, status: 200, headers: {get: () => null},
@@ -183,7 +183,7 @@ d.test('reaching the cap saturates at the ceiling', async () => {
             `what a round costs is knowable in advance: ${r.bytes} bytes`);
 });
 
-d.test('a link below the ceiling is measured, not saturated', async () => {
+d.test('runProbe MUST report the link rate with saturated false WHEN the window clock ends the read', async () => {
   globalThis.fetch = async () => ({ok: true, status: 200, headers: {get: () => null},
     body: stream(Array.from({length: 400}, () => ({after: 30, bytes: 10000})))});
   const r = await probe.runProbe(P.down, {timeoutMs: 8000});
@@ -192,7 +192,7 @@ d.test('a link below the ceiling is measured, not saturated', async () => {
   assert.ok(Math.abs(r.window_ms - probe.DOWN_WINDOW_MS) < 400, 'the clock ended it');
 });
 
-d.test('the ramp is discarded, so what opened the connection is not the measurement', async () => {
+d.test('runProbe MUST exclude the ramp bytes from the window WHEN a ramp is configured', async () => {
   // RMBT spends two seconds here and says what for: to get the radio into an active state so
   // a result does not depend on what the connection was doing beforehand.
   const slow = Array.from({length: 30}, () => ({after: 20, bytes: 500}));
@@ -204,14 +204,14 @@ d.test('the ramp is discarded, so what opened the connection is not the measurem
   assert.ok(r.bps > whole, `the window beats the whole transfer: ${r.bps} vs ${whole}`);
 });
 
-d.test('a refused download says which side refused it', async () => {
-  // The cliff looked identical from the outside whether Cloudflare turned us away or the
-  // connection never opened. An opaque repeat tells them apart, because a response this
-  // origin may not read still counts as one.
+d.test('runProbe MUST set refused_by to connection or server WHEN the download fails, and issue one request WHEN it succeeds', async () => {
+  // Cloudflare turning us away and a connection that never opened are identical from the
+  // outside. An opaque repeat tells them apart, because a response this origin may not read
+  // still counts as one.
   globalThis.fetch = async () => { throw netError(); };
   const dead = await probe.runProbe(P.down, {timeoutMs: 3000});
   assert.equal(dead.fail, 'network');
-  assert.equal(dead.refused_by, 'connection', 'nothing answered either request');
+  assert.equal(dead.refused_by, 'connection', 'neither request was answered');
 
   let first = true;
   globalThis.fetch = async () => {
@@ -231,7 +231,7 @@ d.test('a refused download says which side refused it', async () => {
   assert.equal(calls, 1, 'a working download costs one request and no more');
 });
 
-d.test('the window ends the read, or the far end does', async () => {
+d.test('runProbe MUST set aborted_reason eof or done WHEN the body ends first or the window closes first', async () => {
   // 16 kB a chunk is what both engines hand over on a real body.
   const short = await download(Array.from({length: 20}, () => ({after: 8, bytes: 16000})),
                                {windowMs: 2000, rampMs: 0, streams: 1});
@@ -247,10 +247,10 @@ d.test('the window ends the read, or the far end does', async () => {
   assert.equal(cut.ok, true, 'a read stopped by its own window is a measurement, not a failure');
 });
 
-// The Fable review of 2026-09-09 found eight ways the download could report a number the link
-// had not earned. Each is pinned here with the arithmetic that produced it.
+// Eight ways the download can report a number the link has not earned, each pinned here with
+// the arithmetic that produces it.
 
-d.test('a span too short to divide by carries no rate', async () => {
+d.test('runProbe MUST return fail short with a null bps WHEN the window span is under DOWN_MIN_SPAN_MS', async () => {
   // A 9 kB body handed over whole, 3 ms after the ramp opened the window: 9000 x 8 / 0.003 is
   // 24 Mb/s, which is the clock's resolution and not the link's.
   const tiny = await download([{after: 1, bytes: 4000}, {after: 3, bytes: 9000}],
@@ -269,7 +269,7 @@ d.test('a span too short to divide by carries no rate', async () => {
   assert.equal(fast.ok, true);
 });
 
-d.test('a stream that stalls mid-window ends at the window, not at the deadline', async () => {
+d.test('runProbe MUST close the window on its own clock WHEN the stream stalls mid-window', async () => {
   // 10 Mb/s for 760 ms, then a cell that stops answering. The window is 1.5 s, so it holds
   // about 575 kB of data and 1 s of silence: 3 Mb/s. Left to run to the 8 s deadline the same
   // bytes read 575 kb/s, and the window_ms in the file would contradict the one it declares.
@@ -282,7 +282,7 @@ d.test('a stream that stalls mid-window ends at the window, not at the deadline'
   assert.ok(r.ms < 4000, `without waiting out the 8 s deadline: ${r.ms} ms`);
 });
 
-d.test('the chunk that ends the ramp is not counted in the window', async () => {
+d.test('runProbe MUST exclude the chunk that ended the ramp from window_bytes WHEN it crossed before the window opened', async () => {
   // A 500 kB chunk crosses the link over the 105 ms before the window opens, and then 16 kB
   // arrives every 10 ms, which is 12.8 Mb/s. Counting the ramp's last chunk in the window
   // without its time adds 500 kB to a 200 ms window and reports 33 Mb/s.
@@ -294,7 +294,7 @@ d.test('the chunk that ends the ramp is not counted in the window', async () => 
   assert.ok(r.bps > 10e6 && r.bps < 15e6, `which leaves the paced rate: ${r.bps}`);
 });
 
-d.test('a body that never opens a window is not a link failure', async () => {
+d.test('runProbe MUST return fail short that countsAsFailure rejects WHEN the body ends inside the ramp', async () => {
   // One chunk inside the ramp and then the far end runs out: nothing was measured, and the
   // activities that read throughput must not be reddened by it.
   const r = await download([{after: 2, bytes: 200000}], {windowMs: 1500, rampMs: 300, streams: 1});
@@ -305,7 +305,7 @@ d.test('a body that never opens a window is not a link failure', async () => {
   assert.equal(countsAsFailure(r), false);
 });
 
-d.test('the reading holds across four orders of magnitude of link', async () => {
+d.test('runProbe MUST grade within one band of the link WHEN the link runs from 0.4 to 200 Mb/s', async () => {
   // Above the ceiling the reading saturates and says so; below it the number has to land in
   // the right band, since a reading that is merely true decides nothing.
   for (const mbps of [200, 50, 10, 1.5, 0.4]) {
@@ -315,7 +315,7 @@ d.test('the reading holds across four orders of magnitude of link', async () => 
                              {windowMs: 1000, rampMs: 0, streams: 1, capBytes: probe.DOWN_CAP_BYTES});
     assert.ok(r.bps > 0, `${mbps} Mb/s produces a reading`);
     if (mbps * 1e6 > probe.DOWN_CEILING_BPS) {
-      assert.equal(r.saturated, true, `${mbps} Mb/s is above the ceiling and says so`);
+      assert.equal(r.saturated, true, `${mbps} Mb/s is above the ceiling and is flagged saturated`);
       continue;
     }
     assert.ok(r.bps <= mbps * 1e6 * 1.15,
@@ -347,7 +347,7 @@ async function record(fetchImpl, ms = 500, opts = {}) {
           notices, store};
 }
 
-n.test('a captive portal answering for Cloudflare is a failure, not a measurement', async () => {
+n.test('createRecorder MUST record fail parse with a parse_reason WHEN a captive portal answers for the trace endpoint', async () => {
   const {rows} = await record(async url => String(url).includes('speed.cloudflare')
     ? okResponse()
     : ({ok: true, status: 200, type: 'basic', headers: {get: () => null},
@@ -356,10 +356,10 @@ n.test('a captive portal answering for Cloudflare is a failure, not a measuremen
   assert.ok(traces.length > 0);
   assert.ok(traces.every(x => x.ok === false && x.fail === 'parse'),
             'a plausible-looking body is not accepted for a trace');
-  assert.ok(traces.every(x => x.parse_reason), 'and the row says what was wrong with it');
+  assert.ok(traces.every(x => x.parse_reason), 'and the row carries the parse reason');
 });
 
-n.test('a rate limit is told apart from a radio failure', async () => {
+n.test('createRecorder MUST record fail http with the status WHEN the endpoint answers 429', async () => {
   const {rows} = await record(async () => ({ok: false, status: 429, type: 'basic',
                                             headers: {get: () => null}, text: async () => ''}), 300);
   const ip6 = rows.map(x => x.probes.ip6).filter(Boolean);
@@ -367,7 +367,7 @@ n.test('a rate limit is told apart from a radio failure', async () => {
             'the status is kept so a busy endpoint is not read as an outage');
 });
 
-n.test('a carrier that drops UDP shows up on the real-time activity alone', async () => {
+n.test('createRecorder MUST grade voice red and leave the TCP activities graded WHEN the carrier drops STUN', async () => {
   const {rows} = await record(async () => okResponse(), 400, {stun: {block: true}});
   const settled = rows.filter(x => x.probes.udp);
   assert.ok(settled.length > 0);
@@ -376,7 +376,7 @@ n.test('a carrier that drops UDP shows up on the real-time activity alone', asyn
   assert.ok(settled.some(x => x.grades.tap !== 'red'), 'while everything over TCP is fine');
 });
 
-n.test('a resolver answering on its retry timer is loss, not slowness', () => {
+n.test('looksLikeRetry MUST flag only resolver retry timers WHEN given a range of latencies', () => {
   for (const ms of [2000, 1750, 5000, 5250]) {
     assert.equal(probe.looksLikeRetry(ms), true, `${ms} ms sits on a retry timer`);
   }
@@ -387,7 +387,7 @@ n.test('a resolver answering on its retry timer is loss, not slowness', () => {
   assert.equal(g.gradeActivities(row).news, 'red', 'and a lost first query is red however fast the retry');
 });
 
-n.test('a tunnel is a total outage and comes back whole', async () => {
+n.test('createRecorder MUST write a row per round with no rests and unique seqs WHEN every probe fails through an outage and then recovers', async () => {
   let down = false;
   // A tunnel takes the radio, so UDP goes with it: nothing answers.
   globalThis.RTCPeerConnection = class {
@@ -416,16 +416,16 @@ n.test('a tunnel is a total outage and comes back whole', async () => {
   assert.equal(new Set(inOrder.map(x => x.seq)).size, inOrder.length, 'and no round is recorded twice');
 });
 
-n.test('an egress change under an unchanged label is said once', async () => {
+n.test('createRecorder MUST record one egress-change event WHEN the egress address changes mid-session', async () => {
   let ip = '2a09:bac5::9';
   const {events} = await record(async () => okResponse(trace(ip)), 0, {
     during: async () => { await sleep(250); ip = '77:77::77'; await sleep(400); }
   });
-  const said = events.filter(e => /egress address changed/.test(e.text || ''));
-  assert.equal(said.length, 1, `once, not every round afterwards: ${said.length}`);
+  const logged = events.filter(e => /egress address changed/.test(e.text || ''));
+  assert.equal(logged.length, 1, `one event, not one per round: ${logged.length}`);
 });
 
-n.test('a PoP change is in the data without being interpreted', async () => {
+n.test('createRecorder MUST record both colo values and keep grading WHEN the PoP changes mid-session', async () => {
   let colo = 'AMS';
   const {rows} = await record(async () => okResponse(trace('2a09:bac5::9', colo)), 0, {
     during: async () => { await sleep(250); colo = 'FRA'; await sleep(300); }
@@ -435,7 +435,7 @@ n.test('a PoP change is in the data without being interpreted', async () => {
   assert.ok(rows.every(x => x.grades), 'and a routing change is not graded as a fault');
 });
 
-n.test('a round that outlives its slot is written down, not skipped silently', async () => {
+n.test('createRecorder MUST write an overlap row carrying late_ms and prev_round_ms WHEN a round comes due mid-flight', async () => {
   // Every request takes 200 ms, so a round runs about 600 ms against an 80 ms interval: the
   // idle phase, the download, and the round trip taken across it. Long enough for one round to
   // finish, so a later overlap has a duration to record.
@@ -449,7 +449,7 @@ n.test('a round that outlives its slot is written down, not skipped silently', a
   assert.ok(rows.every(x => x.grades), 'the rounds that did run are unaffected');
 });
 
-n.test('every failure reason a probe can produce is classified once, everywhere', () => {
+n.test('countsAsFailure MUST return true for network reasons and false for resting, expected and unsupported WHEN given each failure reason', () => {
   const network = ['timeout', 'network', 'http', 'parse', 'abort', 'stalled', 'empty', 'no_srflx'];
   const notNetwork = ['resting'];
   for (const fail of network) {
@@ -469,7 +469,7 @@ n.test('every failure reason a probe can produce is classified once, everywhere'
 // The UDP probe is the only one that is not a fetch, so each outcome is produced explicitly
 // here. A carrier blocking STUN, a symmetric NAT and a browser without WebRTC are
 // indistinguishable from the outside and are recorded differently.
-n.test('every way the UDP path can fail is told apart', async () => {
+n.test('runProbe MUST return unsupported, network, no_srflx or timeout WHEN the UDP path fails in each distinct way', async () => {
   const stun = impl => { globalThis.RTCPeerConnection = impl; return probe.runProbe(P.udp, {timeoutMs: 300}); };
   const gathering = candidates => class {
     addTransceiver() {} async createOffer() { return {}; }
@@ -519,7 +519,7 @@ await n.run();
 
 const l = suite('session lifecycle');
 
-l.test('a second journey on the same recorder starts from nothing', async () => {
+l.test('createRecorder MUST number from zero and carry over no rest, pause or position WHEN a second session starts on the same recorder', async () => {
   stubStun();
   let wedged = true;
   globalThis.fetch = async url => {
@@ -556,7 +556,7 @@ l.test('a second journey on the same recorder starts from nothing', async () => 
             'nor a position from a journey that ended somewhere else');
 });
 
-l.test('the first round is not reported as late', async () => {
+l.test('createRecorder MUST record late_ms 0 on the first round and log no pause WHEN start-up is slow', async () => {
   stubStun();
   globalThis.fetch = async () => { await sleep(30); return okResponse(); };
   const store = fakeStore();
@@ -572,7 +572,7 @@ l.test('the first round is not reported as late', async () => {
                'a slow radio at start does not log a pause that never happened');
 });
 
-l.test('a resumed journey continues its numbering and its bill', async () => {
+l.test('createRecorder MUST continue the seq, the monotonic clock and the spend WHEN a session resumes after a reload', async () => {
   stubStun();
   globalThis.fetch = async () => okResponse();
   const store = fakeStore();
@@ -592,7 +592,7 @@ l.test('a resumed journey continues its numbering and its bill', async () => {
             'the gap the reload cost is written down, not left to be inferred');
 });
 
-l.test('stopping twice, or before starting, changes nothing', async () => {
+l.test('createRecorder.stop MUST leave the store unchanged WHEN called before start or called twice', async () => {
   stubStun();
   globalThis.fetch = async () => okResponse();
   const store = fakeStore();
@@ -604,14 +604,14 @@ l.test('stopping twice, or before starting, changes nothing', async () => {
   await rec.stop();
   const after = store.written.samples.length;
   await rec.stop();
-  assert.equal(store.written.samples.length, after, 'and stopping twice writes nothing twice');
+  assert.equal(store.written.samples.length, after, 'and a second stop writes no further rows');
   assert.equal(rec.status().running, false);
   rec.mark();
   assert.equal(store.written.events.filter(e => e.type === 'mark').length, 0,
                'a mark after the journey ended belongs to no journey');
 });
 
-l.test('a wall clock that jumps does not take the round order with it', async () => {
+l.test('createRecorder MUST keep mono monotonic and late_ms small WHEN the wall clock jumps backwards', async () => {
   stubStun();
   globalThis.fetch = async () => okResponse();
   const store = fakeStore();
@@ -644,14 +644,14 @@ await l.run();
 
 const e = suite('rollup edges');
 
-e.test('a session with nothing in it summarises without inventing anything', () => {
+e.test('summarise MUST return ran 0 and null percentiles WHEN given no rows', () => {
   const s = summarise([]);
   assert.equal(s.ran, 0);
   assert.ok(Object.values(s.probes).every(p => p.ms_p50 == null),
             'no rounds means no percentiles, not zeros');
 });
 
-e.test('a session in which everything failed still describes itself', () => {
+e.test('summarise MUST count every round degraded with null percentiles WHEN every probe failed', () => {
   const rows = Array.from({length: 5}, (_, seq) => ({
     seq, skipped: null, round_error: null,
     probes: Object.fromEntries(PROBE_IDS.map(id => [id, {ok: false, fail: 'timeout', ms: 8000}]))
@@ -664,7 +664,7 @@ e.test('a session in which everything failed still describes itself', () => {
   assert.equal(s.probes.down.bps_p50, null, 'nor is a median of failures a rate');
 });
 
-e.test('a session of nothing but skipped rounds is not counted as measurement', () => {
+e.test('summarise MUST return ran 0 and degraded 0 WHEN every row is skipped', () => {
   const rows = Array.from({length: 4}, (_, seq) => ({seq, skipped: 'overlap', probes: {}}));
   const s = summarise(rows);
   assert.equal(s.ran, 0);
@@ -717,7 +717,7 @@ function fakeIndexedDB() {
   };
 }
 
-st.test('a connection the system closed is reopened', async () => {
+st.test('putSamples MUST reopen the database and write the row WHEN the system closed the connection', async () => {
   const idb = fakeIndexedDB();
   Object.defineProperty(globalThis, 'indexedDB', {value: idb, configurable: true});
   const store = await import(`../js/store.js?closed=${Date.now()}`);
@@ -736,10 +736,10 @@ st.test('a connection the system closed is reopened', async () => {
   idb.state.connections.at(-1).onclose?.();
   await store.putSamples([{sessionId: 'a', seq: 2}]);
   assert.equal(idb.state.opens, 3);
-  assert.equal(idb.state.puts.length, 3, 'nothing is dropped either way');
+  assert.equal(idb.state.puts.length, 3, 'every row is written either way');
 });
 
-st.test('a database that will not open reports the failure to every later call', async () => {
+st.test('putSamples MUST reject with the open error and open a fresh connection on the next call WHEN the database refuses to open', async () => {
   let failing = true;
   const idb = {
     open() {
@@ -778,7 +778,7 @@ const meta = over => ({id: 'a', name: 'x', operator: 'KPN', connection: 'cellula
                        started: Date.parse('2026-09-03T06:14:00Z'), stopped: null,
                        intervalMs: 10000, ...over});
 
-x.test('a name the operator typed cannot produce a name the file system will not take', () => {
+x.test('filename MUST return a name free of path and wildcard characters WHEN the operator field carries them', () => {
   const cases = {
     ['x'.repeat(200)]: 'x'.repeat(40),
     'KPN': 'kpn',
@@ -800,7 +800,7 @@ x.test('a name the operator typed cannot produce a name the file system will not
                       'an unreadable start time still produces a usable name');
 });
 
-x.test('the file survives every character a person can type into it', () => {
+x.test('sessionJson MUST round-trip quotes, newlines, markup and emoji WHEN they appear in the name, note and events', () => {
   const session = meta({name: 'quote " comma , newline \n tab \t backslash \\ unicode ⏱',
                         note: '</script><script>alert(1)</script>'});
   const events = [{sessionId: 'a', t: 1, mono: 1, type: 'note', lat: null, lon: null,
@@ -814,12 +814,12 @@ x.test('the file survives every character a person can type into it', () => {
   assert.equal(back.events.length, 2, 'and every event is in the file as recorded');
 });
 
-x.test('a session with no rounds exports a file', () => {
+x.test('sessionJson MUST return a file carrying the probe set and the app version WHEN the session has no rows', () => {
   const back = JSON.parse(sessionJson(meta(), [], []));
   assert.equal(back.format, 'wts/session');
   assert.equal(back.summary.ran, 0);
   assert.deepEqual(back.samples, []);
-  assert.ok(back.probes.length > 0, 'the probe configuration is there even with nothing measured');
+  assert.ok(back.probes.length > 0, 'the probe configuration is present with no rows measured');
   assert.ok(back.app_version, 'and the version that would have measured it');
 });
 
@@ -829,7 +829,7 @@ await x.run();
 
 const h = suite('readout edges');
 
-h.test('a grade belongs to the round whose number produced it', () => {
+h.test('gradeActivities MUST grade streaming from the rate of that row alone WHEN consecutive rows differ', () => {
   // Colour and number both come from the same round. Smoothing the colour over three rounds
   // while printing the current number paints a round measured at 35.5 Mb/s red because a
   // round three back was slow.
@@ -846,7 +846,7 @@ h.test('a grade belongs to the round whose number produced it', () => {
   assert.equal(g.gradeActivities(rows[3]).streaming, 'red', 'and 1.1 Mb/s is red, whatever came after');
 });
 
-h.test('the strip and the activity grades cannot disagree', async () => {
+h.test('classify MUST return the worst activity grade gradeActivities produced WHEN given the same row', async () => {
   const ui = await import('../js/ui.js');
   // Each activity takes the worst of its own terms and the log line takes the worst activity,
   // so the two cannot describe different rounds.
@@ -867,7 +867,7 @@ h.test('the strip and the activity grades cannot disagree', async () => {
   }
 });
 
-h.test('a round that never ran colours nothing', () => {
+h.test('gradeActivities MUST return null for a skipped round and a null grade per activity WHEN the round has no probe results', () => {
   assert.equal(g.gradeActivities({skipped: 'overlap', probes: {}}), null);
   const empty = g.gradeActivities({probes: {}});
   assert.ok(g.ACTIVITY_IDS.every(c => empty[c] === null),
