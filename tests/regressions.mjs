@@ -84,9 +84,9 @@ r.test('createRecorder MUST record how long the running round has run on each sk
 // consecutive rounds in one recording: a wedged connection.
 r.test('createRecorder MUST rest a probe failing alone and rest none WHEN every probe fails together', async () => {
   stubStun();
-  let webWedged = true;
+  let ctlWedged = true;
   globalThis.fetch = async url => {
-    if (String(url).includes('gstatic') && webWedged) throw netError();
+    if (String(url).includes('wts-dns-control') && ctlWedged) throw netError();
     return okResponse();
   };
   const notices = [];
@@ -97,8 +97,8 @@ r.test('createRecorder MUST rest a probe failing alone and rest none WHEN every 
 
   const rows = store.written.samples.filter(x => !x.skipped);
   assert.ok(rows.length >= 6, 'enough rounds to detect it');
-  assert.ok(rows.some(x => x.probes.web.stuck), 'the wedged probe is marked stuck');
-  assert.ok(rows.some(x => x.probes.web.fail === 'resting'),
+  assert.ok(rows.some(x => x.probes.dns_ctl.stuck), 'the wedged probe is marked stuck');
+  assert.ok(rows.some(x => x.probes.dns_ctl.fail === 'resting'),
             'and produces no further identical failures');
   assert.ok(rows.every(x => x.probes.ip6.ok), 'the probes that work are untouched');
   assert.ok(notices.some(n => /resting/.test(n)), 'and the notice carries the reason');
@@ -118,16 +118,16 @@ r.test('createRecorder MUST rest a probe failing alone and rest none WHEN every 
   assert.ok(dead.every(x => PROBE_IDS.every(id => x.probes[id]?.fail !== 'resting')),
             'and rests nothing, so the failure stays visible');
   globalThis.fetch = async url => {
-    if (String(url).includes('gstatic') && webWedged) throw netError();
+    if (String(url).includes('wts-dns-control') && ctlWedged) throw netError();
     return okResponse();
   };
 
   // Recovery is picked up within the same session.
-  webWedged = false;
+  ctlWedged = false;
   await sleep(900);
   await rec.stop();
   const later = store.written.samples.filter(x => !x.skipped).slice(-3);
-  assert.ok(later.some(x => x.probes.web.ok), 'recovery is picked up automatically');
+  assert.ok(later.some(x => x.probes.dns_ctl.ok), 'recovery is picked up automatically');
 });
 
 // Small probes have succeeded at 3885, 3883 and 3878 ms, so a deadline near 4 s records

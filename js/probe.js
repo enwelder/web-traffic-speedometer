@@ -1,4 +1,4 @@
-// Seven probes run in parallel every round, each isolating one layer. The download follows
+// The probes run in parallel every round, each isolating one layer. The download follows
 // RTR-NetTest's RMBT at reduced size: one TCP flow carries at most its receive window divided by
 // its round trip, so the download opens several connections.
 export const DOWN_STREAMS = 3;
@@ -59,7 +59,6 @@ export const PROBES = [
   {id: 'dns',     label: 'HEAD to a name no resolver has seen', kind: 'opaque', url: 'https://%RANDOM%.github.io/',      method: 'HEAD', samples: FIRST_CONTACT_SAMPLES, fresh: true},
   // Sampled like the other latency probes, so the medians are comparable.
   {id: 'dns_ctl', label: 'HEAD to that host under a cached name', kind: 'opaque', url: 'https://wts-dns-control.github.io/', method: 'HEAD', samples: LATENCY_SAMPLES},
-  {id: 'web',     label: 'HEAD to a host the phone knows',       kind: 'opaque', url: 'https://www.gstatic.com/generate_204', samples: LATENCY_SAMPLES},
   {id: 'down',    label: 'parallel streams, read for a fixed window', kind: 'download', url: 'https://speed.cloudflare.com/__down', bytes: DOWN_REQUEST_BYTES},
   // The only UDP probe. Calls and streaming use UDP, and carriers can handle it apart from TCP;
   // the reported address is the UDP NAT mapping.
@@ -357,6 +356,23 @@ async function whoRefused(probe, opts) {
   return r.ok ? 'server' : 'connection';
 }
 
+// Every instrument but the lookups runs on Cloudflare. When all of them fail, over TCP and over
+// UDP, one request to Google separates a failure at the far end from a link that carried nothing.
+// A tunnel stall leaves STUN answering, and a browser without WebRTC has no UDP verdict, so neither
+// reaches the request. The reference is no probe row and grades nothing itself.
+export const REFERENCE = {id: 'reference', kind: 'opaque', url: 'https://www.gstatic.com/generate_204'};
+
+const cloudflareFailed = out =>
+  !out.ip6?.ok && !out.ip4?.ok && !out.down?.ok && !out.up?.ok &&
+  out.udp?.ok === false && !out.udp.expected;
+
+async function checkReference(out, {signal, pending}) {
+  if (signal?.aborted || !cloudflareFailed(out)) return null;
+  const r = await tracked(pending, REFERENCE.id,
+                          runOnce(REFERENCE, {signal, timeoutMs: MIN_TIMEOUT_MS}));
+  return {ok: r.ok, ms: r.ms, fail: r.fail};
+}
+
 function downloadConfig(d = {}) {
   return {
     streams: d.streams ?? DOWN_STREAMS,
@@ -444,7 +460,7 @@ function stallCheck(probe, {signal, deadline}) {
     .then(r => ({ok: r.ok, ms: r.ms, fail: r.fail}));
   return Promise.all([
     one({...probe, id: 'down_stall_check', kind: 'opaque', bytes: 0}),
-    one(PROBES.find(x => x.id === 'web')),
+    one(PROBES.find(x => x.id === 'dns_ctl')),
     one(PROBES.find(x => x.id === 'udp'))
   ]).then(([sameHost, otherHost, udp]) => ({same_host: sameHost, other_host: otherHost, udp}));
 }
@@ -780,7 +796,7 @@ export async function runRound({signal, download = {}, intervalMs = 5000,
     out[down.id] = {ok: false, ms: null, status: null, fail: 'abort'};
     markLiterals(out);
     return {probes: out, loaded_rtt_ms: null, loaded_rtt_from: null,
-            phase_idle_ms: idleMs, phase_down_ms: null};
+            phase_idle_ms: idleMs, phase_down_ms: null, reference: null};
   }
 
   const downT0 = performance.now();
@@ -797,15 +813,17 @@ export async function runRound({signal, download = {}, intervalMs = 5000,
   out[down.id] = downResult;
 
   markLiterals(out);
+  const phaseDownMs = Math.round(performance.now() - downT0);
+  const reference = await checkReference(out, {signal, pending});
   return {probes: out, loaded_rtt_ms: loaded[0] ?? null, loaded_rtt_from: loaded[1] ?? null,
-          phase_idle_ms: idleMs, phase_down_ms: Math.round(performance.now() - downT0)};
+          phase_idle_ms: idleMs, phase_down_ms: phaseDownMs, reference};
 }
 
 // One ungraded round trip during the download window, repeating the probe that answered idle, so
 // the idle and loaded values are one measurement under two loads. It waits for the window: started
 // with the download, it completes during the TLS handshakes and repeats the idle measurement.
 async function sampleUnderLoad(into, idle, opts, {windowOpened, live, pending, until}) {
-  const id = ['ip6', 'ip4', 'web'].find(x => idle[x]?.ok);
+  const id = ['ip6', 'ip4', 'dns_ctl'].find(x => idle[x]?.ok);
   if (!id) return;
   const open = await windowOpened;
   // Requires an open window and a running transfer; after the body ends, a sample measures the

@@ -14,7 +14,7 @@ const bad = (extra = {}) => ({ok: false, ms: null, fail: 'timeout', ...extra});
 const pick = r => ({state: r.state, grade: r.grade});
 const round = (over = {}) => ({probes: {
   ip6: ok(30), ip4: bad({expected: true}), dns: ok(190), dns_ctl: ok(60),
-  web: ok(65), udp: ok(50),
+  udp: ok(50),
   down: {ok: true, ms: 300, bps: 40e6},
   ...over
 }});
@@ -32,7 +32,7 @@ s.test('gradeActivities MUST grade each activity on its own scales WHEN one roun
 });
 
 s.test('gradeActivities MUST return identical grades WHEN called repeatedly with identical round data', () => {
-  const slow = round({ip6: ok(900), udp: ok(900), web: ok(2500), dns: ok(2500)});
+  const slow = round({ip6: ok(900), udp: ok(900), dns_ctl: ok(2500), dns: ok(2500)});
   const first = g.gradeActivities(slow);
   for (let i = 0; i < 50; i++) g.gradeActivities(slow);      // history cannot move the answer
   assert.deepEqual(g.gradeActivities(slow), first, 'grading is a pure function of the round');
@@ -87,12 +87,34 @@ s.test('gradeActivities MUST grade news on the cold lookup and the throughput to
   assert.equal(g.gradeActivities(round({dns: ok(3500)})).news, 'red');
 });
 
-s.test('gradeActivities MUST grade news red WHEN either the cold lookup or the warm origin fails', () => {
-  assert.equal(g.gradeActivities(round({web: bad()})).news, 'red',
+s.test('gradeActivities MUST grade news red WHEN either the cold lookup or the cached-name host fails', () => {
+  assert.equal(g.gradeActivities(round({dns_ctl: bad()})).news, 'red',
                'a warm origin refusing to answer stops an article');
   assert.equal(g.gradeActivities(round({dns: bad()})).news, 'red', 'and so does a lookup failing');
-  assert.equal(g.gradeActivities(round({web: bad()})).voice, 'green',
+  assert.equal(g.gradeActivities(round({dns_ctl: bad()})).voice, 'green',
                'while a call over the same round is unaffected');
+});
+
+s.test('articleMs MUST return 2·dns + 2·dns_ctl + the transfer time WHEN every term measured', () => {
+  // 500 kB at 40 Mb/s transfers in 100 ms.
+  assert.equal(g.articleMs(round().probes), 2 * 190 + 2 * 60 + 100);
+});
+
+// Every Cloudflare instrument failed, over TCP and over UDP.
+const cloudflareDown = {ip6: bad(), ip4: bad({expected: true}), udp: bad({fail: 'no_srflx'}),
+                        down: {ok: false, fail: 'network', refused_by: 'connection', bps: null}};
+
+s.test('activityReading MUST return a null grade with note far end for every activity WHEN the reference answered', () => {
+  const row = {...round(cloudflareDown), reference: {ok: true, ms: 40, fail: null}};
+  for (const activity of g.ACTIVITY_IDS) {
+    const r = g.activityReading(activity, row);
+    assert.deepEqual([r.grade, r.note], [null, 'far end'], activity);
+  }
+});
+
+s.test('activityReading MUST grade the round as measured WHEN the reference failed', () => {
+  const row = {...round(cloudflareDown), reference: {ok: false, ms: 1000, fail: 'timeout'}};
+  assert.equal(g.gradeActivities(row).voice, 'red', 'the link carried nothing Google could answer either');
 });
 
 s.test('gradeActivities MUST grade news red WHEN the DNS answer carries retry_suspected', () => {
@@ -165,12 +187,12 @@ s.test('probeReading MUST return a null grade WHEN the probe is absent, resting 
   // An absent IPv4 path, a rested probe and a missing probe produce no measurement and no link
   // failure.
   assert.deepEqual(pick(g.probeReading('ip4', round())), {state: 'absent', grade: null});
-  assert.deepEqual(pick(g.probeReading('web', round({web: bad({fail: 'resting'})}))),
+  assert.deepEqual(pick(g.probeReading('dns_ctl', round({dns_ctl: bad({fail: 'resting'})}))),
                    {state: 'resting', grade: null});
   assert.deepEqual(pick(g.probeReading('udp', round({udp: undefined}))),
                    {state: 'none', grade: null});
 
-  const failing = g.probeReading('web', round({web: bad()}));
+  const failing = g.probeReading('dns_ctl', round({dns_ctl: bad()}));
   assert.deepEqual(pick(failing), {state: 'failed', grade: 'red'});
   assert.equal(failing.note, 'timeout', 'the row carries the failure reason');
 });
@@ -211,7 +233,7 @@ s.test('activityReading MUST read the round trip from the family that answered W
 
 s.test('activityReading MUST return the no-route note only WHEN every family failed and no probe reached the network', () => {
   // Every other probe fails too, so the round has no traffic to credit a literal with.
-  const dead = {dns: bad(), dns_ctl: bad(), web: bad(), down: bad()};
+  const dead = {dns: bad(), dns_ctl: bad(), down: bad()};
   const route = over => g.activityReading('voice', round({...dead, ...over}));
 
   assert.equal(route({ip6: bad(), ip4: bad()}).note, 'no route');
@@ -223,7 +245,7 @@ s.test('activityReading MUST return the no-route note only WHEN every family fai
   assert.notEqual(route({ip6: bad(), ip4: ok(25)}).note, 'no route');
 
   // And neither literal answering is not "no route" while the rest of the round gets out:
-  // one operator failed both every round while DNS, the web probe and the download answered.
+  // one operator failed both every round while DNS and the download answered.
   const blocked = g.activityReading('voice', round({ip6: bad(), ip4: bad()}));
   assert.notEqual(blocked.note, 'no route',
                   'a blocked literal is not the same as a dead link');
@@ -275,7 +297,7 @@ s.test('gradeActivities MUST move only the voice grade, to red, WHEN the literal
   // round trip, which is red for a call.
   const ok = ms => ({ok: true, ms});
   const bad = o => ({ok: false, ms: null, fail: 'network', ...o});
-  const base = {dns: ok(180), dns_ctl: ok(30), web: ok(25), udp: ok(20), down: {ok: true, bps: 25e6}};
+  const base = {dns: ok(180), dns_ctl: ok(30), udp: ok(20), down: {ok: true, bps: 25e6}};
 
   for (const over of [{ip6: bad(), ip4: bad()},
                       {ip6: bad({unused: true}), ip4: bad({blocked: true})},

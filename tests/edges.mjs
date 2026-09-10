@@ -419,8 +419,10 @@ d.test('runProbe MUST record headers_ms and status for a stream answering with a
 d.test('runProbe MUST check the same host, another host and STUN WHEN a stream still waits for headers 2 s in', async () => {
   stubStun();
   let downCalls = 0;
+  const urls = [];
   globalThis.fetch = async (url, o) => {
     const u = String(url);
+    urls.push(u);
     if (u.includes('bytes=') && downCalls++ === 1) {
       return new Promise((res, rej) => o.signal?.addEventListener('abort',
         () => rej(Object.assign(new Error('x'), {name: 'AbortError'})), {once: true}));
@@ -436,6 +438,7 @@ d.test('runProbe MUST check the same host, another host and STUN WHEN a stream s
   assert.ok(r.stall_check, 'the check ran');
   assert.deepEqual([r.stall_check.same_host.ok, r.stall_check.other_host.ok, r.stall_check.udp.ok],
                    [true, true, true], JSON.stringify(r.stall_check));
+  assert.ok(urls.some(u => u.includes('wts-dns-control.github.io')), 'the other host is the dns_ctl host');
 });
 
 d.test('runProbe MUST omit stall_check WHEN every stream has headers within 2 s', async () => {
@@ -609,7 +612,7 @@ n.test('createRecorder MUST record a skip event naming what the running round wa
   const skips = events.filter(e => e.type === 'skip');
   assert.ok(skips.length > 0, 'a slot came due mid-round');
   assert.ok(skips.some(e => e.waiting_on.length > 0), JSON.stringify(skips.map(e => e.waiting_on)));
-  assert.ok(skips.every(e => e.waiting_on.every(id => PROBE_IDS.includes(id) || id === 'loaded_rtt')),
+  assert.ok(skips.every(e => e.waiting_on.every(id => PROBE_IDS.includes(id) || id === 'loaded_rtt' || id === 'reference')),
             'and names only what a round runs');
   assert.ok(rows.every(x => x.grades), 'the rounds that ran are graded');
 });
@@ -688,18 +691,18 @@ l.test('createRecorder MUST number from zero and carry over no rest, pause or po
   stubStun();
   let wedged = true;
   globalThis.fetch = async url => {
-    if (String(url).includes('gstatic') && wedged) throw netError();
+    if (String(url).includes('wts-dns-control') && wedged) throw netError();
     return okResponse();
   };
   const store = fakeStore();
   const rec = createRecorder({store});
 
-  // First journey: long enough for the web probe to be marked stuck and rested.
+  // First journey: long enough for dns_ctl to be marked stuck and rested.
   await rec.start(session());
   await sleep(700);
   await rec.stop();
   const first = store.written.samples.filter(x => !x.skipped);
-  assert.ok(first.some(x => x.probes.web?.fail === 'resting'), 'the first journey rested it');
+  assert.ok(first.some(x => x.probes.dns_ctl?.fail === 'resting'), 'the first journey rested it');
 
   // Second journey on a healthy network with the same recorder: rests keyed by round number in
   // the first journey must not carry over.
@@ -712,7 +715,7 @@ l.test('createRecorder MUST number from zero and carry over no rest, pause or po
 
   assert.ok(second.length > 0, 'the second journey recorded');
   assert.equal(second[0].seq, 0, 'and numbers its rounds from zero');
-  assert.ok(second.every(x => x.probes.web?.fail !== 'resting'),
+  assert.ok(second.every(x => x.probes.dns_ctl?.fail !== 'resting'),
             'with nothing carried over from the last one');
   assert.ok(second.every(x => x.sessionId === 's2'), 'and every row belongs to it');
   assert.ok(second.every(x => x.in_pause === false), 'a pause from the last journey is not still on');
@@ -1015,11 +1018,11 @@ h.test('classify MUST return the worst activity grade gradeActivities produced W
   // Each activity takes the worst of its own terms and the log line takes the worst activity,
   // so the two cannot describe different rounds.
   const rows = [
-    {probes: {ip6: {ok: true, ms: 30}, web: {ok: true, ms: 30}, dns: {ok: true, ms: 30},
+    {probes: {ip6: {ok: true, ms: 30}, dns_ctl: {ok: true, ms: 30}, dns: {ok: true, ms: 30},
               down: {ok: true, bps: 50e6}}},
-    {probes: {ip6: {ok: true, ms: 30}, web: {ok: true, ms: 30}, dns: {ok: true, ms: 2500},
+    {probes: {ip6: {ok: true, ms: 30}, dns_ctl: {ok: true, ms: 30}, dns: {ok: true, ms: 2500},
               down: {ok: true, bps: 50e6}}},
-    {probes: {ip6: {ok: false, fail: 'timeout'}, web: {ok: true, ms: 30}, dns: {ok: true, ms: 30},
+    {probes: {ip6: {ok: false, fail: 'timeout'}, dns_ctl: {ok: true, ms: 30}, dns: {ok: true, ms: 30},
               down: {ok: true, bps: 50e6}}}
   ];
   for (const row of rows) {

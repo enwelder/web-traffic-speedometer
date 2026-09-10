@@ -172,6 +172,48 @@ s.test('runRound MUST leave a timed-out literal unflagged and counted as a failu
   assert.equal(ui.counts(r.ip6), true, 'and the link is charged with it');
 });
 
+// A peer connection whose gathering ends with a server-reflexive candidate, or without one.
+const gathering = srflx => class {
+  addTransceiver() {}
+  async createOffer() { return {}; }
+  async setLocalDescription() {
+    if (srflx) setTimeout(() => this.onicecandidate({candidate: {type: 'srflx', address: '2a09::9'}}), 1);
+    setTimeout(() => this.onicecandidate({candidate: null}), 3);
+  }
+  close() {}
+};
+
+// Every fetch but the Google reference fails; `peer` sets the outcome of the UDP probe.
+async function cloudflareDown(peer) {
+  const asked = [];
+  if (peer) globalThis.RTCPeerConnection = peer;
+  globalThis.fetch = async url => {
+    if (String(url).includes('gstatic')) { asked.push(String(url)); return {ok: false, status: 0, type: 'opaque'}; }
+    throw netError();
+  };
+  try {
+    return {round: await probe.runRound({intervalMs: 3000}), asked};
+  } finally {
+    delete globalThis.RTCPeerConnection;
+  }
+}
+
+s.test('runRound MUST request the reference once WHEN both literals, the download and UDP failed', async () => {
+  const {round, asked} = await cloudflareDown(gathering(false));
+  assert.equal(asked.length, 1);
+  assert.deepEqual([round.reference.ok, round.reference.fail], [true, null]);
+});
+
+s.test('runRound MUST skip the reference WHEN UDP answered', async () => {
+  const {round, asked} = await cloudflareDown(gathering(true));
+  assert.deepEqual([asked.length, round.reference], [0, null]);
+});
+
+s.test('runRound MUST skip the reference WHEN UDP is unsupported', async () => {
+  const {round, asked} = await cloudflareDown(null);
+  assert.deepEqual([asked.length, round.reference], [0, null]);
+});
+
 s.test('runProbe MUST return the median as ms and keep every sample with its spread WHEN the probe is sampled', async () => {
   // A slow sample in the middle, so the median and the last differ.
   const times = [10, 90, 50];
@@ -495,7 +537,7 @@ s.test('runRound MUST hold every started probe in pending until it settles WHEN 
   const round = await probe.runRound({pending, intervalMs: 3000,
                                       download: {windowMs: 50, rampMs: 0, streams: 1}});
   clearInterval(watch);
-  assert.ok(['ip6', 'dns', 'web', 'down'].every(id => seen.has(id)), `held: ${[...seen]}`);
+  assert.ok(['ip6', 'dns', 'dns_ctl', 'down'].every(id => seen.has(id)), `held: ${[...seen]}`);
   assert.equal(pending.size, 0, 'and none once the round returns');
   assert.ok(round.phase_idle_ms > 0 && round.phase_down_ms >= 0,
             `phases ${round.phase_idle_ms} and ${round.phase_down_ms} ms`);
@@ -912,7 +954,7 @@ l.test('createRecorder MUST record loaded_rtt_ms and loaded_rtt_from WHEN a roun
   const row = store.written.samples.find(x => !x.skipped && x.probes.down?.ok);
   assert.ok(row, 'the download measured a window');
   assert.ok(row.loaded_rtt_ms != null, 'and a round trip was taken across it');
-  assert.ok(['ip6', 'ip4', 'web'].includes(row.loaded_rtt_from),
+  assert.ok(['ip6', 'ip4', 'dns_ctl'].includes(row.loaded_rtt_from),
             'named for the probe that answered idle');
 });
 
@@ -1029,14 +1071,14 @@ const shown = ms => ({ok: true, ms, fail: null});
 const gone = over => ({ok: false, ms: 12, fail: 'network', ...over});
 const round = over => ({t: Date.parse('2026-09-09T12:00:00Z'), probes: {
   ip6: shown(30), ip4: gone({unused: true}), dns: shown(180), dns_ctl: shown(20),
-  web: shown(25), udp: shown(20),
+  udp: shown(20),
   down: {ok: true, bps: 25066667, saturated: true, ceiling_bps: 25066667, streams: 3},
   ...over
 }});
 
 r.test('probeReading MUST return a value or a note for every probe and flag a saturated download WHEN the round is healthy', () => {
   const s = round();
-  for (const id of ['ip6', 'dns', 'dns_ctl', 'web', 'udp']) {
+  for (const id of ['ip6', 'dns', 'dns_ctl', 'udp']) {
     const rd = grade.probeReading(id, s);
     assert.ok(rd.value != null || rd.note, `${id} shows something`);
   }
@@ -1116,7 +1158,7 @@ const c = suite('classification');
 const OK = (ms = 20, extra = {}) => ({ok: true, ms, fail: null, ...extra});
 const BAD = (extra = {}) => ({ok: false, ms: 20, fail: 'network', ...extra});
 const healthy = () => ({ip6: OK(30), ip4: BAD({expected: true}), dns: OK(190), dns_ctl: OK(60),
-                        web: OK(65), udp: OK(50),
+                        udp: OK(50),
                         down: {ok: true, bps: 40e6}});
 
 c.test('counts MUST return false WHEN the probe result is expected, resting, empty or missing', () => {
@@ -1210,7 +1252,7 @@ e.test('summarise MUST count rounds, failures, rests and percentiles WHEN given 
     seq: i, t: 1000 + i * 1000, skipped: null, round_error: null, in_pause: false,
     wake_lock: true, accuracy_class: 'gps',
     probes: {ip6: probe(true, 10 * (i + 1)), ip4: probe(false, 5, {expected: true}),
-             dns: probe(true, 100), dns_ctl: probe(true, 20), web: probe(true, 30),
+             dns: probe(true, 100), dns_ctl: probe(true, 20),
              udp: probe(true, 15),
              down: probe(true, 400, {bps: 1e6 * (i + 1), bytes: 250000,
                                      saturated: i > 8})},
@@ -1218,7 +1260,7 @@ e.test('summarise MUST count rounds, failures, rests and percentiles WHEN given 
   });
   const samples = [...Array(10)].map((_, i) => row(i));
   samples.push(row(10, {skipped: 'overlap', probes: {}}));
-  samples.push(row(11, {probes: {...row(11).probes, web: probe(false, 8000)}}));
+  samples.push(row(11, {probes: {...row(11).probes, dns_ctl: probe(false, 8000)}}));
 
   const sum = summarise(samples);
   assert.ok(sum.scales.round_trip && sum.activities.voice,
@@ -1230,7 +1272,7 @@ e.test('summarise MUST count rounds, failures, rests and percentiles WHEN given 
   assert.equal(sum.degraded, 1, 'one round had a real failure');
   assert.equal(sum.probes.ip4.expected, 11, 'a known-absent path is counted apart from failures');
   assert.deepEqual(sum.probes.ip4.fails, {}, 'and never as a failure');
-  assert.equal(sum.probes.web.fails.timeout, 1);
+  assert.equal(sum.probes.dns_ctl.fails.timeout, 1);
 
   // A rested probe is excluded from the failure counts; a rest lasts six rounds.
   const rested = samples.map((x, i) => i < 3 && x.probes.down

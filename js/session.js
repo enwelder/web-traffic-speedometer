@@ -87,9 +87,12 @@ function probeBytes(probe, r, contacted) {
   return n;
 }
 
-// `contacted` carries across rounds, so a session's handshakes are charged once each.
+// `contacted` carries across rounds, so a session's handshakes are charged once each. The
+// reference request runs only in rounds where Cloudflare failed, and is charged a first contact.
 function roundBytes(row, contacted) {
-  return PROBES.reduce((n, p) => n + probeBytes(p, row.probes?.[p.id], contacted), 0);
+  const reference = row.reference && row.reference.fail !== 'abort'
+    ? WARM_BYTES.opaque + FIRST_CONTACT_BYTES : 0;
+  return reference + PROBES.reduce((n, p) => n + probeBytes(p, row.probes?.[p.id], contacted), 0);
 }
 
 // Bytes already charged by the rows on disk, so a resumed session continues its running
@@ -257,6 +260,8 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
       round_ms: null,
       phase_idle_ms: null,
       phase_down_ms: null,
+      // The Google reference request, taken only when every Cloudflare instrument failed.
+      reference: null,
       intervalMs: interval(),
       ...pos,
       probes: {}
@@ -347,6 +352,7 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
       row.loaded_rtt_from = round.loaded_rtt_from;
       row.phase_idle_ms = round.phase_idle_ms;
       row.phase_down_ms = round.phase_down_ms;
+      row.reference = round.reference;
     } catch (e) {
       // The round threw before measuring. 'error' excludes it from network tallies and the wedge
       // count; its grades stay null.
@@ -367,7 +373,7 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
     // Fastest first response in the round, an estimate of radio wake-up cost. Zero values are
     // excluded: connect_ms is zero for a reused connection and for unreadable timing. A probe without
     // a successful sample stopped at its first failure, so its first sample is a time to fail.
-    const firsts = [row.probes.ip6, row.probes.web, row.probes.dns_ctl, row.probes.udp]
+    const firsts = [row.probes.ip6, row.probes.dns_ctl, row.probes.udp]
                    .filter(r => r?.samples_ok > 0)
                    .map(r => r.ms_samples[0])
                    .filter(v => v != null && v > 0);

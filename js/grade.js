@@ -55,10 +55,10 @@ export const throughput = down => (down?.ok && Number.isFinite(down.bps) ? down.
 
 export function articleMs(probes) {
   const dns = probes.dns?.ok ? probes.dns.ms : null;
-  const web = probes.web?.ok ? probes.web.ms : null;
+  const warm = probes.dns_ctl?.ok ? probes.dns_ctl.ms : null;
   const rate = throughput(probes.down);
-  if (dns == null || web == null || !rate) return null;
-  return Math.round(2 * dns + 2 * web + (ARTICLE_BYTES * 8000) / rate);
+  if (dns == null || warm == null || !rate) return null;
+  return Math.round(2 * dns + 2 * warm + (ARTICLE_BYTES * 8000) / rate);
 }
 
 // Route family by precedence: literal answered, family carried traffic with its literal refused,
@@ -76,9 +76,9 @@ export function activeRoute(probes = {}) {
 
 const routeMs = p => (p.ip6?.ok ? p.ip6.ms : p.ip4?.ok ? p.ip4.ms : null);
 // Any hostname probe that reached the network this round. Literals can be blocked or hijacked on
-// a working path: on one operator both literals failed every round while DNS, gstatic and the
-// download answered.
-const reached = p => !!(p.web?.ok || p.down?.ok || p.dns?.ok || p.dns_ctl?.ok);
+// a working path: on one operator both literals failed every round while DNS and the download
+// answered.
+const reached = p => !!(p.down?.ok || p.dns?.ok || p.dns_ctl?.ok);
 
 // The round trip failed: neither literal answered and one of them counts against the link. A
 // timed-out literal counts; absent, rested, blocked and unused literals do not.
@@ -110,7 +110,7 @@ const TERMS = {
     linkTerm(p),
     {note: 'lookup lost', grade: p.dns?.retry_suspected ? 'red' : null},
     {note: 'no lookup', grade: failed(p.dns) ? 'red' : null},
-    {note: 'host gone', grade: failed(p.web) ? 'red' : null},
+    {note: 'host gone', grade: failed(p.dns_ctl) ? 'red' : null},
     {note: 'no data', grade: noThroughput},
     {scale: 'ttfb', value: p.dns?.ok ? p.dns.ms : null},
     ...(skipRate ? [] : [{scale: 'article', value: articleMs(p)}])
@@ -132,8 +132,13 @@ function terms(activity, p) {
   return TERMS[activity]?.({p, rate: throughput(p.down), noThroughput, skipRate}) ?? [];
 }
 
+// The Google reference answered while every Cloudflare instrument failed: the far end failed, and
+// the round holds no measurement of the link.
+const FAR_END = {grade: null, value: null, unit: null, note: 'far end', scale: null, saturated: false};
+
 // An activity's grade and the term that set it, so the displayed value matches the colour.
 export function activityReading(activity, sample) {
+  if (sample?.reference?.ok) return {...FAR_END, missing: []};
   const graded = terms(activity, sample?.probes || {})
     .map(t => ({...t, grade: t.grade ?? gradeValue(t.scale, t.value)}));
   const grade = graded.reduce((a, t) => worse(a, t.grade), null);
@@ -161,7 +166,7 @@ export function activityReading(activity, sample) {
 
 // Every probe in PROBES needs a scale; a probe without one shows an uncoloured value.
 export const PROBE_SCALES = {
-  ip6: 'round_trip', ip4: 'round_trip', dns_ctl: 'round_trip', web: 'round_trip',
+  ip6: 'round_trip', ip4: 'round_trip', dns_ctl: 'round_trip',
   udp: 'round_trip', down: 'rate', dns: 'ttfb'
 };
 

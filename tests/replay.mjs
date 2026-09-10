@@ -315,15 +315,15 @@ r.test('activityReading MUST return a null grade for voice naming round_trip as 
 });
 
 
-r.test('gradeActivities MUST grade news red WHEN the recorded control probe fails alone for twenty rounds', () => {
+r.test('gradeActivities MUST grade news identically WHEN the recorded web field is removed from a round', () => {
   const j = journeys['stuck-probe'];
-  // The control probe failed alone for the last twenty rounds while the rest recovered.
+  // The recording carries a web probe, which failed alone for the last twenty rounds.
   const tail = j.samples.slice(-20);
-  assert.ok(tail.every(s => !s.probes.web.ok), 'the control never recovered');
-  assert.ok(tail.filter(s => s.probes.ip6.ok).length >= 18, 'while the link was fine');
-  // The failing control probe grades news red in every round.
-  const grades = tail.map(s => g.gradeActivities(s).news);
-  assert.ok(grades.every(x => x === 'red'), 'and the activity it feeds grades red');
+  assert.ok(tail.every(s => !s.probes.web.ok), 'the recorded web probe never recovered');
+  for (const s of tail) {
+    const withoutWeb = {...s, probes: {...s.probes, web: undefined}};
+    assert.equal(g.gradeActivities(s).news, g.gradeActivities(withoutWeb).news, `seq ${s.seq}`);
+  }
 });
 
 r.test('summarise MUST return ordered percentiles and a round-tripping export WHEN run over each recording', () => {

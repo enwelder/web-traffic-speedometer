@@ -121,8 +121,8 @@ b.test('the readout MUST label the strips from ACTIVITIES and show one row per p
   assert.deepEqual(names, ACTIVITY_IDS.map(c => ACTIVITIES[c].label),
                    `activities, not probes: ${names.join(' | ')}`);
   const rows = await page.$$eval('.probe', els => els.map(e => e.id));
-  // The two address families share the route row, so there are six rows for seven probes.
-  assert.equal(rows.length, PROBES.length - 1, `six rows for seven probes: ${rows.join(' ')}`);
+  // The two address families share the route row, so there is one row fewer than probes.
+  assert.equal(rows.length, PROBES.length - 1, `${rows.length} rows for ${PROBES.length} probes: ${rows.join(' ')}`);
   assert.equal(rows[0], 'probe-route', 'the route leads');
   assert.equal(await page.locator('#m-udp').count(), 0, 'no probe readings among the counters');
   await ctx.close();
@@ -213,8 +213,8 @@ b.test('a session MUST record, resume across a reload with a contiguous seq, and
   const udp = db.samples.map(x => x.probes.udp).filter(u => u.ok);
   assert.ok(udp.length > 0, 'the UDP path is probed every round');
   assert.ok(udp.every(u => u.public_ips.includes('2a09:bac5::9')), 'and reports its NAT mapping');
-  // All four latency probes are sampled the same way, so their medians are comparable.
-  for (const id of ['ip6', 'web', 'dns_ctl', 'udp']) {
+  // The latency probes are sampled the same way, so their medians are comparable.
+  for (const id of ['ip6', 'dns_ctl', 'udp']) {
     const sampled = db.samples.filter(x => x.probes[id]?.ms_samples);
     assert.ok(sampled.length >= 3, `${id} is sampled, not measured once`);
     assert.ok(sampled.filter(x => x.probes[id].ok)
@@ -259,7 +259,7 @@ b.test('a session MUST record, resume across a reload with a contiguous seq, and
   assert.equal(file.format, 'wts/session');
   assert.equal(file.samples.length, db.samples.length, 'every stored round is in the file');
   assert.equal(file.events.length, db.events.length);
-  assert.equal(file.probes.length, 7, 'the probe set travels with the data');
+  assert.equal(file.probes.length, PROBES.length, 'the probe set travels with the data');
   assert.ok(file.summary, 'and a rollup so a reader need not recompute the basics');
   assert.equal(file.summary.rounds, file.samples.length);
   assert.ok(file.summary.probes.ip6, 'per probe');
@@ -310,7 +310,7 @@ b.test('every probe MUST reach its endpoint with no policy violation logged WHEN
   // complete round.
   const whole = db.samples.filter(s => !s.skipped && s.probes.down?.fail !== 'abort');
   const last = whole.at(-1).probes;
-  for (const id of ['ip6', 'dns', 'dns_ctl', 'web', 'down', 'udp']) {
+  for (const id of ['ip6', 'dns', 'dns_ctl', 'down', 'udp']) {
     assert.equal(last[id].ok, true, `${id} reached its endpoint under the policy`);
   }
   await ctx.close();
@@ -505,7 +505,7 @@ b.test('a probe row MUST replace its number with an explanation and restore the 
   await page.click('#btn-help');
   await page.waitForTimeout(200);
   const shown = await page.$$eval('.probe .explain', els => els.filter(e => e.textContent.trim()).length);
-  assert.equal(shown, 6, 'the help control shows an explanation on every row');
+  assert.equal(shown, PROBES.length - 1, 'the help control shows an explanation on every row');
   await ctx.close();
 });
 

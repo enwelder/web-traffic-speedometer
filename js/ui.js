@@ -54,12 +54,12 @@ export function classify(sample) {
 
 // One row per reading; both address families share the route row, which shows the family
 // carrying traffic.
-const ROWS = ['route', 'dns', 'dns_ctl', 'web', 'udp', 'down'];
+const ROWS = ['route', 'dns', 'dns_ctl', 'udp', 'down'];
 
 // Row labels name the request, matching the probe table; PROBES holds the full label.
 const PROBE_LABELS = {
   ip6: 'GET IPv6', ip4: 'GET IPv4', dns: 'HEAD new host', dns_ctl: 'HEAD same host',
-  web: 'GET gstatic', down: 'GET download', udp: 'STUN'
+  down: 'GET download', udp: 'STUN'
 };
 // The row id a reading comes from, and the label it carries, both depend on the round.
 const rowProbe = (row, sample) =>
