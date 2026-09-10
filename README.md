@@ -214,6 +214,11 @@ sample pays a full first contact. Sampling stops at the first failure, leaving t
 budget to the rest of the round. `ms_samples`, `ms_min` and `ms_max` are kept alongside the
 median, which hides a spread like 52-4275 ms within one round.
 
+A probe fails when no sample answered. One failure after a run of answers is a lost packet, and
+the samples that answered measured the link; that failure is kept in `sample_fail` and counted
+out of `samples_ok`. Nine answers at 20 ms and a tenth that never returns is a working
+connection, and reddening calls on it reports the packet rather than the link.
+
 **A name that cannot be cached.** A fixed hostname stops testing DNS after one round:
 `one.one.one.one` has a 24-hour TTL, so the OS answers from cache and no query reaches the
 network, including during the outages that matter most. `*.github.io` has a wildcard record
@@ -279,6 +284,14 @@ opens three connections for that reason, and this opens three:
 | ramp | three connections stream for 300 ms or 1 MB, discarded | RMBT spends 2 s here to get the radio into an active state, so a result does not depend on what the connection was doing beforehand |
 | window | 1.5 s, all streams counted against one clock | a fixed window makes rounds comparable with each other |
 | cap | the window also ends at 4.7 MB | what a round costs is then knowable before it runs |
+| first end | the window also ends when any stream reaches its end | RMBT's `t*`: the rate is never a sum of bytes divided by a span some of them did not run for |
+
+The chunk that ends the ramp belongs to the ramp: it crossed the link over a span that starts
+before the window does, and counting its bytes inside the window without its time reports a
+rate the link never carried. A window shorter than 100 ms holds no round trip and carries no
+rate: 9 kB in 3 ms is arithmetically 24 Mb/s and measures the clock. Those bytes are charged
+against the longest span they could have taken instead, so a link too fast to time is still
+proven — 4 MB inside a millisecond clears the ceiling at 100 ms, and 9 kB does not.
 
 **The cap is a stated ceiling.** A window of `T` that stops at `B` bytes can never report more
 than `B × 8 ÷ T`, which here is **25 Mb/s**. Reaching it proves the link carries at least that
@@ -290,19 +303,30 @@ half times the edge video is graded on, so a healthy link is always provably gre
 answer "how fast is this cell". What a run costs is under [Data usage](#data-usage).
 
 Phases run one at a time, as RMBT's do. Latency, DNS and UDP go first with the link otherwise
-idle; the download follows alone, with one round trip sampled across it. That second figure is
-`loaded_rtt_ms`, and the gap between the two is what this link queues under load. Queueing is
-felt as much as throughput.
+idle; the download follows alone, with one round trip sampled across it once its window has
+opened. That second figure is `loaded_rtt_ms`, and the gap between the two is what this link
+queues under load. Queueing is felt as much as throughput. Taken alongside the download it
+races three TLS handshakes and answers before a payload byte arrives, which measures the idle
+link twice; it is null when no window opened, and null when the transfer ended before the
+sample could start.
 
 **Deadlines and scheduling.** Every TCP probe gets 8 s, capped at the interval minus half a
-second; `udp` gets 3 s, since a STUN binding answers within a round trip or not at all. Eight
-seconds because journey data shows probes succeeding at 3885 ms against a 4000 ms
+second; the download then gets what the idle phase left of the interval, since the two run one
+after the other and a round sized against the interval twice over drops every second round as
+an overlap. `udp` gets 3 s, since a STUN binding answers within a round trip or not at all.
+Eight seconds because journey data shows probes succeeding at 3885 ms against a 4000 ms
 ceiling, and a 4000 ms deadline files anything slower as a failure, collapsing "slow" into
 "gone".
 
 Rounds are scheduled from when the previous one fired. On a fixed grid, lateness pulls the next
 slot closer, so after a freeze two rounds fire moments apart and measure the same instant twice
 at twice the price.
+
+Lateness is read from the wall clock as well as the monotonic one. `performance.now()` stops
+while an iOS device sleeps: across seq 7 to 8 of one recording the wall clock advanced
+4,331,556 ms and the monotonic clock 2,551,966 ms, leaving 29.7 minutes of the gap invisible
+to it. A gap made entirely of sleep would produce no `pause` event at all and leave two bars
+adjacent across a hole.
 
 **iOS limits.**
 
@@ -317,6 +341,29 @@ at twice the price.
 **Operator and connection type** are asked for, because no browser API exposes either —
 `navigator.connection` is unimplemented in Safari everywhere. The recorded egress IP makes the
 answer checkable afterwards, since a carrier range and home Wi-Fi resolve to different ASNs.
+
+## Compared with RMBT
+
+RTR's [RMBT specification](https://github.com/rtr-nettest/rmbt-server/blob/master/RMBT_specification.md)
+is the reference this method is taken from. RMBT owns both ends of the connection; this owns
+neither, and runs in a page. What that costs is set out here rather than left to be discovered
+in the data.
+
+| RMBT | here | why it differs |
+|---|---|---|
+| seven phases, none overlapping | two: idle probes, then the download | the loaded round trip is deliberately taken *during* the download, and grades nothing — it is a measure of queueing, not of latency |
+| downlink pre-test of 2 s, chunk size doubling from 4 kB | ramp of 300 ms or 1 MB, chunk size whatever the browser hands over | data cost. A page cannot set a chunk size |
+| latency measured after the pre-test, on an active radio | latency measured first, on a radio that may be asleep | the median of ten discards the wake-up; the cost of it is reported separately as `first_packet_ms`, which is 373 ms against a 21 ms median on one KPN round |
+| latency is 10-200 pings, timed **by the server**, median | 10 samples, timed by the client around a whole HTTPS request, median | **shortcoming**: the figure includes TLS resumption, HTTP framing and browser scheduling, so it is an upper bound on the round trip. Three independent sources agreeing within 2 ms is the only check available |
+| downlink measured over 7 s | 1.5 s | data cost. A shorter window has more variance and sits earlier in the transfer |
+| `R = Σ b_k / t*`, per-thread bytes interpolated to `t*` | all streams counted against one clock; the window ends at the first stream's end, the cap, or the clock | the shared clock makes interpolation unnecessary; ending at the first stream's end is `t*` |
+| uplink pre-test and 7 s uplink measurement | **nothing** | **shortcoming**: upload is not measured at all. A link with 25 Mb/s down and 200 kb/s up fails video calls and grades green here. This is the largest gap in the method |
+| the server reports its own view of every connection | Cloudflare's `server-timing` `cfL4` block: RTT, retransmits, losses, delivery rate, cwnd | partial parity, on the one endpoint that sends it |
+| a token fixes when a measurement may start | rounds run on a fixed interval | no coordination with anyone else's test |
+
+Two further limits are ours alone: the endpoints are public infrastructure that can rate-limit
+or intercept, and every phase of every request except the download's is zeroed cross-origin, so
+DNS cannot be separated from connection and handshake.
 
 ## Running it
 

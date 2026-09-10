@@ -311,10 +311,29 @@ b.test('the content security policy blocks nothing the probes need', async () =>
   await page.waitForTimeout(500);
   assert.deepEqual(blocked, [], 'no probe is refused by the policy');
   const db = await readDb(page);
-  const last = db.samples.at(-1).probes;
+  // The stop above aborts whatever round was in flight, so the last row can be a round that
+  // was cut short. The last one that ran to the end is the one with something to say.
+  const whole = db.samples.filter(s => !s.skipped && s.probes.down?.fail !== 'abort');
+  const last = whole.at(-1).probes;
   for (const id of ['ip6', 'dns', 'dns_ctl', 'web', 'down', 'udp']) {
     assert.equal(last[id].ok, true, `${id} reached its endpoint under the policy`);
   }
+  await ctx.close();
+});
+
+b.test('stopping mid-round stops the transfer it had not started', async () => {
+  const {ctx} = await context();
+  const page = await ctx.newPage();
+  const asked = [];
+  page.on('request', r => { if (r.url().includes('speed.cloudflare')) asked.push(Date.now()); });
+  await page.goto(BASE, {waitUntil: 'networkidle'});
+  await page.click('#btn-start');
+  await page.waitForTimeout(120);            // inside the idle phase
+  await page.click('#btn-start');
+  const cut = Date.now();
+  await page.waitForTimeout(2500);
+  assert.equal(asked.filter(t => t > cut + 100).length, 0,
+               'no download is opened after the stop, so the stop is immediate and free');
   await ctx.close();
 });
 

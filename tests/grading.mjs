@@ -296,4 +296,41 @@ s.test('the states a failing literal can take are exclusive, and only one is red
   assert.equal(g.probeReading('ip4', {probes: {ip4: bad()}}).grade, 'red');
 });
 
+// What a download that produced no rate does to each activity. A term that cannot be measured
+// is dropped; one left in place with no value reads as unrated, which blanks an activity whose
+// round trip and UDP path were both measured.
+s.test('a download with no rate degrades what it measures and nothing else', () => {
+  const grades = down => {
+    const r = g.gradeActivities(round({down}));
+    return [r.voice, r.news, r.streaming];
+  };
+
+  // The link stopped carrying: every activity that needs data is red, calls included.
+  assert.deepEqual(grades({ok: false, fail: 'network', refused_by: 'connection', bps: null}),
+                   ['red', 'red', 'red'], 'a connection that would not open is the link');
+  assert.deepEqual(grades({ok: false, fail: 'stalled', bps: null}),
+                   ['red', 'red', 'red'], 'a cell that stopped answering mid-window is the link');
+  assert.deepEqual(grades({ok: false, fail: 'timeout', bps: null}),
+                   ['red', 'red', 'red']);
+
+  // The endpoint turned us away, or the measurement was too short to divide by. Neither says
+  // anything about the link, so the round trip and the lookup still grade.
+  for (const down of [{ok: false, fail: 'network', refused_by: 'server', bps: null},
+                      {ok: false, fail: 'short', bps: null},
+                      {ok: false, fail: 'resting', bps: null}]) {
+    const [voice, news, streaming] = grades(down);
+    assert.equal(voice, 'green', `calls grade on the round trip: ${down.fail}`);
+    assert.equal(news, 'green', `an article grades on the lookup alone: ${down.fail}`);
+    assert.equal(streaming, null, `streaming has nothing left to read: ${down.fail}`);
+  }
+});
+
+s.test('an unmeasured term never leaves an activity greener than its worst probe', () => {
+  // The carve-out must not become a way to lose a red: a refused download beside a dead UDP
+  // path is still a call that will not connect.
+  const r = g.gradeActivities(round({down: {ok: false, fail: 'short', bps: null},
+                                     udp: {ok: false, ms: null, fail: 'timeout'}}));
+  assert.equal(r.voice, 'red', 'no UDP is still no call');
+});
+
 await s.run();

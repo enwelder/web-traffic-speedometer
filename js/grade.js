@@ -88,33 +88,35 @@ const noRoute = p =>
 
 // Only whether the UDP path exists is read, never its milliseconds: the row above grades those.
 const TERMS = {
-  voice: ({p, rate}) => [
+  voice: ({p, rate, noThroughput, skipRate}) => [
     {note: 'no UDP', grade: failed(p.udp) ? 'red' : null},
     {note: 'no route', grade: noRoute(p) ? 'red' : null},
+    {note: 'no data', grade: noThroughput},
     {scale: 'round_trip', value: routeMs(p)},
-    {scale: 'call_rate', value: rate}
+    ...(skipRate ? [] : [{scale: 'call_rate', value: rate}])
   ],
-  news: ({p, noThroughput}) => [
+  news: ({p, noThroughput, skipRate}) => [
     {note: 'lookup lost', grade: p.dns?.retry_suspected ? 'red' : null},
     {note: 'no lookup', grade: failed(p.dns) ? 'red' : null},
     {note: 'host gone', grade: failed(p.web) ? 'red' : null},
     {note: 'no data', grade: noThroughput},
     {scale: 'ttfb', value: p.dns?.ok ? p.dns.ms : null},
-    {scale: 'article', value: articleMs(p)}
+    ...(skipRate ? [] : [{scale: 'article', value: articleMs(p)}])
   ],
-  streaming: ({rate, noThroughput}) => [
+  streaming: ({rate, noThroughput, skipRate}) => [
     {note: 'no data', grade: noThroughput},
-    {scale: 'rate', value: rate}
+    ...(skipRate ? [] : [{scale: 'rate', value: rate}])
   ]
 };
 
 
+// A download the far end turned away, or one that never ran, measured no throughput. The term
+// is dropped: left in place with no value it reads as unrated, which blanks every activity
+// that consults it while the round trip and the UDP path were both measured.
 function terms(activity, p) {
-  const rate = throughput(p.down);
-  // A download the far end refused says nothing about the link, so it leaves the activities
-  // that read it with one fewer term.
-  const noThroughput = failed(p.down) && !ourFault(p.down) ? 'red' : null;
-  return TERMS[activity]?.({p, rate, noThroughput}) ?? [];
+  const skipRate = ourFault(p.down) || !countsAsFailure(p.down) && p.down?.ok === false;
+  const noThroughput = failed(p.down) && !skipRate ? 'red' : null;
+  return TERMS[activity]?.({p, rate: throughput(p.down), noThroughput, skipRate}) ?? [];
 }
 
 // An activity's verdict and the measurement that decided it, so the number shown and the

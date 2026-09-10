@@ -1,6 +1,6 @@
 # Exported session format
 
-`format: "wts/session"`, `version: 9`. One button per session writes one JSON file: session
+`format: "wts/session"`, `version: 10`. One button per session writes one JSON file: session
 metadata, environment, a rollup, every sample, every event. CSV, GPX or GeoJSON are a few
 lines to derive from it.
 
@@ -13,6 +13,7 @@ lines to derive from it.
 | 7 | throughput is streamed on several connections for a fixed window and saturates at a stated ceiling; `bps_min`, `bps_server` and `warmup_only` are gone |
 | 8 | a failing address-family literal is judged on its own round: `unused` replaces `expected` on `ip6`/`ip4`, which no longer carry a session-long verdict |
 | 9 | an activity whose term could not be measured is unrated; the fresh-name probe is graded on `ttfb`, and the `dns_delta` scale is gone |
+| 10 | the download summary reports `bps_p10`, `bps_p50` and `saturated`; a probe survives one failed sample and records it in `sample_fail`; a round that threw grades nothing and marks its probes `error`; `short` joins the failure reasons |
 
 Version 5 changes failure counts. Files below it carry `expected` only on `ip4`, so every
 `ip6` failure in them is a real one. From 5, `expected` on `ip6` marks a path that was never
@@ -55,6 +56,8 @@ failure is represented only by an absence.
 | `timeout` `network` | the transport |
 | `http` | a status the server chose |
 | `parse` | a body that failed validation |
+| `short` | bytes crossed, over a span too brief to divide by; flagged `expected` |
+| `error` | the round itself threw before the probe ran; flagged `expected` |
 | `abort` | the session ended mid-probe |
 | `stalled` | headers arrived, body never did |
 | `empty` | a 200 with nothing in it |
@@ -62,7 +65,7 @@ failure is represented only by an absence.
 | `resting` | the recorder stood the probe down; flagged `expected` |
 | `unsupported` | the browser has no such API; flagged `expected` |
 
-`resting` and `unsupported` stay out of every tally.
+`resting`, `unsupported`, `short` and `error` stay out of every tally: none of them is the link failing.
 
 `ms` is recorded on failure too: how long a probe took to fail separates a refused connection
 from a link that hung until the deadline.
@@ -93,8 +96,8 @@ screen.
 | `wake_lock` | whether the screen was held awake |
 | `prev_round_ms` | how long the previous round took. A frozen tab suspends the abort timers, so a round can outlast every deadline in it; without this an overlap cannot be told from the app stalling |
 | `speed_derived` `speed_source` | speed computed from consecutive fixes, and whether the reported value is `gps` or `derived` |
-| `loaded_rtt_ms` `loaded_rtt_from` | a round trip taken while the download was running, and which probe took it — the same one that answered idle, so the pair is one measurement made twice. The gap between them is what this link queues under load |
-| `grades` | the three activity grades this round produced, as shown. `null` means unrated: a term the activity needs had no measurement |
+| `loaded_rtt_ms` `loaded_rtt_from` | a round trip taken while the download was running, and which probe took it — the same one that answered idle, so the pair is one measurement made twice. The gap between them is what this link queues under load. Null when no window opened, or when the transfer ended before the sample could start |
+| `grades` | the three activity grades this round produced, as shown. `null` in place of the object means the round threw and measured nothing; `null` for one activity means unrated, where a term it needs had no measurement |
 | `pgrades` | the seven per-probe grades |
 | `first_packet_ms` | quickest first response in the round, approximating the cost of waking the radio. Reported, never graded |
 
@@ -109,17 +112,18 @@ screen.
 | `expected` | `udp` | the browser has no such API. Excluded from tallies |
 | `stuck` | any | the probe was failing alone and has been rested |
 | `egress_ip` `colo` | `ip6` `ip4` `down` | the operator's public address and the Cloudflare PoP |
-| `ms_samples` `samples_ok` `ms_min` `ms_max` | `ip6` `ip4` `dns` `dns_ctl` `web` `udp` | every latency sample, how many succeeded, and the spread; `ms` is their median. A median of [893, 4275, 52] hides the spread |
+| `ms_samples` `samples_ok` `ms_min` `ms_max` | `ip6` `ip4` `dns` `dns_ctl` `web` `udp` | every latency sample, how many succeeded, and the spread; `ms` is the median of the ones that succeeded. A median of [893, 4275, 52] hides the spread |
+| `sample_fail` | sampled probes | the reason the last sample failed, on a probe whose earlier samples answered. The probe is a measurement; this is the packet it lost |
 | `parse_reason` | `ip6` `ip4` | which check the trace body failed |
 | `public_ips` `candidates` | `udp` | the NAT mapping per address family, and how many ICE candidates were gathered |
 | `host` | `dns` `dns_ctl` | the hostname used: random each round for `dns`, constant for `dns_ctl` |
 | `retry_suspected` | `dns` | the answer arrived within 300 ms of a resolver retry timer (2 s or 5 s), so the first query was lost. Red regardless of the number |
 | `bytes` `duration_ms` `ttfb_ms` | `down` | bytes counted, how long the read ran, time to first byte |
-| `bps` | `down` | the rate over the window, across every stream. The figure that is graded |
+| `bps` | `down` | the rate over the window, across every stream. The figure that is graded. Null when the window was shorter than 100 ms, which no round trip fits inside |
 | `saturated` | `down` | the window hit its byte cap first, so `bps` is the ceiling and the link carries at least that. The screen prints a `≥` |
 | `ceiling_bps` | `down` | the fastest this round could have reported |
 | `streams` | `down` | how many connections carried it |
-| `window_bytes` `window_ms` | `down` | what `bps` was computed over |
+| `window_bytes` `window_ms` | `down` | what `bps` was computed over. The window ends on its own clock, so a stream that stalls inside it shortens no span and lengthens none |
 | `ramp_ms` | `down` | how long was streamed before the window opened, and discarded |
 | `refused_by` | `down` | on a `network` failure: `server` or `connection` |
 | `aborted_reason` | `down` | how the read ended: `eof`, `time`, `aborted` or `network` |

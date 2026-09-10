@@ -15,8 +15,10 @@ export const clock = ms => {
   return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 };
 
+// Base 10 throughout, matching the bit rates beside it: 1,000,000 bytes divided by 1024 reads
+// as 977 kB, one byte more reads as 1.0 MB.
 export function bytes(b) {
-  return b < 1e6 ? `${Math.round(b / 1024)} kB` : `${(b / 1048576).toFixed(1)} MB`;
+  return b < 1e6 ? `${Math.round(b / 1e3)} kB` : `${(b / 1e6).toFixed(1)} MB`;
 }
 
 export function duration(s) {

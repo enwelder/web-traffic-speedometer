@@ -10,7 +10,7 @@ const {createRecorder} = await import('../js/session.js');
 const P = Object.fromEntries(probe.PROBES.map(p => [p.id, p]));
 const PROBE_IDS = probe.PROBES.map(p => p.id);
 const r = suite('regressions');
-
+const {createStuckTracker} = await import('../js/stuck.js');
 const okResponse = () => ({ok: true, status: 200, type: 'opaque', headers: {get: () => null},
                           body: bodyOf(1000), text: async () => TRACE});
 
@@ -320,6 +320,54 @@ r.test('a change of egress address under an unchanged label is written down', as
 
   const notes = store.written.events.filter(e => /egress address changed/.test(e.text || ''));
   assert.equal(notes.length, 1, `said once, not every round afterwards: ${notes.length}`);
+});
+
+
+r.test('a gap made only of wall-clock time is still a pause', async () => {
+  // iOS stops performance.now() while the device sleeps. Recorded on KPN, seq 7 to 8: the wall
+  // clock advanced 4,331,556 ms and the monotonic clock 2,551,966 ms, so 29.7 minutes of the
+  // gap were invisible to it. Read from the monotonic clock alone, a gap that is entirely
+  // sleep produces no pause event and leaves adjacent bars across a hole.
+  globalThis.fetch = async () => okResponse();
+  const store = fakeStore();
+  const rec = createRecorder({store});
+  const realNow = performance.now.bind(performance);
+  const realDate = Date.now.bind(Date);
+  await rec.start({id: 's1', name: 't', profile: 'fine', intervalMs: 120, started: realDate(),
+                   download: {windowMs: 40, rampMs: 0, streams: 1}});
+  await sleep(200);
+
+  // The device sleeps: the monotonic clock stands still, the wall clock runs on.
+  const frozen = realNow();
+  performance.now = () => frozen;
+  Date.now = () => realDate() + 1800000;
+  await sleep(400);
+  performance.now = realNow;
+  Date.now = realDate;
+  await rec.stop();
+
+  const pauses = store.written.events.filter(e => e.type === 'pause');
+  assert.ok(pauses.length > 0, 'the gap is recorded');
+  assert.ok(pauses.some(e => parseFloat(e.text) > 1000),
+            `and its length comes from the wall clock: ${pauses.map(e => e.text).join(' ')}`);
+});
+
+r.test('a stalled download is a congested cell, and is not rested', () => {
+  // Resting stands a probe down for six rounds, which would blank the throughput for 90
+  // seconds of the congestion the run exists to record.
+  const rests = fail => {
+    const t = createStuckTracker();
+    for (let i = 0; i < 4; i++) {
+      const row = {probes: Object.fromEntries(PROBE_IDS.map(id =>
+        [id, id === 'down' ? {ok: false, fail} : {ok: true, ms: 20}]))};
+      t.note(row, i);
+      if (row.probes.down.stuck) return true;
+    }
+    return false;
+  };
+  assert.equal(rests('stalled'), false, 'a stall does not wedge a connection');
+  assert.equal(rests('timeout'), true, 'a timeout does');
+  assert.equal(rests('network'), true);
 });
 
 const ok = await r.run();

@@ -95,7 +95,7 @@ function syncSetup() {
   $('row-operator').hidden = wifi;
   $('f-operator-other').hidden = $('f-operator').value !== '__other';
   const {intervalMs} = profile();
-  const mb = projectedBytes(intervalMs, DOWNLOAD_DEFAULTS) / 1048576;
+  const mb = projectedBytes(intervalMs, DOWNLOAD_DEFAULTS) / 1e6;
   const el = $('budget');
   // A round streams a ramp and then a window, and the window stops at a byte cap, so this is
   // the exact worst case. A link slower than the ceiling costs less in proportion.

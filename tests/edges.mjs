@@ -232,15 +232,77 @@ d.test('a refused download says which side refused it', async () => {
 });
 
 d.test('the window ends the read, or the far end does', async () => {
-  const short = await download([{after: 2, bytes: 200000}], {windowMs: 2000, rampMs: 0, streams: 1});
+  // 16 kB a chunk is what both engines hand over on a real body.
+  const short = await download(Array.from({length: 20}, () => ({after: 8, bytes: 16000})),
+                               {windowMs: 2000, rampMs: 0, streams: 1});
   assert.equal(short.aborted_reason, 'eof', 'the body ran out first');
   assert.equal(short.ok, true);
+  assert.ok(short.window_ms >= probe.DOWN_MIN_SPAN_MS,
+            `over a span long enough to divide by: ${short.window_ms} ms`);
 
   const cut = await download(Array.from({length: 400}, () => ({after: 5, bytes: 20000})),
                              {windowMs: 300, rampMs: 0, streams: 1});
   assert.equal(cut.aborted_reason, 'done', 'the window closed it');
   assert.ok(cut.window_ms < 600, `stopped near the window: ${cut.window_ms} ms`);
   assert.equal(cut.ok, true, 'a read stopped by its own window is a measurement, not a failure');
+});
+
+// The Fable review of 2026-09-09 found eight ways the download could report a number the link
+// had not earned. Each is pinned here with the arithmetic that produced it.
+
+d.test('a span too short to divide by carries no rate', async () => {
+  // A 9 kB body handed over whole, 3 ms after the ramp opened the window: 9000 x 8 / 0.003 is
+  // 24 Mb/s, which is the clock's resolution and not the link's.
+  const tiny = await download([{after: 1, bytes: 4000}, {after: 3, bytes: 9000}],
+                              {windowMs: 1500, rampMs: 0, streams: 1});
+  assert.equal(tiny.bps, null, 'no rate is reported');
+  assert.equal(tiny.ok, false);
+  assert.equal(tiny.fail, 'short', 'the measurement failed, not the link');
+  assert.equal(countsAsFailure(tiny), false, 'so it is not counted against the connection');
+
+  // The same bytes charged against the longest span they could have taken clear the ceiling,
+  // so a link too fast for the clock is still proven.
+  const fast = await download([{after: 1, bytes: 16000}, {after: 0, bytes: 4000000}],
+                              {windowMs: 1500, rampMs: 0, streams: 1, capBytes: 4700000});
+  assert.equal(fast.saturated, true, '4 MB inside a millisecond clears 25 Mb/s at any span');
+  assert.equal(fast.bps, probe.DOWN_CEILING_BPS);
+  assert.equal(fast.ok, true);
+});
+
+d.test('a stream that stalls mid-window ends at the window, not at the deadline', async () => {
+  // 10 Mb/s for 760 ms, then a cell that stops answering. The window is 1.5 s, so it holds
+  // about 575 kB of data and 1 s of silence: 3 Mb/s. Left to run to the 8 s deadline the same
+  // bytes read 575 kb/s, and the window_ms in the file would contradict the one it declares.
+  const per = 25000;
+  const paced = Array.from({length: 38}, () => ({after: 20, bytes: per}));
+  const r = await download([...paced, {stall: true}],
+                           {windowMs: 1500, rampMs: 300, streams: 1, capBytes: 4700000});
+  assert.ok(r.window_ms <= 1600, `the window closed on its own clock: ${r.window_ms} ms`);
+  assert.ok(r.bps > 2.5e6 && r.bps < 4e6, `and the rate is the window's: ${r.bps}`);
+  assert.ok(r.ms < 4000, `without waiting out the 8 s deadline: ${r.ms} ms`);
+});
+
+d.test('the chunk that ends the ramp is not counted in the window', async () => {
+  // A 500 kB chunk crosses the link over the 105 ms before the window opens, and then 16 kB
+  // arrives every 10 ms, which is 12.8 Mb/s. Counting the ramp's last chunk in the window
+  // without its time adds 500 kB to a 200 ms window and reports 33 Mb/s.
+  const chunks = [{after: 105, bytes: 500000},
+                  ...Array.from({length: 60}, () => ({after: 10, bytes: 16000}))];
+  const r = await download(chunks, {windowMs: 200, rampMs: 100, streams: 1, capBytes: 4700000});
+  assert.ok(r.window_bytes < 400000,
+            `the ramp's 500 kB is not in the window: ${r.window_bytes} bytes`);
+  assert.ok(r.bps > 10e6 && r.bps < 15e6, `which leaves the paced rate: ${r.bps}`);
+});
+
+d.test('a body that never opens a window is not a link failure', async () => {
+  // One chunk inside the ramp and then the far end runs out: nothing was measured, and the
+  // activities that read throughput must not be reddened by it.
+  const r = await download([{after: 2, bytes: 200000}], {windowMs: 1500, rampMs: 300, streams: 1});
+  assert.equal(r.window_ms, 0);
+  assert.equal(r.window_bytes, 0, 'the ramp is not the window');
+  assert.equal(r.bytes, 200000, 'the bytes are still recorded');
+  assert.equal(r.fail, 'short');
+  assert.equal(countsAsFailure(r), false);
 });
 
 d.test('the reading holds across four orders of magnitude of link', async () => {
@@ -374,7 +436,10 @@ n.test('a PoP change is in the data without being interpreted', async () => {
 });
 
 n.test('a round that outlives its slot is written down, not skipped silently', async () => {
-  const {rows, store} = await record(async () => { await sleep(200); return okResponse(); }, 600);
+  // Every request takes 200 ms, so a round runs about 600 ms against an 80 ms interval: the
+  // idle phase, the download, and the round trip taken across it. Long enough for one round to
+  // finish, so a later overlap has a duration to record.
+  const {rows, store} = await record(async () => { await sleep(200); return okResponse(); }, 1400);
   const skipped = store.written.samples.filter(x => x.skipped === 'overlap');
   assert.ok(skipped.length > 0, 'a round that came due mid-flight leaves a row');
   assert.ok(skipped.every(x => x.late_ms != null), 'carrying how late it was');

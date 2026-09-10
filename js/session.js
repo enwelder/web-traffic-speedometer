@@ -29,7 +29,7 @@ const handshakes = (probe, attempts, first) =>
 // The projection is steady state: by the second round every origin has been contacted.
 const cost = p => (WARM_BYTES[p.kind] * (p.samples || 1)) + handshakes(p, p.samples || 1, false);
 
-export const APP_VERSION = '3.12.0';
+export const APP_VERSION = '3.13.0';
 
 // The download runs every round, so the interval is what controls data use.
 export const PROFILES = {
@@ -81,7 +81,8 @@ function probeBytes(probe, r, contacted) {
   if (!r) return 0;
   // An IPv4 literal with no path never gets a connection up.
   if (r.expected && !r.ok) return REFUSED_BYTES;
-  if (r.fail === 'resting') return 0;
+  // Nothing was sent: the probe was stood down, or the round threw before it ran.
+  if (r.fail === 'resting' || r.fail === 'error') return 0;
   const attempts = r.ms_samples ? r.ms_samples.length : 1;
   const n = WARM_BYTES[probe.kind] * attempts + (probe.kind === 'download' ? r.bytes || 0 : 0)
           + handshakes(probe, attempts, !contacted.has(probe.id));
@@ -112,6 +113,10 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
   let running = false;
   let timer = null;
   let due = 0;
+  // performance.now() stops while an iOS device sleeps; the wall clock does not. A gap made
+  // entirely of sleep is invisible to the monotonic clock, so scheduling lateness is read from
+  // both. No measurement reads this clock: every latency and rate is performance.now().
+  let dueWall = 0;
   let t0 = 0;
   let seq = 0;
   let inFlight = false;
@@ -317,9 +322,11 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
       row.loaded_rtt_ms = round.loaded_rtt_ms;
       row.loaded_rtt_from = round.loaded_rtt_from;
     } catch (e) {
+      // The round threw, so nothing was measured. 'error' keeps it out of the network tallies
+      // and out of the wedge count; the grades below are left null.
       row.round_error = String(e && e.message || e);
       for (const p of PROBES) {
-        if (!row.probes[p.id]) row.probes[p.id] = {ok: false, ms: null, status: null, fail: 'network'};
+        if (!row.probes[p.id]) row.probes[p.id] = {ok: false, ms: null, status: null, fail: 'error'};
       }
     } finally {
       inFlight = false;
@@ -332,13 +339,16 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
     // The quickest first response in the round, which approximates the cost of waking the
     // radio. Reported, never graded. Zero values are excluded: connect_ms is zero both for a
     // reused connection and when timing is unreadable.
-    const firsts = [row.probes.ip6?.ms_samples?.[0], row.probes.web?.ms_samples?.[0],
-                    row.probes.dns_ctl?.ms_samples?.[0], row.probes.udp?.ms_samples?.[0]]
+    // Sampling stops at the first failure, so a probe with no successful sample failed on its
+    // first: its `ms` is how long it took to fail.
+    const firsts = [row.probes.ip6, row.probes.web, row.probes.dns_ctl, row.probes.udp]
+                   .filter(r => r?.samples_ok > 0)
+                   .map(r => r.ms_samples[0])
                    .filter(v => v != null && v > 0);
     row.first_packet_ms = firsts.length ? Math.min(...firsts) : null;
 
     // Resolved once and stored on the row, so the file and the screen carry the same grade.
-    row.grades = gradeActivities(row);
+    row.grades = row.round_error ? null : gradeActivities(row);
     row.pgrades = gradeProbes(row);
     lastGrades = row.grades;
 
@@ -349,7 +359,7 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
     stuck.note(row, seq);
     charge(row);
     clearTimings();
-    if (row.probes.down?.ok) throughput = row.probes.down.bps_min;
+    if (row.probes.down?.ok) throughput = row.probes.down.bps;
     if (row.probes.udp) udpMs = row.probes.udp.ok ? row.probes.udp.ms : null;
 
     keep(row);
@@ -358,8 +368,9 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
   function tick() {
     if (!running) return;
     const now = mono();
+    const wall = Date.now();
     // Timer rounding can fire a tick early; lateness is clamped at zero.
-    const late = Math.max(0, Math.round(now - due));
+    const late = Math.max(0, Math.round(now - due), Math.round(wall - dueWall));
 
     // iOS freezes JS when the tab is backgrounded or the screen locks. The gap is recorded
     // so it stays distinguishable from an outage. The threshold is one missed slot: at two,
@@ -375,6 +386,7 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
     // closer, so a 13.7 s delay on a 10 s interval fires the next tick 11 ms later, into the
     // round still running. Even spacing is what this needs; grid phase is not.
     due = now + interval();
+    dueWall = wall + interval();
     timer = setTimeout(tick, Math.max(0, due - mono()));
 
     if (inFlight) {
@@ -431,6 +443,7 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
     }
     t0 = performance.now() - monoBase;
     due = monoBase;
+    dueWall = Date.now();
     bytes = spent?.bytes || 0;
     throughput = null;
     udpMs = null;
@@ -458,6 +471,7 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
     // Set after the preflight and the wake lock: otherwise the first row reports start-up
     // time as scheduling lateness, and a slow radio logs a pause that did not happen.
     due = mono();
+    dueWall = Date.now();
     tick();
     emit();
   }

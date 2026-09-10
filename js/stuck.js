@@ -3,8 +3,9 @@
 
 import {PROBES, STUCK_AFTER, STUCK_COOLDOWN} from './probe.js';
 
-// The failures a fresh connection can fix.
-const WEDGE_FAILS = new Set(['timeout', 'network', 'stalled']);
+// The failures a fresh connection can fix. A stalled read is a congested cell: resting the
+// download for six rounds would blank the throughput exactly while the congestion runs.
+const WEDGE_FAILS = new Set(['timeout', 'network']);
 
 export function createStuckTracker({onNotice} = {}) {
   const consecutiveFails = {};

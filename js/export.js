@@ -17,8 +17,12 @@ import * as store from './store.js';
 // on a family that does carry traffic is a fact about that address. None of the three says
 // anything about the link. Shared with the screen so the count on it and the count in the file
 // agree.
+// 'short' is this tool failing to measure, never the link failing: bytes crossed, over a span
+// too brief to divide by. 'error' is the round itself throwing.
+const NOT_THE_LINK = new Set(['resting', 'short', 'error']);
+
 export const countsAsFailure = r =>
-  !!r && r.ok === false && !r.expected && !r.blocked && !r.unused && r.fail !== 'resting';
+  !!r && r.ok === false && !r.expected && !r.blocked && !r.unused && !NOT_THE_LINK.has(r.fail);
 
 // One probe across the rounds that ran. Failures and deliberate stops are counted apart,
 // so neither hides the other.
@@ -49,15 +53,15 @@ function probeSummary(rs) {
 // The download probe alone reports a throughput bound.
 function rateSummary(rs) {
   const ok = rs.filter(r => r.ok);
-  const bound = ok.map(r => r.bps_min).filter(v => v != null).sort((a, b) => a - b);
+  const rates = ok.map(r => r.bps).filter(v => v != null).sort((a, b) => a - b);
   return {
-    // Bounds, not rates: each is what that round's bytes proved, so a percentile over them
-    // is a percentile of proven floors.
-    bps_min_p10: quantile(bound, 0.1),
-    bps_min_p50: quantile(bound, 0.5),
-    rated: bound.length,
-    // Rounds whose body arrived whole, where the bound sits close to the rate.
-    complete: ok.filter(r => r.complete).length,
+    // Bounds: each is what that round's window proved the link carries, so a percentile over
+    // them is a percentile of proven floors.
+    bps_p10: quantile(rates, 0.1),
+    bps_p50: quantile(rates, 0.5),
+    rated: rates.length,
+    // Rounds that reached the byte cap, where the bound is the ceiling and the link is faster.
+    saturated: ok.filter(r => r.saturated).length,
     bytes_total: ok.reduce((n, r) => n + (r.bytes || 0), 0)
   };
 }
@@ -77,9 +81,9 @@ function gradeTally(ran, keys, field) {
   return grades;
 }
 
-// 9: an activity with an unmeasured term is unrated, and the fresh-name probe is graded on
-// ttfb.
-const FORMAT_VERSION = 9;
+// 10: the download summary reports `bps` and `saturated`; a probe survives one failed sample;
+// a round that threw grades nothing.
+const FORMAT_VERSION = 10;
 
 export function summarise(samples) {
   const ran = samples.filter(s => !s.skipped && !s.round_error);

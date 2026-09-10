@@ -1,6 +1,6 @@
 // Offline shell: recovery after a crash requires the page to load on a degraded network.
 
-const CACHE = 'wts-v3.12.0';
+const CACHE = 'wts-v3.13.0';
 
 const SHELL = [
   './',
