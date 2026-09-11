@@ -107,6 +107,15 @@ s.test('probeReading MUST return saturated for the upload WHEN its reading is a 
   assert.deepEqual([r.value, r.saturated, r.grade], [4.6e6, true, 'green']);
 });
 
+s.test('probeReading MUST return the call verdict as the upload note WHEN the upload answered', () => {
+  const verdict = bps => g.probeReading('up', round({up: ok(70, {bps})})).note;
+  assert.equal(verdict(4.6e6), 'calls ok');
+  assert.equal(verdict(200e3), 'voice only');
+  assert.equal(verdict(50e3), 'choppy');
+  assert.equal(verdict(20e3), 'too slow');
+  assert.equal(g.probeReading('up', round({up: bad()})).note, 'timeout', 'a failed upload shows its reason');
+});
+
 s.test('gradeActivities MUST grade no activity red WHEN a stop aborted the upload and the download', () => {
   // The last round of the 11 Sep KPN session: Stop landed during the upload.
   const stopped = round({up: bad({fail: 'abort'}), down: {ok: false, fail: 'abort', bps: null}});

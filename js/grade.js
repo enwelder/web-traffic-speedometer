@@ -190,12 +190,28 @@ function probeState(r) {
   return r.ok ? 'ok' : 'none';
 }
 
+// The upload resolves a call's requirement, and on a fast uplink its rate is set by round trips, so
+// the row names what the rate means for a call on the call_rate edges.
+const CALL_VERDICTS = {green: 'calls ok', yellow: 'voice only', orange: 'choppy', red: 'too slow'};
+
+function upMeasure(r) {
+  const value = throughput(r);
+  const grade = gradeValue('call_rate', value);
+  return {scale: 'call_rate', value, grade, note: CALL_VERDICTS[grade] ?? null};
+}
+
 // First-contact time to an uncontacted host: resolution, connect and TLS handshake as one value,
 // since resource-timing phases are zeroed cross-origin without Timing-Allow-Origin. Graded on
 // `ttfb`, the wait for a new host.
 function dnsMeasure(p) {
   if (p.dns?.retry_suspected) return {grade: 'red', note: 'lost'};
   return {scale: 'ttfb', value: p.dns.ms};
+}
+
+function measureFor(id, p, r) {
+  if (id === 'dns') return dnsMeasure(p);
+  if (id === 'up') return upMeasure(r);
+  return {scale: PROBE_SCALES[id], value: RATED.has(id) ? throughput(r) : r.ms};
 }
 
 // A probe's measurement this round and its grade.
@@ -207,8 +223,7 @@ export function probeReading(id, sample) {
     return {state, grade: state === 'failed' ? 'red' : null, value: null, unit: null,
             note: state === 'failed' ? r.fail : state === 'none' ? null : state, scale: null};
   }
-  const m = id === 'dns' ? dnsMeasure(p)
-    : {scale: PROBE_SCALES[id], value: RATED.has(id) ? throughput(r) : r.ms};
+  const m = measureFor(id, p, r);
   return {
     state, grade: m.grade ?? gradeValue(m.scale, m.value), value: m.value ?? null,
     unit: m.scale ? SCALES[m.scale].unit : null, note: m.note ?? null, scale: m.scale ?? null,

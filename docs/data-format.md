@@ -132,7 +132,7 @@ screen.
 | `bytes` `duration_ms` `ttfb_ms` | `down` | bytes read, read duration, time to first byte |
 | `bps` | `down` | the rate over the window across all streams, and the graded value. Null for a window under 100 ms, shorter than a round trip |
 | `bps` `ttfb_ms` `rate_source` | `up` | the upload rate, `bodyBytes × 8000 ÷ span`; the span `responseStart − requestStart` when `rate_source` is `timing`, fetch to headers when it is `fetch`. The span holds one round trip, so `bps` is a lower bound |
-| `saturated` `ceiling_bps` | `up` | the span was under five round trips of the round's literal, which set it, so `bps` is a lower bound and the row prints `≥`; `ceiling_bps` is the rate at five round trips. Absent when no literal answered |
+| `saturated` `ceiling_bps` | `up` | the span was under five round trips of the round's literal, which set it, so `bps` is a lower bound; `ceiling_bps` is the rate at five round trips. The probe row shows the call verdict for `bps`. Absent when no literal answered |
 | `upload_bytes` `bytes` | `up` | the byte count the server reported in `cf-meta-upload-bytes`; 0 when the browser could not read it |
 | `saturated` | `down` | the window reached its byte cap first, so `bps` is the ceiling and a lower bound on the link. The row prints `≥` |
 | `ceiling_bps` | `down` | the highest rate this round can report |

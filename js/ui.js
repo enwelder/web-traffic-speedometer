@@ -85,7 +85,7 @@ const PROBE_CAVEATS = {
   dns: 'The whole cost of reaching a host never contacted before: resolution, connection and handshake together. A page cannot separate them.',
   down: `Three connections read together for a fixed window. Reads up to ${Math.round(DOWN_CEILING_BPS / 1e6)} Mb/s and says ≥ at that point, which is all a window this size can prove.`,
   udp: 'ICE gathering rides on top of the round trip, so this reads slower than the link is. Calls grade on it, since call audio travels over UDP.',
-  up: `${UP_BYTES / 1000} kB of zero bytes, timed until the server confirms the last one. On a fast uplink the round trips set that time, so a reading under five round trips shows ≥.`
+  up: `${UP_BYTES / 1000} kB of zero bytes, timed until the server confirms the last one. The row shows what that means for a call: calls ok above 300 kb/s, voice only above 100, choppy above 30, too slow below. The rate itself is in the export.`
 };
 
 // A row shows the measurement its colour graded. A reading without a value shows its note.
