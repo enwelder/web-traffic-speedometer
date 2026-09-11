@@ -956,9 +956,14 @@ x.test('filename MUST return a name free of path and wildcard characters WHEN th
     '   ': 'session',
     '📶': 'session'
   };
+  // The name carries the local start time, so the stamp is read in the runner's time zone: CI runs
+  // in UTC.
+  const d = new Date(meta().started);
+  const p = n => String(n).padStart(2, '0');
+  const stamp = `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}`;
   for (const [operator, expected] of Object.entries(cases)) {
     const name = filename(meta({operator}));
-    assert.equal(name, `wts-20260903-0814-${expected}.json`, `operator ${JSON.stringify(operator)}`);
+    assert.equal(name, `wts-${stamp}-${expected}.json`, `operator ${JSON.stringify(operator)}`);
     assert.ok(!/[/\\:*?"<>|]/.test(name.slice(4)), `${name} has no path or wildcard characters`);
   }
   assert.match(filename(meta({operator: '', connection: 'wifi'})), /-wifi\.json$/,
