@@ -42,9 +42,12 @@ const uuid = () => (crypto.randomUUID ? crypto.randomUUID()
 
 const recorder = createRecorder({
   onSample(sample) {
-    // An interrupted round holds no reading: the strip shows the absence, and the probe rows and
-    // the log keep the last measured round.
-    if (sample.interrupted) { ui.pushStrip(sample); return; }
+    // An interrupted round holds no reading: the probe rows and the log keep the last measured
+    // round. The strip shows a suspension; a round cut by Stop ends the session and draws nothing.
+    if (sample.interrupted) {
+      if (sample.interrupted !== 'stop') ui.pushStrip(sample);
+      return;
+    }
     ui.setProbes(sample);
     const kind = ui.classify(sample);
     ui.pushStrip(sample);

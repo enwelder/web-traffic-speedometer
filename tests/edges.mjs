@@ -615,7 +615,9 @@ n.test('createRecorder MUST record a skip event naming what the running round wa
   assert.ok(skips.some(e => e.waiting_on.length > 0), JSON.stringify(skips.map(e => e.waiting_on)));
   assert.ok(skips.every(e => e.waiting_on.every(id => PROBE_IDS.includes(id) || id === 'loaded_rtt' || id === 'reference')),
             'and names only what a round runs');
-  assert.ok(rows.every(x => x.grades), 'the rounds that ran are graded');
+  const completed = rows.filter(x => !x.interrupted);
+  assert.ok(completed.length > 0, 'a round completed');
+  assert.ok(completed.every(x => x.grades), 'the rounds that completed are graded');
 });
 
 n.test('countsAsFailure MUST return true for network reasons and false for resting, expected and unsupported WHEN given each failure reason', () => {

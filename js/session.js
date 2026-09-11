@@ -389,8 +389,9 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
   }
 
 
-  // A round the page left mid-way measured the suspension: it keeps its probes and carries no
-  // grades. The session abort stays untouched, so the next round runs.
+  // A round left mid-way, by the page or by Stop, holds partial measurements: it keeps its probes
+  // and carries no grades. An aborted download reports no egress address, so a refused literal
+  // would grade as a link failure. The session abort stays untouched, so the next round runs.
   function interrupt(cause) {
     if (!round || round.interrupted) return;
     round.interrupted = cause;
@@ -618,6 +619,7 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
     running = false;
     clearTimeout(timer);
     timer = null;
+    interrupt('stop');
     abort?.abort();
     // The aborted round still resolves into a row, so it is awaited before the drain.
     if (current) { try { await current; } catch { /* recorded as round_error */ } }

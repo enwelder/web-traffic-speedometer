@@ -466,7 +466,7 @@ r.test('createRecorder MUST set round on the pause event WHEN the absence interr
   assert.equal(pause.round, row.seq);
 });
 
-r.test('createRecorder.stop MUST record the aborted round with interrupted null WHEN stop lands mid-round', async () => {
+r.test('createRecorder.stop MUST record the aborted round as interrupted stop with null grades and pgrades WHEN stop lands mid-round', async () => {
   stubStun();
   let started;
   const inRound = new Promise(resolve => { started = resolve; });
@@ -476,7 +476,22 @@ r.test('createRecorder.stop MUST record the aborted round with interrupted null 
   await rec.start(session({intervalMs: 2000, ipv6_available: true}));
   await inRound;
   await rec.stop();
-  assert.equal(store.written.samples[0].interrupted, null, 'a stop is the user ending the session');
+  const row = store.written.samples[0];
+  assert.deepEqual([row.interrupted, row.grades, row.pgrades], ['stop', null, null]);
+  assert.ok(row.probes.ip6, 'the probes the round took are kept');
+});
+
+r.test('createRecorder.stop MUST record interrupted null WHEN the round completed before stop', async () => {
+  stubStun();
+  globalThis.fetch = async () => okResponse();
+  const store = fakeStore();
+  const rec = createRecorder({store});
+  await rec.start(session({intervalMs: 2000, ipv6_available: true}));
+  await sleep(600);
+  await rec.stop();
+  const row = store.written.samples[0];
+  assert.equal(row.interrupted, null);
+  assert.ok(row.grades, 'the completed round is graded');
 });
 
 r.test('createStuckTracker MUST leave the download unrested WHEN it fails alone for timeout, network, stalled or connect', () => {

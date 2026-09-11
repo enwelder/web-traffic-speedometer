@@ -17,7 +17,7 @@ directly.
 | 11 | a slot that comes due while a round is still running is a `skip` event and writes no row, so `skipped` and `prev_round_ms` are gone; rows carry `round_ms`, `phase_idle_ms`, `phase_down_ms` and `visible_end`; sampled probes carry `samples_end` and `wall_ms`; the download carries `per_stream`; `page` and `network` events; `session.end_reason`; a download stream still waiting at the deadline ends as `connect`, and the download carries `window_cut` and, when a stream waits, `stall_check`; sampled probes continue past a lost sample and carry `samples_lost` and `sample_starts_ms`; `udp` carries `host_ms_samples`; the summary counts `slots` |
 | 12 | `web` is gone and `up` joins, with `upload_bytes` and `rate_source`; rows carry `interrupted`, `suspended_ms`, `reference` and `phase_up_ms`; `ip6` and `ip4` carry `protocol_samples`; a timed-out literal is never `blocked`; `server` carries `proto`; `no_budget` joins the failure reasons; a `pause` event can carry `round`; the summary counts `interrupted` |
 | 13 | `up` carries `saturated` and `ceiling_bps`; `abort` is excluded from failure tallies |
-| 14 | the app is named Network Usability Log: format ids are `nulog/session`, `nulog/bundle` and `nulog/fixture`, file names start with `nulog-`, and the DNS control host is `nulog-dns-control.github.io`; `mark` events are no longer written |
+| 14 | the app is named Network Usability Log: format ids are `nulog/session`, `nulog/bundle` and `nulog/fixture`, file names start with `nulog-`, and the DNS control host is `nulog-dns-control.github.io`; `mark` events are no longer written; a round cut by Stop is `interrupted: stop` |
 
 Version 5 changes failure counts. Below it only `ip4` carries `expected`, so every `ip6` failure
 counts; from 5, `expected` on `ip6` marks a missing path.
@@ -92,7 +92,7 @@ screen.
 | `mono` | monotonic ms since session start; survives wall-clock jumps, bridged across a reload using `t` |
 | `late_ms` | how far behind schedule the round ran |
 | `round_error` | exception message if the round itself threw |
-| `interrupted` `suspended_ms` | `wake_lock` when the wake lock was released while the round ran, `suspended` when a 250 ms timer fired over 1 s late on either clock; null otherwise. The row keeps its probes and carries null `grades` and `pgrades`. `suspended_ms` is the largest timer gap over 1 s |
+| `interrupted` `suspended_ms` | `wake_lock` when the wake lock was released while the round ran, `suspended` when a 250 ms timer fired over 1 s late on either clock, `stop` when Stop ended the round; null otherwise. The row keeps its probes and carries null `grades` and `pgrades`. `suspended_ms` is the largest timer gap over 1 s |
 | `reference` | `{ok, ms, fail}` of the request to `https://www.gstatic.com/generate_204`, taken only when both literals, the download, the upload and STUN all failed; null otherwise. When it answered, every activity is unrated with note `far end` |
 | `visible` `visible_end` | whether the tab was foregrounded when the round started, and when it ended |
 | `lat` `lon` `accuracy` `speed` `heading` | GPS fix; `speed` in m/s, often absent |

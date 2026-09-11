@@ -103,7 +103,7 @@ export function summarise(samples, events = []) {
     slots: samples.length + skips,
     skipped: samples.filter(s => s.skipped).length + skips,
     round_errors: samples.filter(s => s.round_error).length,
-    // Rounds the page left mid-way; their probes enter no tally.
+    // Rounds left mid-way by the page or by Stop; their probes enter no tally.
     interrupted: samples.filter(s => s.interrupted && !s.skipped && !s.round_error).length,
     in_pause: ran.filter(s => s.in_pause).length,
     // Rounds with at least one failure outside a known-absent path.
