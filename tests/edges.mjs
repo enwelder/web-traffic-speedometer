@@ -503,12 +503,13 @@ n.test('createRecorder MUST record fail http with the status WHEN the endpoint a
 });
 
 n.test('createRecorder MUST grade voice red and leave the TCP activities graded WHEN the carrier drops STUN', async () => {
-  const {rows} = await record(async () => okResponse(), 400, {stun: {block: true}});
-  const settled = rows.filter(x => x.probes.udp);
-  assert.ok(settled.length > 0);
+  // Long enough for STUN to reach its 1 s timeout; the round the stop cuts short ends as abort.
+  const {rows} = await record(async () => okResponse(), 1600, {stun: {block: true}});
+  const settled = rows.filter(x => x.probes.udp && x.probes.udp.fail !== 'abort');
+  assert.ok(settled.length > 0, 'a round let STUN time out');
   assert.ok(settled.every(x => x.probes.udp.ok === false), 'STUN never completes');
   assert.ok(settled.every(x => x.grades.voice === 'red'), 'calls are red');
-  assert.ok(settled.some(x => x.grades.tap !== 'red'), 'while everything over TCP is fine');
+  assert.ok(settled.every(x => x.grades.news !== 'red'), 'while reading over TCP is not');
 });
 
 n.test('runProbe MUST end an unanswered STUN sample at STUN_TIMEOUT_MS WHEN the probe window is 8 s', async () => {
@@ -618,8 +619,8 @@ n.test('createRecorder MUST record a skip event naming what the running round wa
 });
 
 n.test('countsAsFailure MUST return true for network reasons and false for resting, expected and unsupported WHEN given each failure reason', () => {
-  const network = ['timeout', 'network', 'http', 'parse', 'abort', 'stalled', 'empty', 'no_srflx'];
-  const notNetwork = ['resting', 'short', 'no_budget'];
+  const network = ['timeout', 'network', 'http', 'parse', 'stalled', 'empty', 'no_srflx'];
+  const notNetwork = ['resting', 'short', 'no_budget', 'abort'];
   for (const fail of network) {
     assert.equal(countsAsFailure({ok: false, fail}), true, `${fail} is a failure`);
   }

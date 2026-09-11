@@ -6,7 +6,7 @@ stubBrowser();
 const probe = await import('../js/probe.js');
 const {createRecorder, projectedBytes, environment, PROFILES} = await import('../js/session.js');
 const ui = await import('../js/ui.js');
-const {sessionJson, filename, summarise} = await import('../js/export.js');
+const {sessionJson, filename, bundleFilename, summarise} = await import('../js/export.js');
 
 const P = Object.fromEntries(probe.PROBES.map(p => [p.id, p]));
 const s = suite('probes');
@@ -425,6 +425,24 @@ s.test('runProbe MUST compute bps from requestStart to responseStart WHEN the up
   }
 });
 
+s.test('runProbe MUST flag the upload saturated with ceiling_bps WHEN its span is under five round trips', async () => {
+  const saved = performance.getEntriesByName;
+  const span = ms => { performance.getEntriesByName = name => (String(name).includes('__up')
+    ? [{requestStart: 100, responseStart: 100 + ms, responseEnd: 101 + ms, connectStart: 40, connectEnd: 40}] : []); };
+  try {
+    globalThis.fetch = async () => upResponse(probe.UP_BYTES);
+    // 25 ms round trips: five of them are 125 ms, which 40 kB crosses at 2.56 Mb/s.
+    span(100);
+    const fast = await probe.runProbe(P.up, {timeoutMs: 1000, roundTripMs: 25});
+    assert.deepEqual([fast.bps, fast.ceiling_bps, fast.saturated], [3200000, 2560000, true]);
+    span(1600);
+    const slow = await probe.runProbe(P.up, {timeoutMs: 1000, roundTripMs: 25});
+    assert.deepEqual([slow.bps, slow.saturated], [200000, false], 'an uplink slower than its round trips reads its own rate');
+  } finally {
+    performance.getEntriesByName = saved;
+  }
+});
+
 s.test('runProbe MUST return rate_source fetch WHEN no upload timing entry exists', async () => {
   globalThis.fetch = async () => { await sleep(20); return upResponse(probe.UP_BYTES); };
   const r = await probe.runProbe(P.up, {timeoutMs: 1000});
@@ -454,6 +472,8 @@ s.test('runRound MUST run the upload after the download WHEN a round runs', asyn
     const u = String(url);
     if (u.includes('__up')) { order.push('up'); return upResponse(probe.UP_BYTES); }
     if (u.includes('__down')) order.push('down');
+    // Idle answers take 20 ms, so the round has a round trip to judge the upload against.
+    if (u.includes('/cdn-cgi/trace')) await sleep(20);
     return {ok: true, status: 200, type: 'opaque', headers: {get: () => null}, body: bodyOf(2000),
             text: async () => TRACE, signal: o?.signal};
   };
@@ -461,6 +481,9 @@ s.test('runRound MUST run the upload after the download WHEN a round runs', asyn
   assert.equal(order.at(-1), 'up');
   assert.ok(order.includes('down'));
   assert.ok(round.phase_up_ms >= 0 && round.probes.up.ok, JSON.stringify(round.probes.up));
+  assert.equal(round.probes.up.ceiling_bps,
+               Math.round((probe.UP_BYTES * 8000) / (probe.UP_SATURATION_RTTS * round.probes.ip6.ms)),
+               'the upload is judged against the round trip of the literal that answered');
 });
 
 s.test('runRound MUST record the upload as no_budget WHEN the idle and download phases used the round', async () => {
@@ -1367,6 +1390,16 @@ e.test('filename MUST strip quotes, commas, newlines and backslashes WHEN the se
   assert.ok(!/["',\n\\]/.test(f), `filename is sanitised: ${f}`);
   assert.match(f, /^wts-20260903-\d{4}-k-p-n\.json$/, f);
   assert.deepEqual(JSON.parse(sessionJson(sess, [], [])).session.name, 'x", y\n\\');
+});
+
+e.test('bundleFilename MUST stamp the local export time with a separator WHEN called', () => {
+  // Recorded 11 Sep: the bundle exported at 08:15 in Amsterdam was named wts-all-2026-09-110615.
+  const exportedAt = Date.parse('2026-09-11T06:15:50Z');
+  const d = new Date(exportedAt);
+  const p = n => String(n).padStart(2, '0');
+  const local = `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}`;
+  assert.equal(bundleFilename(exportedAt), `wts-all-${local}.json`);
+  assert.match(bundleFilename(exportedAt), /^wts-all-\d{8}-\d{4}\.json$/);
 });
 
 e.test('summarise MUST exclude an interrupted round from ran and count it WHEN a row carries interrupted', () => {

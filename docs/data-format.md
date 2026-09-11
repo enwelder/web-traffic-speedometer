@@ -1,6 +1,6 @@
 # Exported session format
 
-`format: "wts/session"`, `version: 12`. One button per session writes one JSON file: session
+`format: "wts/session"`, `version: 13`. One button per session writes one JSON file: session
 metadata, environment, a rollup, every sample, every event. CSV, GPX and GeoJSON derive from it
 directly.
 
@@ -16,6 +16,7 @@ directly.
 | 10 | the download summary reports `bps_p10`, `bps_p50` and `saturated`; a probe survives one failed sample and records it in `sample_fail`; a round that threw has null grades and marks its probes `error`; `short` joins the failure reasons |
 | 11 | a slot that comes due while a round is still running is a `skip` event and writes no row, so `skipped` and `prev_round_ms` are gone; rows carry `round_ms`, `phase_idle_ms`, `phase_down_ms` and `visible_end`; sampled probes carry `samples_end` and `wall_ms`; the download carries `per_stream`; `page` and `network` events; `session.end_reason`; a download stream still waiting at the deadline ends as `connect`, and the download carries `window_cut` and, when a stream waits, `stall_check`; sampled probes continue past a lost sample and carry `samples_lost` and `sample_starts_ms`; `udp` carries `host_ms_samples`; the summary counts `slots` |
 | 12 | `web` is gone and `up` joins, with `upload_bytes` and `rate_source`; rows carry `interrupted`, `suspended_ms`, `reference` and `phase_up_ms`; `ip6` and `ip4` carry `protocol_samples`; a timed-out literal is never `blocked`; `server` carries `proto`; `no_budget` joins the failure reasons; a `pause` event can carry `round`; the summary counts `interrupted` |
+| 13 | `up` carries `saturated` and `ceiling_bps`; `abort` is excluded from failure tallies |
 
 Version 5 changes failure counts. Below it only `ip4` carries `expected`, so every `ip6` failure
 counts; from 5, `expected` on `ip6` marks a missing path.
@@ -61,7 +62,7 @@ A failed round is written in full, and every failure is an explicit record.
 | `short` | bytes crossed, over a span too brief to divide by; `up`: the server's byte count differs from the body, or the browser could not read it |
 | `no_budget` | `up`: the round left under a second, and the upload was not sent |
 | `error` | the round itself threw before the probe ran |
-| `abort` | the session ended, or the round was interrupted, mid-probe |
+| `abort` | the app ended the request: a stop, or an interrupted round |
 | `stalled` | headers arrived, no body bytes followed |
 | `connect` | `down`: no stream had headers by the deadline |
 | `empty` | HTTP 200 with an empty body |
@@ -69,8 +70,8 @@ A failed round is written in full, and every failure is an explicit record.
 | `resting` | the recorder stood the probe down |
 | `unsupported` | the browser has no such API; flagged `expected` |
 
-`resting`, `unsupported`, `short`, `no_budget` and `error` are excluded from failure tallies: each
-describes the tool or the browser.
+`resting`, `unsupported`, `short`, `no_budget`, `abort` and `error` are excluded from failure
+tallies: each describes the tool or the browser.
 
 `ms` is recorded on failure: the time to fail separates a refused connection from a link that hung
 until the deadline.
@@ -131,6 +132,7 @@ screen.
 | `bytes` `duration_ms` `ttfb_ms` | `down` | bytes read, read duration, time to first byte |
 | `bps` | `down` | the rate over the window across all streams, and the graded value. Null for a window under 100 ms, shorter than a round trip |
 | `bps` `ttfb_ms` `rate_source` | `up` | the upload rate, `bodyBytes × 8000 ÷ span`; the span `responseStart − requestStart` when `rate_source` is `timing`, fetch to headers when it is `fetch`. The span holds one round trip, so `bps` is a lower bound |
+| `saturated` `ceiling_bps` | `up` | the span was under five round trips of the round's literal, which set it, so `bps` is a lower bound and the row prints `≥`; `ceiling_bps` is the rate at five round trips. Absent when no literal answered |
 | `upload_bytes` `bytes` | `up` | the byte count the server reported in `cf-meta-upload-bytes`; 0 when the browser could not read it |
 | `saturated` | `down` | the window reached its byte cap first, so `bps` is the ceiling and a lower bound on the link. The row prints `≥` |
 | `ceiling_bps` | `down` | the highest rate this round can report |

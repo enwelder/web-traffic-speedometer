@@ -26,6 +26,10 @@ export const DOWN_MIN_SPAN_MS = 100;
 // Calls need about 100 kb/s upstream. 40 kB crosses the 0.3 Mb/s edge in 1.07 s and the 0.1 Mb/s
 // edge in 3.2 s, both inside the upload's budget.
 export const UP_BYTES = 40000;
+// 40 kB leaves in two slow-start flights and the server answers after the last byte, so on an
+// unconstrained link the span is two to three round trips; recorded spans reached 4.7 on KPN. A span
+// under this many round trips is set by the round trips, and the rate is a lower bound.
+export const UP_SATURATION_RTTS = 5;
 // A round trip under load runs long on a busy link: the timeout is twice the window.
 export const LOADED_RTT_MS = 2 * DOWN_WINDOW_MS;
 // Held back from the interval so a round returns before the next one is due.
@@ -583,7 +587,7 @@ function deadline(signal, timeoutMs) {
 // One POST of `bodyBytes` zero bytes. The server answers once the last byte arrived, so the span
 // from the request start to the response start holds the upload and one round trip. Resource
 // timing separates that span from connection setup; without an entry the span includes it.
-async function measureUpload(probe, {timeoutMs = TIMEOUT_MS, signal} = {}) {
+async function measureUpload(probe, {timeoutMs = TIMEOUT_MS, signal, roundTripMs = null} = {}) {
   const r = {ok: false, ms: null, status: null, fail: null, bytes: 0};
   const d = deadline(signal, timeoutMs);
   if (d.ctl.signal.aborted) { d.done(); return {...r, fail: 'abort', ms: 0}; }
@@ -596,7 +600,7 @@ async function measureUpload(probe, {timeoutMs = TIMEOUT_MS, signal} = {}) {
     r.status = res.status;
     // Reading the body completes the load, which files the timing entry.
     await res.text();
-    return await finishUpload(r, res, url, probe);
+    return await finishUpload(r, res, {url, probe, roundTripMs});
   } catch (e) {
     r.ms = Math.round(performance.now() - t0);
     r.fail = d.fail(e);
@@ -606,7 +610,7 @@ async function measureUpload(probe, {timeoutMs = TIMEOUT_MS, signal} = {}) {
   }
 }
 
-async function finishUpload(r, res, url, probe) {
+async function finishUpload(r, res, {url, probe, roundTripMs}) {
   if (!res.ok) { r.fail = 'http'; return r; }
   r.server = parseServerTiming(res.headers.get('server-timing'));
   r.colo = res.headers.get('cf-meta-colo') || null;
@@ -618,6 +622,10 @@ async function finishUpload(r, res, url, probe) {
   const timed = r.ttfb_ms > 0;
   r.rate_source = timed ? 'timing' : 'fetch';
   r.bps = Math.round((probe.bodyBytes * 8000) / (timed ? r.ttfb_ms : Math.max(r.ms, 1)));
+  if (roundTripMs > 0) {
+    r.ceiling_bps = Math.round((probe.bodyBytes * 8000) / (UP_SATURATION_RTTS * roundTripMs));
+    r.saturated = r.bps >= r.ceiling_bps;
+  }
   r.ok = true;
   return r;
 }
@@ -891,7 +899,8 @@ export async function runRound({signal, download = {}, intervalMs = 5000,
 
   // The upload follows the download, which keeps its budget.
   const upT0 = performance.now();
-  out[up.id] = await tracked(pending, up.id, runUpload(up, {signal, intervalMs, t0, resting}));
+  out[up.id] = await tracked(pending, up.id,
+                             runUpload(up, {signal, intervalMs, t0, resting, roundTripMs: literalMs(out)}));
   const phaseUpMs = Math.round(performance.now() - upT0);
 
   markLiterals(out);
@@ -903,11 +912,14 @@ export async function runRound({signal, download = {}, intervalMs = 5000,
 // The upload takes what the interval leaves after the idle and download phases. Below
 // MIN_TIMEOUT_MS it is not sent: a request without a fair budget records its overrun as a link
 // failure, and pushes the round past its slot.
-function runUpload(up, {signal, intervalMs, t0, resting}) {
+function runUpload(up, {signal, intervalMs, t0, resting, roundTripMs}) {
   const left = intervalMs - ROUND_SLACK_MS - (performance.now() - t0);
   if (left < MIN_TIMEOUT_MS) return Promise.resolve({ok: false, ms: null, status: null, fail: 'no_budget'});
-  return runOrRest(up, {signal, timeoutMs: Math.min(timeoutFor(up, intervalMs), left)}, resting);
+  return runOrRest(up, {signal, roundTripMs, timeoutMs: Math.min(timeoutFor(up, intervalMs), left)}, resting);
 }
+
+// The idle round trip over the literal that answered, IPv6 first, as grading reads it.
+const literalMs = out => (out.ip6?.ok ? out.ip6.ms : out.ip4?.ok ? out.ip4.ms : null);
 
 // One ungraded round trip during the download window, repeating the probe that answered idle, so
 // the idle and loaded values are one measurement under two loads. It waits for the window: started

@@ -1,6 +1,6 @@
 {
   "name": "web-traffic-speedometer",
-  "version": "3.15.0",
+  "version": "3.15.1",
   "description": "Network connectivity and throughput logger — seven parallel probes graded into three everyday activities, with GPS, one JSON file per session. Runs in the browser, no backend.",
   "license": "0BSD",
   "private": false,

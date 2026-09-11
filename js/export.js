@@ -15,9 +15,9 @@ import * as store from './store.js';
 // Probe failure predicate, shared by the screen and the export. Excluded: `resting` (no request
 // sent), `expected` (family absent), `blocked` and `unused` literals (address refused, or traffic
 // on the other family), `short` (span too brief to divide by, or an upload count the browser
-// could not read), `no_budget` (the round had no time left for the upload) and `error` (the round
-// threw).
-const NOT_THE_LINK = new Set(['resting', 'short', 'no_budget', 'error']);
+// could not read), `no_budget` (the round had no time left for the upload), `abort` (the app ended
+// the request: a stop or an interrupted round) and `error` (the round threw).
+const NOT_THE_LINK = new Set(['resting', 'short', 'no_budget', 'abort', 'error']);
 
 export const countsAsFailure = r =>
   !!r && r.ok === false && !r.expected && !r.blocked && !r.unused && !NOT_THE_LINK.has(r.fail);
@@ -73,9 +73,8 @@ function gradeTally(ran, keys, field) {
   return grades;
 }
 
-// 12: `up` replaces `web`; rows carry `interrupted`, `suspended_ms`, `reference` and `phase_up_ms`;
-// trace probes carry `protocol_samples`.
-const FORMAT_VERSION = 12;
+// 13: `up` carries `saturated` and `ceiling_bps`; `abort` leaves the failure tallies.
+const FORMAT_VERSION = 13;
 
 // A row carrying `skipped` comes from a file written before format 11, where a slot that could
 // not start was a row.
@@ -134,13 +133,20 @@ function slug(s) {
   return String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || 'session';
 }
 
+// Local time, so a file name matches the clock of the person who recorded it.
+function localStamp(t) {
+  const d = new Date(t);
+  const p = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}`;
+}
+
 export function filename(session) {
   // An unreadable start time falls back to the current time, which keeps NaN out of the filename.
-  const d = new Date(Number.isFinite(session.started) ? session.started : Date.now());
-  const p = n => String(n).padStart(2, '0');
-  return `wts-${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}` +
-         `-${slug(session.operator || session.connection)}.json`;
+  const started = Number.isFinite(session.started) ? session.started : Date.now();
+  return `wts-${localStamp(started)}-${slug(session.operator || session.connection)}.json`;
 }
+
+export const bundleFilename = exportedAt => `wts-all-${localStamp(exportedAt)}.json`;
 
 function download(text, name) {
   const url = URL.createObjectURL(new Blob([text], {type: 'application/json;charset=utf-8'}));
@@ -166,12 +172,11 @@ export async function exportAll() {
     const [samples, events] = await Promise.all([store.getSamples(session.id), store.getEvents(session.id)]);
     bundles.push({session, samples, events});
   }
-  const stamp = new Date().toISOString().slice(0, 16).replace(/[:T]/g, '');
   download(JSON.stringify({
     format: 'wts/bundle', version: FORMAT_VERSION, app_version: APP_VERSION,
     exported: new Date().toISOString(),
     probes: PROBES.map(p => ({id: p.id, label: p.label, url: p.url, kind: p.kind})),
     sessions: bundles
-  }, null, 1), `wts-all-${stamp}.json`);
+  }, null, 1), bundleFilename(Date.now()));
   return sessions;
 }

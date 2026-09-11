@@ -29,7 +29,7 @@ const handshakes = (probe, attempts, first) =>
 const cost = p => (WARM_BYTES[p.kind] * (p.samples || 1)) + handshakes(p, p.samples || 1, false) +
                   (p.bodyBytes || 0);
 
-export const APP_VERSION = '3.15.0';
+export const APP_VERSION = '3.15.1';
 
 // The download runs every round, so the interval is what controls data use.
 export const PROFILES = {

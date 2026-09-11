@@ -340,9 +340,14 @@ type that needs no preflight. `speed.cloudflare.com/__up` answers once the last 
 reports the count in `cf-meta-upload-bytes`; a count that differs, or one the browser cannot read,
 ends as `short`. The rate is `40 kB × 8 ÷ (responseStart − requestStart)` from the load's
 resource-timing entry, which excludes connection setup; without an entry the span runs from fetch
-to headers and `rate_source` is `fetch`. The span holds one round trip, so the rate is a lower
-bound. 40 kB crosses the 300 kb/s edge in 1.07 s and the 100 kb/s edge in 3.2 s. Throttled to
-200 kb/s upstream in Chromium, the span read 1602-1634 ms.
+to headers and `rate_source` is `fetch`. 40 kB crosses the 300 kb/s edge in 1.07 s and the
+100 kb/s edge in 3.2 s. Throttled to 200 kb/s upstream in Chromium, the span read 1602-1634 ms.
+
+On a fast uplink the body leaves in two slow-start flights, so the span is two to three round
+trips whatever the uplink carries: 40 kB read 12 Mb/s on a Wi-Fi uplink that carried over
+100 Mb/s, and 3-6 Mb/s on KPN at a 22-40 ms round trip. A span under five round trips of the
+round's literal marks the reading `saturated`, a lower bound printed with `≥`; `ceiling_bps` is the
+rate at five round trips. Every such reading clears the call edges.
 
 **Deadlines and scheduling.** Each probe gets 8 s, capped at the interval minus 500 ms. The
 download gets what the idle phase leaves of the interval, since the phases run sequentially and
@@ -393,7 +398,7 @@ page. The differences:
 | latency from 10-200 pings timed **by the server**, median | 10 samples timed by the client around a full HTTPS request, median | **shortcoming**: the value includes TLS resumption, HTTP framing and browser scheduling, so it is an upper bound on the round trip. Agreement within 2 ms across three endpoints is the only available check |
 | downlink window 7 s | 1.5 s | data cost; a shorter window has higher variance and sits earlier in the transfer |
 | `R = Σ b_k / t*`, per-thread bytes interpolated to `t*` | all streams counted against one clock; the window ends at the first stream's end, the cap or the clock | the shared clock removes interpolation; ending at the first stream's end is `t*` |
-| uplink pre-test and 7 s uplink measurement | one 40 kB POST, timed to the server's confirmation | **shortcoming**: a fixed body tests whether a call's upstream rate is met; above about 9 Mb/s at a 35 ms span the round trip dominates and capacity is unmeasured |
+| uplink pre-test and 7 s uplink measurement | one 40 kB POST, timed to the server's confirmation | **shortcoming**: a fixed body tests whether a call's upstream rate is met; a reading set by the round trips is flagged `≥`, and capacity above it is unmeasured |
 | server-side view of every connection | Cloudflare's `server-timing` `cfL4` block: RTT, retransmits, losses, delivery rate, cwnd | partial parity, on the one endpoint that sends it. Behind an operator TCP proxy the block describes the proxy leg (KPN: `min_rtt` ≈ 2 ms) |
 | a token schedules each measurement | rounds run on a fixed interval | uncoordinated with other tests |
 
