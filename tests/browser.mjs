@@ -25,11 +25,11 @@ process.on('exit', stop);
 await new Promise(r => setTimeout(r, 800));
 
 // Streaming reads, connection reuse, storage and the service worker differ between engines.
-// WTS_ENGINE selects one; npm test runs each.
+// NULOG_ENGINE selects one; npm test runs each.
 const ENGINES = {chromium, webkit, firefox};
-const engineName = process.env.WTS_ENGINE || 'chromium';
+const engineName = process.env.NULOG_ENGINE || 'chromium';
 const engine = ENGINES[engineName];
-if (!engine) throw new Error(`unknown WTS_ENGINE ${engineName}: ${Object.keys(ENGINES)}`);
+if (!engine) throw new Error(`unknown NULOG_ENGINE ${engineName}: ${Object.keys(ENGINES)}`);
 
 // CI installs Playwright's pinned browsers; without that download an installed Chrome runs the
 // suite.
@@ -91,14 +91,14 @@ async function context(extra = {}) {
   // connection keeps the suite hermetic and allows the UDP path to be failed on demand.
   await ctx.addInitScript(() => {
     window.RTCPeerConnection = class {
-      addTransceiver(kind, opts) { window.__wtsTransceiver = {kind, ...opts}; }
+      addTransceiver(kind, opts) { window.__nulogTransceiver = {kind, ...opts}; }
       async createOffer() { return {type: 'offer', sdp: 'v=0'}; }
       async setLocalDescription() {
-        if (window.__wtsUdpBlocked) return;
+        if (window.__nulogUdpBlocked) return;
         setTimeout(() => this.onicecandidate?.({candidate: {type: 'srflx', address: '2a09:bac5::9'}}), 5);
         setTimeout(() => this.onicecandidate?.({candidate: null}), 10);
       }
-      close() { window.__wtsClosed = (window.__wtsClosed || 0) + 1; }
+      close() { window.__nulogClosed = (window.__nulogClosed || 0) + 1; }
     };
   });
   return {ctx, state};
@@ -106,7 +106,7 @@ async function context(extra = {}) {
 
 const readDb = page => page.evaluate(async () => {
   const db = await new Promise((res, rej) => {
-    const q = indexedDB.open('wts');
+    const q = indexedDB.open('nulog');
     q.onsuccess = () => res(q.result); q.onerror = () => rej(q.error);
   });
   const read = s => new Promise((res, rej) => {
@@ -144,7 +144,7 @@ b.test('the page MUST load with no script error and offer only the fields it can
   page.on('console', m => { if (m.type() === 'error' && !/Failed to load resource/.test(m.text())) errors.push(m.text()); });
   await page.goto(BASE, {waitUntil: 'networkidle'});
   assert.deepEqual(errors, []);
-  assert.equal(await page.title(), 'Web Traffic Speedometer');
+  assert.equal(await page.title(), 'Network Usability Log');
   for (const gone of ['#f-route', '#f-name', '#f-adaptive', '#f-interval', '#f-download']) {
     assert.equal(await page.locator(gone).count(), 0, `${gone} is derived from the session`);
   }
@@ -166,13 +166,49 @@ b.test('the budget projection MUST double WHEN the interval halves', async () =>
 
   // A round streams a byte-capped window, so the interval sets the cost and the projection is the
   // exact worst case.
-  const mb = t => Number(t.match(/≈ (\d+) MB/)[1]);
+  const mb = t => {
+    const [, n, unit] = t.match(/≈ ([\d.]+) (GB|MB)/);
+    return Number(n) * (unit === 'GB' ? 1000 : 1);
+  };
   assert.ok(Math.abs(mb(fine) - mb(coarse) * 2) < mb(coarse) * 0.1,
             `halving the interval doubles the bill: ${mb(coarse)} then ${mb(fine)} MB`);
-  assert.match(fine, /fastest this can report/,
-               'and it names the ceiling, since that is what the cost buys');
+  assert.match(fine, /per hour/, 'the estimate covers an hour');
   assert.equal(await page.$eval('#budget', e => e.classList.contains('warn')), true,
                'a run in the hundreds of megabytes is flagged, not just stated');
+  await ctx.close();
+});
+
+b.test('the setup screen MUST state the purpose and hide the readout WHEN the page opens', async () => {
+  const {ctx} = await context();
+  const page = await ctx.newPage();
+  await page.goto(BASE, {waitUntil: 'networkidle'});
+  assert.match(await page.textContent('#intro'), /not a speed test/);
+  assert.equal(await page.$eval('#readout', e => e.hidden), true);
+  assert.equal(await page.textContent('#btn-start'), 'Start');
+  await ctx.close();
+});
+
+b.test('the main button MUST read New session after Stop and restore the setup screen WHEN tapped again', async () => {
+  const {ctx} = await context();
+  const page = await ctx.newPage();
+  await page.goto(BASE, {waitUntil: 'networkidle'});
+  const screen = () => page.evaluate(() => ({
+    intro: document.querySelector('#intro').hidden, setup: document.querySelector('#setup').hidden,
+    readout: document.querySelector('#readout').hidden, label: document.querySelector('#btn-start').textContent,
+    log: document.querySelector('#log').textContent
+  }));
+  await page.click('#btn-start');
+  await page.waitForTimeout(2500);
+  assert.equal((await screen()).label, 'Stop');
+  await page.click('#btn-start');
+  await page.waitForFunction(() => document.querySelector('#btn-start').textContent === 'New session');
+  const finished = await screen();
+  assert.deepEqual([finished.intro, finished.setup, finished.readout], [true, true, false],
+                   'the finished session stays on screen');
+  assert.match(finished.log, /Session ended/);
+  await page.click('#btn-start');
+  const setup = await screen();
+  assert.deepEqual([setup.intro, setup.setup, setup.readout, setup.label], [false, false, true, 'Start']);
   await ctx.close();
 });
 
@@ -184,10 +220,9 @@ b.test('a session MUST record, resume across a reload with a contiguous seq, and
   await page.click('#btn-start');
   await page.waitForTimeout(3000);
   // The route row shows the family carrying traffic; the absent IPv4 path is excluded.
-  assert.equal(await page.textContent('#pname-route'), 'GET IPv6');
+  assert.equal(await page.textContent('#pname-route'), 'IPv6 round trip');
   assert.match(await page.$eval('#probe-route', e => e.className), /green|yellow|orange/,
                'and the family that works is graded');
-  await page.click('#btn-mark');
 
   // A row's colour changes with the round it shows, within one round.
   const red = () => page.$eval('#probe-route', e => e.classList.contains('red'));
@@ -237,7 +272,7 @@ b.test('a session MUST record, resume across a reload with a contiguous seq, and
   const lastSeq = Math.max(...db.samples.map(x => x.seq));
   await page.reload({waitUntil: 'networkidle'});
   await page.waitForSelector('#recover:not([hidden])');
-  assert.match(await page.textContent('#recover-text'), /never closed/, 'recovery is offered, never silent');
+  assert.match(await page.textContent('#recover-text'), /not closed/, 'recovery is offered, never silent');
   await page.click('#recover-resume');
   await page.waitForTimeout(2500);
 
@@ -260,10 +295,10 @@ b.test('a session MUST record, resume across a reload with a contiguous seq, and
     page.waitForEvent('download'),
     page.click('#session-list button:has-text("Export")')
   ]);
-  assert.match(download.suggestedFilename(), /^wts-\d{8}-\d{4}-odido\.json$/, download.suggestedFilename());
+  assert.match(download.suggestedFilename(), /^nulog-\d{8}-\d{4}-odido\.json$/, download.suggestedFilename());
   const file = JSON.parse(readFileSync(await download.path(), 'utf8'));
   db = await readDb(page);
-  assert.equal(file.format, 'wts/session');
+  assert.equal(file.format, 'nulog/session');
   assert.equal(file.samples.length, db.samples.length, 'every stored round is in the file');
   assert.equal(file.events.length, db.events.length);
   assert.equal(file.probes.length, PROBES.length, 'the probe set travels with the data');
@@ -292,7 +327,7 @@ b.test('the service worker MUST serve the shell and the stored sessions WHEN the
   await ctx.setOffline(true);
   await page.reload({waitUntil: 'domcontentloaded'});
   await page.waitForTimeout(1200);
-  assert.match(await page.textContent('h1'), /^Web Traffic Speedometer/, 'the shell loads offline');
+  assert.match(await page.textContent('h1'), /^Network Usability Log/, 'the shell loads offline');
   await page.click('nav button[data-view="sessions"]');
   await page.waitForTimeout(500);
   assert.match(await page.textContent('#session-list'), /not exported/,
@@ -438,7 +473,7 @@ b.test('the route row MUST show the family, its grade and its failure reason WHE
   const shown = id => page.textContent(`#pval-${id}`);
   const family = () => page.textContent('#pname-route');
   assert.match(await row('route'), /green|yellow|orange/, 'the working path is graded');
-  assert.equal(await family(), 'GET IPv6', 'and the row names the family it is reporting');
+  assert.equal(await family(), 'IPv6 round trip', 'and the row names the family it is reporting');
 
   state.mode = 'fail';
   await page.waitForTimeout(4000);
@@ -500,10 +535,10 @@ b.test('a probe row MUST replace its number with an explanation and restore the 
   assert.equal(await value(), true);
 
   await page.click('#probe-dns');
-  assert.match(await explain(), /no resolver has seen/, 'tapping shows what the row measures');
+  assert.match(await explain(), /never contacted/, 'tapping shows what the row measures');
   assert.equal(await value(), false, 'in place of the number, not beside it');
   await page.waitForTimeout(2500);
-  assert.match(await explain(), /no resolver has seen/, 'and the next round does not overwrite it');
+  assert.match(await explain(), /never contacted/, 'and the next round does not overwrite it');
 
   await page.click('#probe-dns');
   assert.equal(await explain(), '', 'tapping again returns the number');

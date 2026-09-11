@@ -158,7 +158,7 @@ s.test('createPositionTracker MUST clear its notice WHEN a fix follows an error'
   const {tracker} = track({onNotice: n => notices.push(n)});
   geo.fail(2);
   geo.send(51.9244, 4.4777, 1, {accuracy: 1414});
-  assert.deepEqual(notices, ['No location (unavailable). Measurement continues without coordinates.', '']);
+  assert.deepEqual(notices, ['No location (unavailable). Measuring without coordinates.', '']);
   assert.equal(tracker.read().pos_error, null);
   geo.send(51.9245, 4.4777, 2, {accuracy: 1414});
   assert.equal(notices.length, 2, 'a fix with no error before it writes nothing');

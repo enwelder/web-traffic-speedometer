@@ -101,5 +101,5 @@ jobs:
           else
             log=$(git log --pretty='- %s' -20)
           fi
-          printf 'Live at https://enwelder.github.io/web-traffic-speedometer/\n\n%s\n' "$log" > notes.md
+          printf 'Live at https://enwelder.github.io/network-usability-log/\n\n%s\n' "$log" > notes.md
           gh release create "v$V" --title "v$V" --notes-file notes.md

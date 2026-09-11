@@ -1,14 +1,15 @@
-# Web Traffic Speedometer
+# Network Usability Log
 
-[![release](https://github.com/enwelder/web-traffic-speedometer/actions/workflows/release.yml/badge.svg)](https://github.com/enwelder/web-traffic-speedometer/actions/workflows/release.yml)
-[![codeql](https://github.com/enwelder/web-traffic-speedometer/actions/workflows/codeql.yml/badge.svg)](https://github.com/enwelder/web-traffic-speedometer/actions/workflows/codeql.yml)
-[![release version](https://img.shields.io/github/v/release/enwelder/web-traffic-speedometer?label=release&color=4C9BE8)](https://github.com/enwelder/web-traffic-speedometer/releases/latest)
-[![licence 0BSD](https://img.shields.io/github/license/enwelder/web-traffic-speedometer?color=35B37E)](LICENSE)
+[![release](https://github.com/enwelder/network-usability-log/actions/workflows/release.yml/badge.svg)](https://github.com/enwelder/network-usability-log/actions/workflows/release.yml)
+[![codeql](https://github.com/enwelder/network-usability-log/actions/workflows/codeql.yml/badge.svg)](https://github.com/enwelder/network-usability-log/actions/workflows/codeql.yml)
+[![release version](https://img.shields.io/github/v/release/enwelder/network-usability-log?label=release&color=4C9BE8)](https://github.com/enwelder/network-usability-log/releases/latest)
+[![licence 0BSD](https://img.shields.io/github/license/enwelder/network-usability-log?color=35B37E)](LICENSE)
 
-**[Open the logger](https://enwelder.github.io/web-traffic-speedometer/)**
+**[Open the logger](https://enwelder.github.io/network-usability-log/)**
 
 Records, for any network, whether a call, an article load and a video stream work on the
-connection at each moment, and which layer fails when one does not.
+connection at each moment, and which layer fails when one does not. It is not a speed test:
+speeds are measured only as far as these activities need.
 
 It runs in a browser on any device, over Wi-Fi or mobile data, and logs the connection state
 for the length of a session: a line that drops video calls, a commute with dead zones between
@@ -46,7 +47,7 @@ cell databases.
 | `ip6` | `https://[2606:4700:4700::1111]/cdn-cgi/trace` | the radio link over IPv6, without name resolution |
 | `ip4` | `https://1.1.1.1/cdn-cgi/trace` | the same over IPv4 |
 | `dns` | `https://<random>.github.io/` `HEAD` | resolution of a name absent from every resolver cache |
-| `dns_ctl` | `https://wts-dns-control.github.io/` `HEAD` | the same destination under a cached name |
+| `dns_ctl` | `https://nulog-dns-control.github.io/` `HEAD` | the same destination under a cached name |
 | `down` | `https://speed.cloudflare.com/__down` | sustained throughput |
 | `up` | `https://speed.cloudflare.com/__up` `POST`, 40 kB | the upstream rate a call needs |
 | `udp` | `stun:stun.cloudflare.com:3478` | UDP egress and its NAT mapping |
@@ -142,7 +143,7 @@ worse grade.
 | scale | measured on it | green | yellow | orange | red | source |
 |---|---|---|---|---|---|---|
 | `round_trip` | latency of `ip6` `ip4` `dns_ctl` `udp` | <100 ms | <200 ms | <400 ms | ≥400 ms | [ITU-T G.114](https://www.itu.int/rec/T-REC-G.114) |
-| `ttfb` | time to reach an uncontacted host, on the `new host` row and for reading articles | <800 ms | <1800 ms | <3000 ms | ≥3000 ms | [web.dev](https://web.dev/articles/ttfb) |
+| `ttfb` | time to reach an uncontacted host, on the **Resolve new site** row and for reading articles | <800 ms | <1800 ms | <3000 ms | ≥3000 ms | [web.dev](https://web.dev/articles/ttfb) |
 | `article` | the modelled article time | <2.5 s | <4 s | <8 s | ≥8 s | [Core Web Vitals LCP](https://web.dev/articles/lcp) |
 | `rate` | `down`'s throughput bound | >7.1 Mb/s | >3.6 Mb/s | >1.6 Mb/s | ≤1.6 Mb/s | [YouTube's recommended sustained speeds](https://support.google.com/youtube/answer/78358) for 1080p, 720p and 480p, ÷ 0.7 |
 | `call_rate` | `down`'s bound and `up`'s rate against a call's requirement | >300 kb/s | >100 kb/s | >30 kb/s | ≤30 kb/s | [Opus, RFC 6716](https://www.rfc-editor.org/info/rfc6716) |
@@ -171,9 +172,14 @@ no measurement:
 
 ## On screen
 
-Six probe rows, then one history strip per activity. Both address families share one row,
-which shows and names the family carrying traffic. Tapping a row shows what it measures; **?**
-shows all six.
+The first screen states the purpose and holds the setup: connection, operator, interval and the
+data estimate. **Start** runs a session, **Stop** ends it and leaves its readout on screen, and
+**New session** returns to the first screen.
+
+The readout has six probe rows, then one history strip per activity. The rows are **IPv6 round
+trip** or **IPv4 round trip**, whichever family carries traffic, **Resolve new site**, **Reach
+known site**, **UDP round trip**, **Download** and **Upload**. Tapping a row shows what it
+measures; **?** shows all six.
 
 Each strip bar is the activity grade of one completed round, newest on the right. A hatched bar
 marks an absence: JavaScript was frozen by a locked screen or a background tab. A round the page
@@ -190,8 +196,8 @@ outage lasted four rounds, and partially failing rounds reached 47% over the wor
 The download is nearly the whole cost. The six other probes total ~130 kB per round: the
 upload's 40 kB, and TLS handshakes, since each sample is a request and Safari opens a connection
 per request. A round streams a ramp and a byte-capped window, so the worst case is fixed before
-the run: **up to 933 MB for 40 minutes on Fine** (default), 466 MB on Coarse. A link below the 25 Mb/s ceiling costs
-proportionally less. The projection shows before a run and the running total during it.
+the run: **up to 1.4 GB per hour at the 15 s interval** (default), 700 MB at 30 s. A link below
+the 25 Mb/s ceiling costs proportionally less. The projection shows before a run and the running total during it.
 
 ## Design notes
 
@@ -431,7 +437,7 @@ anonymised recorded journeys through grading and the rollup.
 `tests/browser.mjs` drives a real browser for IndexedDB, crash recovery, the service worker, the
 CSP and the phone layout, **once per engine**: Chromium for desktop and Android Chrome, WebKit for
 Safari and iOS, since streaming reads, connection reuse and storage differ between them.
-`WTS_ENGINES=chromium,webkit,firefox npm test` selects the set; each engine needs
+`NULOG_ENGINES=chromium,webkit,firefox npm test` selects the set; each engine needs
 `npx playwright install <engine>`. A missing engine prints a note locally and fails on CI, where a
 silent skip reports unrun tests as passed.
 

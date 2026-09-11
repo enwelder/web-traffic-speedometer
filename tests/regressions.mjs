@@ -86,7 +86,7 @@ r.test('createRecorder MUST rest a probe failing alone and rest none WHEN every 
   stubStun();
   let ctlWedged = true;
   globalThis.fetch = async url => {
-    if (String(url).includes('wts-dns-control') && ctlWedged) throw netError();
+    if (String(url).includes('nulog-dns-control') && ctlWedged) throw netError();
     return okResponse();
   };
   const notices = [];
@@ -101,7 +101,7 @@ r.test('createRecorder MUST rest a probe failing alone and rest none WHEN every 
   assert.ok(rows.some(x => x.probes.dns_ctl.fail === 'resting'),
             'and produces no further identical failures');
   assert.ok(rows.every(x => x.probes.ip6.ok), 'the probes that work are untouched');
-  assert.ok(notices.some(n => /resting/.test(n)), 'and the notice carries the reason');
+  assert.ok(notices.some(n => /paused/.test(n)), 'and the notice carries the reason');
 
   // Resting applies only to a probe failing alone: when everything fails the network is
   // down, and resting every probe at once blanks the readout.
@@ -118,7 +118,7 @@ r.test('createRecorder MUST rest a probe failing alone and rest none WHEN every 
   assert.ok(dead.every(x => PROBE_IDS.every(id => x.probes[id]?.fail !== 'resting')),
             'and rests nothing, so the failure stays visible');
   globalThis.fetch = async url => {
-    if (String(url).includes('wts-dns-control') && ctlWedged) throw netError();
+    if (String(url).includes('nulog-dns-control') && ctlWedged) throw netError();
     return okResponse();
   };
 

@@ -1,4 +1,4 @@
-# CLAUDE.md — Web Traffic Speedometer
+# CLAUDE.md — Network Usability Log
 
 ## Project Overview
 This repository measures web network performance (latency, throughput, state) and maps raw network metrics (`ip6`, `udp`, `web`, `dns`) into deterministic activity grades (e.g., `voice`, `news`).

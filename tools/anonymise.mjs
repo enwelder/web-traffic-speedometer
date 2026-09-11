@@ -62,7 +62,7 @@ export function anonymise(doc) {
   }
 
   return {
-    format: 'wts/fixture',
+    format: 'nulog/fixture',
     version: 1,
     source_app_version: doc.session?.environment?.app_version ?? doc.app_version ?? null,
     note: 'Anonymised recording. Coordinates removed, addresses redacted, timestamps shifted ' +
@@ -75,7 +75,7 @@ export function anonymise(doc) {
 // Removing them before the scan keeps it aimed at subscriber data.
 const PUBLIC_ENDPOINTS = [
   '1.1.1.1', '2606:4700:4700::1111', 'stun:stun.cloudflare.com:3478',
-  'speed.cloudflare.com', 'www.gstatic.com', 'wts-dns-control.github.io'
+  'speed.cloudflare.com', 'www.gstatic.com', 'nulog-dns-control.github.io'
 ];
 
 // Allowed keys per level. An allowlist: a denylist scan accepts every field the schema adds. A new

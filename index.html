@@ -8,29 +8,33 @@
      cannot express a bracketed IPv6 literal, and naming the IPv6 probe endpoint blocks that
      probe, so tests/security.mjs enforces the outbound allowlist and the single upload body. -->
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; manifest-src 'self'; worker-src 'self'; connect-src 'self' https:; base-uri 'none'; form-action 'none'">
-<meta name="description" content="Network connectivity and throughput logger — seven parallel probes graded into three everyday activities, with GPS, one JSON file per session. Runs in the browser, no backend.">
+<meta name="description" content="Rates whether calls, reading and video work on the current network, round by round, and saves each session as a JSON file. Runs in the browser, no backend.">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="apple-mobile-web-app-title" content="Speedometer">
+<meta name="apple-mobile-web-app-title" content="Usability Log">
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="icon.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="icon-180.png">
 <link rel="stylesheet" href="app.css">
-<title>Web Traffic Speedometer</title>
+<title>Network Usability Log</title>
 </head>
 <body>
 
-<h1>Web Traffic Speedometer<span class="ver" id="app-version"></span><button id="btn-help" type="button" aria-pressed="false" aria-label="Explain the measurements" hidden>?</button></h1>
+<h1>Network Usability Log<span class="ver" id="app-version"></span><button id="btn-help" type="button" aria-pressed="false" aria-label="Explain the measurements" hidden>?</button></h1>
 
 <main>
 
 <section class="view" id="view-measure">
 
+  <p class="intro" id="intro">Checks every 15 or 30 seconds whether calls, reading and video work on
+  this connection, and keeps a log per session. It is not a speed test: speeds are measured only as
+  far as these activities need.</p>
+
   <div class="recover" id="recover" hidden>
     <p id="recover-text"></p>
     <div class="row">
       <button class="small" id="recover-resume">Resume</button>
-      <button class="small" id="recover-close">Close it</button>
+      <button class="small" id="recover-close">Close</button>
     </div>
   </div>
 
@@ -54,15 +58,13 @@
       <input id="f-operator-other" type="text" placeholder="Name" autocomplete="off" hidden>
     </div>
     <div class="field">
-      <label for="f-profile">Detail</label>
+      <label for="f-profile">Interval</label>
       <select id="f-profile">
-        <option value="fine" selected>Fine — every 15 s</option>
-        <option value="coarse">Coarse — every 30 s</option>
+        <option value="fine" selected>Every 15 s</option>
+        <option value="coarse">Every 30 s</option>
       </select>
     </div>
     <p class="hint" id="budget"></p>
-    <p class="hint"><b>Mark problem</b> timestamps a failure you notice while recording, such as
-    stalled audio or a page that does not load, for comparison with the probe results.</p>
   </div>
 
   <div id="readout" hidden>
@@ -79,7 +81,6 @@
       <div><span>Elapsed</span><b id="m-time">0:00</b></div>
       <div><span>Position</span><b id="m-pos">—</b></div>
       <div><span>Speed</span><b id="m-speed">—</b></div>
-      <div><span>Marks</span><b id="m-marks">0</b></div>
       <div><span>Data (est.)</span><b id="m-data">0 kB</b></div>
     </div>
 
@@ -92,8 +93,8 @@
   <h2>Sessions</h2>
   <div class="sessions" id="session-list"></div>
   <button class="wide small" id="btn-export-all">Export all sessions</button>
-  <p class="hint">Safari can evict storage for sites left unvisited for a week. Sessions that
-  have never been exported are flagged above.</p>
+  <p class="hint">Safari may delete data of sites unused for a week. Export sessions you want to
+  keep.</p>
 </section>
 
 </main>
@@ -104,7 +105,6 @@
 
 <div class="controls" id="controls">
   <button id="btn-start" class="start">Start</button>
-  <button id="btn-mark" disabled hidden>Mark problem</button>
 </div>
 
 <nav>

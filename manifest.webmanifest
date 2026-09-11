@@ -1,7 +1,7 @@
 {
-  "name": "Web Traffic Speedometer",
-  "short_name": "Speedometer",
-  "description": "Network connectivity and throughput logger \u2014 seven parallel probes graded into three everyday activities, with GPS, one JSON file per session. Runs in the browser, no backend.",
+  "name": "Network Usability Log",
+  "short_name": "Usability Log",
+  "description": "Rates whether calls, reading and video work on the current network, round by round, and saves each session as a JSON file. Runs in the browser, no backend.",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",

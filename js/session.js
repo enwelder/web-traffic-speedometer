@@ -29,7 +29,7 @@ const handshakes = (probe, attempts, first) =>
 const cost = p => (WARM_BYTES[p.kind] * (p.samples || 1)) + handshakes(p, p.samples || 1, false) +
                   (p.bodyBytes || 0);
 
-export const APP_VERSION = '3.15.2';
+export const APP_VERSION = '3.16.0';
 
 // The download runs every round, so the interval is what controls data use.
 export const PROFILES = {
@@ -48,7 +48,7 @@ export const DOWNLOAD_DEFAULTS = {
 
 // Worst-case data cost: ramp plus capped window per round. A link below the ceiling costs
 // proportionally less.
-export function projectedBytes(intervalMs, settings = DOWNLOAD_DEFAULTS, minutes = 40) {
+export function projectedBytes(intervalMs, settings = DOWNLOAD_DEFAULTS, minutes = 60) {
   const rounds = Math.round((minutes * 60000) / intervalMs);
   const small = PROBES.reduce((n, p) => n + cost(p), 0);
   return rounds * (small + DOWN_RAMP_BYTES + settings.capBytes);
@@ -190,7 +190,6 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
   let inFlight = false;
   let abort = null;
   let bytes = 0;
-  let marks = 0;
   let inPause = false;
   // The running round: its number, when it started, and what it has not yet settled.
   let runningSeq = null;
@@ -233,7 +232,7 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
   function status() {
     const fix = position.snapshot();
     return {
-      running, session, seq, marks, bytes, throughput, udpMs, grades: lastGrades,
+      running, session, seq, bytes, throughput, udpMs, grades: lastGrades,
       downloadMB: Math.round(downloadBytesUsed / 1e5) / 10,
       speedKmh: lastSpeed == null ? null : Math.round(lastSpeed * 3.6),
       speedSource: lastSpeedSource,
@@ -272,7 +271,7 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
     } catch (e) {
       // Rows stay in the buffer and are retried next round.
       writeFailed = true;
-      storageNotice(`Storage write failed (${e.message}). ${pendingSamples.length} rounds held in memory, retrying.`);
+      storageNotice(`Saving failed (${e.message}). ${pendingSamples.length} rounds kept in memory; retrying.`);
     } finally {
       emit();
     }
@@ -567,7 +566,6 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
     // starts.
     if (!resumeSeq) {
       stuck.reset();
-      marks = 0;
       inPause = false;
       position.reset();
       for (const k of Object.keys(egressIp)) delete egressIp[k];
@@ -637,15 +635,6 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
     return session;
   }
 
-  function mark() {
-    if (!running) return;
-    marks++;
-    const p = position.read();
-    record({sessionId: session.id, t: Date.now(), mono: Math.round(mono()), type: 'mark',
-            lat: p.lat, lon: p.lon, text: `mark ${marks}`});
-    emit();
-  }
-
   function note(text) {
     if (!running || !text) return;
     const p = position.read();
@@ -658,5 +647,5 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
     if (document.visibilityState === 'visible' && running) wake.acquire();
   });
 
-  return {start, stop, mark, note, status, flush};
+  return {start, stop, note, status, flush};
 }

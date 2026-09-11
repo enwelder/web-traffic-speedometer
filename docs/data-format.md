@@ -1,6 +1,6 @@
 # Exported session format
 
-`format: "wts/session"`, `version: 13`. One button per session writes one JSON file: session
+`format: "nulog/session"`, `version: 14`. One button per session writes one JSON file: session
 metadata, environment, a rollup, every sample, every event. CSV, GPX and GeoJSON derive from it
 directly.
 
@@ -17,6 +17,7 @@ directly.
 | 11 | a slot that comes due while a round is still running is a `skip` event and writes no row, so `skipped` and `prev_round_ms` are gone; rows carry `round_ms`, `phase_idle_ms`, `phase_down_ms` and `visible_end`; sampled probes carry `samples_end` and `wall_ms`; the download carries `per_stream`; `page` and `network` events; `session.end_reason`; a download stream still waiting at the deadline ends as `connect`, and the download carries `window_cut` and, when a stream waits, `stall_check`; sampled probes continue past a lost sample and carry `samples_lost` and `sample_starts_ms`; `udp` carries `host_ms_samples`; the summary counts `slots` |
 | 12 | `web` is gone and `up` joins, with `upload_bytes` and `rate_source`; rows carry `interrupted`, `suspended_ms`, `reference` and `phase_up_ms`; `ip6` and `ip4` carry `protocol_samples`; a timed-out literal is never `blocked`; `server` carries `proto`; `no_budget` joins the failure reasons; a `pause` event can carry `round`; the summary counts `interrupted` |
 | 13 | `up` carries `saturated` and `ceiling_bps`; `abort` is excluded from failure tallies |
+| 14 | the app is named Network Usability Log: format ids are `nulog/session`, `nulog/bundle` and `nulog/fixture`, file names start with `nulog-`, and the DNS control host is `nulog-dns-control.github.io`; `mark` events are no longer written |
 
 Version 5 changes failure counts. Below it only `ip4` carries `expected`, so every `ip6` failure
 counts; from 5, `expected` on `ip6` marks a missing path.
@@ -170,7 +171,7 @@ Records not derivable from the samples.
 
 | event | meaning |
 |---|---|
-| `mark` | the user's timestamp of a perceived failure; probe failures can occur at other times |
+| `mark` | written by versions up to 3.15.2: the user's timestamp of a perceived failure |
 | `pause` | JavaScript frozen, with the bridged duration; `round` names the interrupted round the absence cut short, which stands for it on the strip |
 | `note` | free text and recorder notices: wake lock lost or regained, position accuracy class change, a change of location error state (`no location (…)`), probe rested, egress address change under an unchanged operator label |
 | `skip` | a slot came due `late_ms` behind schedule while round `round` was still running: `running_ms` so far, and `waiting_on`, the unsettled probe ids (`loaded_rtt` for the loaded round trip, `reference` for the Google request) |

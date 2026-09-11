@@ -4,7 +4,7 @@ import {createRecorder, environment, projectedBytes, spentSoFar, PROFILES,
         DOWNLOAD_DEFAULTS, APP_VERSION} from './session.js';
 import {exportSession, exportAll} from './export.js';
 
-const PREFS_KEY = 'wts.prefs';
+const PREFS_KEY = 'nulog.prefs';
 const $ = ui.$;
 
 let listDirty = true;
@@ -26,6 +26,13 @@ function profile() {
 // Start and Stop await storage before the recorder's own flag moves. Without this guard a
 // second tap inside that window starts a second session and a second tick loop.
 let busy = false;
+
+// The screen the main button acts on: setup, running or finished.
+let mode = 'setup';
+function setMode(next) {
+  mode = next;
+  ui.setMode(next);
+}
 
 const uuid = () => (crypto.randomUUID ? crypto.randomUUID()
   : 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
@@ -50,7 +57,7 @@ const recorder = createRecorder({
   onEvent(event) {
     if (ui.hatchesStrip(event)) ui.pushStripPause();
     ui.pushLog(`${ui.clock(event.t)}  ← ${event.type}${event.text ? ': ' + event.text : ''}`,
-               event.type === 'pause' || event.type === 'skip' ? 'warn' : 'mark');
+               event.type === 'pause' || event.type === 'skip' ? 'warn' : 'info');
   },
   onStatus(s) {
     const c = s.pos?.coords;
@@ -59,8 +66,7 @@ const recorder = createRecorder({
       elapsed: ui.duration(s.elapsed),
       pos: c ? `${c.latitude.toFixed(5)}, ${c.longitude.toFixed(5)}` : (s.posError || '—'),
       speed: c && c.speed != null ? `${Math.round(c.speed * 3.6)} km/h` : '—',
-      data: ui.bytes(s.bytes) + (s.pending ? ` (${s.pending} held)` : ''),
-      marks: s.marks
+      data: ui.bytes(s.bytes) + (s.pending ? ` (${s.pending} held)` : '')
     });
   },
   onNotice: ui.notice
@@ -98,16 +104,13 @@ function syncSetup() {
   $('row-operator').hidden = wifi;
   $('f-operator-other').hidden = $('f-operator').value !== '__other';
   const {intervalMs} = profile();
-  const mb = projectedBytes(intervalMs, DOWNLOAD_DEFAULTS) / 1e6;
+  // A round streams a ramp and then a window that stops at a byte cap, so this is the worst case
+  // for an hour.
+  const perHour = projectedBytes(intervalMs, DOWNLOAD_DEFAULTS);
   const el = $('budget');
-  // A round streams a ramp and then a window, and the window stops at a byte cap, so this is
-  // the exact worst case. A link slower than the ceiling costs less in proportion.
-  el.textContent = `up to ≈ ${Math.round(mb)} MB for a 40-minute run, almost all of it the ` +
-    `speed probe, and less on a link slower than ` +
-    `${Math.round(DOWNLOAD_DEFAULTS.ceilingBps / 1e6)} Mb/s — which is the fastest this can ` +
-    `report. The running total is shown while recording.`;
-  // Past this the projected run is a noticeable share of a monthly data bundle.
-  el.classList.toggle('warn', mb > 50);
+  el.textContent = `Data: up to ≈ ${ui.volume(perHour)} per hour, nearly all of it the download.`;
+  // Past this an hour is a noticeable share of a monthly data bundle.
+  el.classList.toggle('warn', perHour > 500e6);
 }
 
 function operatorName() {
@@ -174,17 +177,29 @@ async function begin() {
 
   const session = newSession();
   await store.putSession(session);
-  ui.pushLog(`${ui.clock(session.started)}  ${session.name}`, 'mark');
+  ui.pushLog(`${ui.clock(session.started)}  ${session.name}`, 'info');
   await recorder.start(session);
-  ui.setRunning(true);
+  setMode('running');
   listDirty = true;
 }
 
 async function end() {
   await recorder.stop();
-  ui.setRunning(false);
-  ui.pushLog(`${ui.clock(Date.now())}  session closed — export it from the Sessions tab`, 'mark');
+  setMode('finished');
+  ui.pushLog(`${ui.clock(Date.now())}  Session ended. Export it under Sessions.`, 'info');
   listDirty = true;
+}
+
+// Back to the first-open screen, with nothing of the finished session on it.
+function showSetup() {
+  resetReadout();
+  ui.setProbes(null);
+  ui.clearNotice();
+  helpOn = false;
+  $('btn-help').setAttribute('aria-pressed', 'false');
+  ui.setExplainAll(false);
+  syncSetup();
+  setMode('setup');
 }
 
 /* ---- crash recovery ---- */
@@ -200,7 +215,7 @@ async function checkRecovery() {
   const started = new Date(session.started);
   $('recover-text').textContent =
     `Session "${session.name}" from ${String(started.getHours()).padStart(2, '0')}:${String(started.getMinutes()).padStart(2, '0')} ` +
-    `was never closed — ${samples.length} rounds recorded. Resume it, or close it and keep the data?`;
+    `was not closed (${samples.length} rounds). Resume or close it?`;
   $('recover').hidden = false;
 
   $('recover-resume').onclick = async () => {
@@ -208,7 +223,7 @@ async function checkRecovery() {
     if (busy || recorder.status().running) return;
     $('recover').hidden = true;
     resetReadout();
-    ui.pushLog(`${ui.clock(Date.now())}  resumed "${session.name}" at round ${last ? last.seq + 1 : 0}`, 'mark');
+    ui.pushLog(`${ui.clock(Date.now())}  Resumed "${session.name}" at round ${last ? last.seq + 1 : 0}.`, 'info');
     // performance.now() restarts on reload, so the monotonic clock is carried across the gap
     // with the wall clock. Both clocks are in the data, so the bridge is checkable.
     const gap = last ? Date.now() - last.t : 0;
@@ -218,7 +233,7 @@ async function checkRecovery() {
       resumedGapMs: gap,
       spent: spentSoFar(samples)
     });
-    ui.setRunning(true);
+    setMode('running');
   };
 
   $('recover-close').onclick = async () => {
@@ -228,7 +243,7 @@ async function checkRecovery() {
     await store.putSession(session);
     store.setActive(null);
     listDirty = true;
-    ui.pushLog(`${ui.clock(Date.now())}  recovered session "${session.name}" closed with ${samples.length} rounds`, 'mark');
+    ui.pushLog(`${ui.clock(Date.now())}  Closed session "${session.name}" (${samples.length} rounds).`, 'info');
   };
 }
 
@@ -286,7 +301,7 @@ const handlers = {
   },
   async remove(given) {
     const session = liveOrGiven(given);
-    const warning = session.exportedAt ? '' : '\n\nThis session has never been exported.';
+    const warning = session.exportedAt ? '' : '\n\nIt has not been exported.';
     if (!confirm(`Delete "${session.name}" and all its rounds?${warning}`)) return;
     await store.deleteSession(session.id);
     renderSessions();
@@ -300,15 +315,16 @@ $('btn-start').onclick = async () => {
   busy = true;
   $('btn-start').disabled = true;
   try {
-    await (recorder.status().running ? end() : begin());
+    if (mode === 'running') await end();
+    else if (mode === 'finished') showSetup();
+    else await begin();
   } catch (e) {
-    ui.notice(`Could not ${recorder.status().running ? 'stop' : 'start'}: ${e.message}`);
+    ui.notice(`Could not ${mode === 'running' ? 'stop' : 'start'}: ${e.message}`);
   } finally {
     busy = false;
     $('btn-start').disabled = false;
   }
 };
-$('btn-mark').onclick = () => recorder.mark();
 for (const id of ['f-connection', 'f-operator', 'f-profile']) $(id).onchange = syncSetup;
 ui.buildProbeRows();
 ui.setVersion(APP_VERSION);

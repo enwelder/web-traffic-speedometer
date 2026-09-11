@@ -69,9 +69,12 @@ for (const id of ['ip4', 'ip6']) {
 const freshName = probe('dns').url.replace('%RANDOM%', randomBytes(8).toString('hex'));
 for (const url of [probe('dns_ctl').url, freshName]) {
   const host = new URL(url).hostname;
-  await check(`${host} advertises no HTTP/3`, async () => {
+  await check(`${host} advertises no HTTP/3 and serves no Pages site`, async () => {
     await recordListsNoH3(host);
-    servesTcpOnly(await fetch(url, {method: 'HEAD'}));
+    const res = await fetch(url, {method: 'HEAD'});
+    servesTcpOnly(res);
+    // A 404 means no GitHub account claims the name; a claimed name would serve its own site.
+    expect(res.status === 404, `status ${res.status}`);
   });
 }
 

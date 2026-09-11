@@ -3,7 +3,7 @@
 import {PROBES} from './probe.js';
 import {ACTIVITY_IDS, GRADES, ACTIVITIES, gradeActivities, worse, probeReading,
         activeRoute} from './grade.js';
-import {DOWN_CEILING_BPS, UP_BYTES} from './probe.js';
+import {DOWN_CEILING_BPS, DOWN_WINDOW_MS, UP_BYTES} from './probe.js';
 
 const STRIP_BARS = 48;
 
@@ -20,6 +20,9 @@ export const clock = ms => {
 export function bytes(b) {
   return b < 1e6 ? `${Math.round(b / 1e3)} kB` : `${(b / 1e6).toFixed(1)} MB`;
 }
+
+// A data estimate: one decimal in GB from 1 GB, whole MB below.
+export const volume = b => (b >= 1e9 ? `${(b / 1e9).toFixed(1)} GB` : `${Math.round(b / 1e6)} MB`);
 
 export function duration(s) {
   return `${Math.floor(s / 60)}:${pad(s % 60)}`;
@@ -69,23 +72,23 @@ export function classify(sample) {
 // carrying traffic.
 const ROWS = ['route', 'dns', 'dns_ctl', 'udp', 'down', 'up'];
 
-// Row labels name the request, matching the probe table; PROBES holds the full label.
+// Row labels on screen; PROBES holds the technical label written to exports.
 const PROBE_LABELS = {
-  ip6: 'GET IPv6', ip4: 'GET IPv4', dns: 'HEAD new host', dns_ctl: 'HEAD same host',
-  down: 'GET download', up: 'POST upload', udp: 'STUN'
+  ip6: 'IPv6 round trip', ip4: 'IPv4 round trip', dns: 'Resolve new site', dns_ctl: 'Reach known site',
+  down: 'Download', up: 'Upload', udp: 'UDP round trip'
 };
 // The row id a reading comes from, and the label it carries, both depend on the round.
 const rowProbe = (row, sample) =>
   (row === 'route' ? activeRoute(sample ? sample.probes : {}) : row);
 
-const ROUTE_EXPLAIN = 'GET to an address literal, no lookup. Whichever family is carrying traffic: a network with only one of them is ordinary.';
-
-// Caveats for rows whose value is easily misread; the README documents each.
-const PROBE_CAVEATS = {
-  dns: 'The whole cost of reaching a host never contacted before: resolution, connection and handshake together. A page cannot separate them.',
-  down: `Three connections read together for a fixed window. Reads up to ${Math.round(DOWN_CEILING_BPS / 1e6)} Mb/s and says ≥ at that point, which is all a window this size can prove.`,
-  udp: 'ICE gathering rides on top of the round trip, so this reads slower than the link is. Calls grade on it, since call audio travels over UDP.',
-  up: `${UP_BYTES / 1000} kB of zero bytes, timed until the server confirms the last one. The row shows what that means for a call: calls ok above 300 kb/s, voice only above 100, choppy above 30, too slow below. The rate itself is in the export.`
+// What each row measures, shown when the row is tapped.
+const EXPLANATIONS = {
+  route: 'A small HTTPS request to Cloudflare by IP address, without a name lookup. Shows IPv6 or IPv4, whichever the network uses.',
+  dns: 'Time to reach a site never contacted before: name lookup, connection and encryption together.',
+  dns_ctl: 'Time for a request to a site whose name is already looked up.',
+  udp: 'Round trip over UDP, the transport calls use. Includes a few milliseconds of browser setup.',
+  down: `Three connections download for ${DOWN_WINDOW_MS / 1000} s. Shows ≥ ${(DOWN_CEILING_BPS / 1e6).toFixed(1)} Mb/s when that limit is reached.`,
+  up: `Sends ${UP_BYTES / 1000} kB and rates the upload for calls: calls ok, voice only, choppy or too slow.`
 };
 
 // A row shows the measurement its colour graded. A reading without a value shows its note.
@@ -133,11 +136,7 @@ export function buildProbeRows() {
 // Cells with an explanation, in display order.
 const cells = () => ROWS.map(id => `probe-${id}`);
 
-const explainText = id => {
-  const row = id.slice(6);
-  return [row === 'route' ? ROUTE_EXPLAIN : PROBES.find(p => p.id === row)?.label,
-          PROBE_CAVEATS[row]].filter(Boolean).join(' ');
-};
+const explainText = id => EXPLANATIONS[id.slice(6)] ?? '';
 
 // Each probe's own measurement and the colour it grades to, from the round passed in.
 export function setProbes(sample) {
@@ -251,24 +250,29 @@ export function changes(sample, prev) {
 }
 
 
-export function setStats({rounds, elapsed, pos, speed, data, marks}) {
+export function setStats({rounds, elapsed, pos, speed, data}) {
   $('m-rounds').textContent = rounds;
   $('m-time').textContent = elapsed;
   $('m-pos').textContent = pos;
   $('m-speed').textContent = speed;
   $('m-data').textContent = data;
-  $('m-marks').textContent = marks;
 }
 
-export function setRunning(running) {
+// setup: the purpose and the start form. running: the live readout. finished: the readout of the
+// session that ended, with the action that returns to setup.
+const MAIN_ACTION = {setup: ['Start', 'start'], running: ['Stop', 'stop'], finished: ['New session', 'start']};
+
+export function setMode(mode) {
+  const [label, className] = MAIN_ACTION[mode];
   const start = $('btn-start');
-  start.textContent = running ? 'Stop' : 'Start';
-  start.className = running ? 'stop' : 'start';
-  // While idle, Start takes the full width and the help control is hidden, since no rows show.
-  $('btn-mark').hidden = !running;
-  $('btn-mark').disabled = !running;
-  $('btn-help').hidden = !running;
-  $('setup').hidden = running;
+  start.textContent = label;
+  start.className = className;
+  const readout = mode !== 'setup';
+  $('intro').hidden = readout;
+  $('setup').hidden = readout;
+  $('readout').hidden = !readout;
+  // The explanations belong to the probe rows, which only the readout shows.
+  $('btn-help').hidden = !readout;
 }
 
 // Build version, identifying the running build.
@@ -294,7 +298,7 @@ export function setExplainAll(on) {
 export function switchView(name) {
   for (const view of document.querySelectorAll('.view')) view.hidden = view.id !== `view-${name}`;
   for (const tab of document.querySelectorAll('nav button')) tab.classList.toggle('on', tab.dataset.view === name);
-  // Start and Mark act on the measure view only.
+  // The main button acts on the measure view only.
   $('controls').hidden = name !== 'measure';
 }
 
@@ -316,7 +320,7 @@ function sessionMeta(session, count) {
   const meta = div('meta');
   const secs = Math.round(((session.stopped || session.started) - session.started) / 1000);
   const bits = [dateLabel(session.started), duration(secs), `${count} rounds`, `${session.intervalMs / 1000}s`];
-  if (!session.stopped) bits.push(['never closed', 'flag']);
+  if (!session.stopped) bits.push(['not closed', 'flag']);
   if (!session.exportedAt) bits.push(['not exported', 'flag']);
   for (const b of bits) {
     const s = document.createElement('span');
@@ -356,7 +360,7 @@ export function renderSessions(rows, handlers) {
   const list = $('session-list');
   list.replaceChildren();
   if (!rows.length) {
-    list.appendChild(div('empty', 'No sessions recorded yet.'));
+    list.appendChild(div('empty', 'No sessions yet.'));
     return;
   }
   for (const {session, count} of rows) list.appendChild(sessionCard(session, count, handlers));

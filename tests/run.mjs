@@ -14,14 +14,14 @@ let failed = 0;
 
 // The browser suite runs once per engine: streaming reads, connection reuse, storage and the
 // service worker differ between engines.
-const ENGINES = (process.env.WTS_ENGINES || 'chromium,webkit').split(',');
+const ENGINES = (process.env.NULOG_ENGINES || 'chromium,webkit').split(',');
 
 for (const name of suites) {
   if (only.length && !only.includes(name)) continue;
   console.log(`\n${name}`);
   for (const engine of name === 'browser' ? ENGINES : [null]) {
     const r = spawnSync(process.execPath, [new URL(`${name}.mjs`, import.meta.url).pathname],
-                        {stdio: 'inherit', env: engine ? {...process.env, WTS_ENGINE: engine} : process.env});
+                        {stdio: 'inherit', env: engine ? {...process.env, NULOG_ENGINE: engine} : process.env});
     if (r.status !== 0) failed++;
   }
 }

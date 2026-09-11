@@ -1,7 +1,7 @@
 {
-  "name": "web-traffic-speedometer",
-  "version": "3.15.2",
-  "description": "Network connectivity and throughput logger — seven parallel probes graded into three everyday activities, with GPS, one JSON file per session. Runs in the browser, no backend.",
+  "name": "network-usability-log",
+  "version": "3.16.0",
+  "description": "Rates whether calls, reading and video work on the current network, round by round, and saves each session as a JSON file. Runs in the browser, no backend.",
   "license": "0BSD",
   "private": false,
   "type": "module",
@@ -10,7 +10,7 @@
     "lint": "eslint .",
     "test:unit": "node tests/unit.mjs",
     "test:security": "node tests/security.mjs",
-    "test:browser": "WTS_ENGINE=chromium node tests/browser.mjs && WTS_ENGINE=webkit node tests/browser.mjs",
+    "test:browser": "NULOG_ENGINE=chromium node tests/browser.mjs && NULOG_ENGINE=webkit node tests/browser.mjs",
     "serve": "python3 -m http.server 8731",
     "test:edges": "node tests/edges.mjs"
   },

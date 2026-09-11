@@ -23,7 +23,7 @@ r.test('the committed fixtures MUST carry no coordinates and keep accuracy and r
   assert.ok(files.length >= 3, `three journeys are committed: ${files.join(', ')}`);
   for (const [name, j] of Object.entries(journeys)) {
     assert.doesNotThrow(() => assertClean(j), `${name} passes the anonymiser's own guard`);
-    assert.equal(j.format, 'wts/fixture', `${name} is not mistakable for a real export`);
+    assert.equal(j.format, 'nulog/fixture', `${name} is not mistakable for a real export`);
     assert.ok(j.samples.every(s => s.lat === null && s.lon === null), `${name} has no coordinates`);
     assert.ok(j.samples.some(s => s.accuracy != null),
               `${name} keeps accuracy, which the position rules are tested against`);

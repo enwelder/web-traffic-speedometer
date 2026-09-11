@@ -66,7 +66,7 @@ export function createPositionTracker({onNote, onNotice, onChange} = {}) {
         // iOS repeats an error on every watch timeout while it holds no fix; one event per change.
         if (next !== error) onNote?.(`no location (${next})`);
         error = next;
-        onNotice?.(`No location (${error}). Measurement continues without coordinates.`);
+        onNotice?.(`No location (${error}). Measuring without coordinates.`);
         onChange?.();
       },
       // maximumAge 0: a cached fix is often a coarse one held from earlier, which puts a

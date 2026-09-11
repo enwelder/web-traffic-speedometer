@@ -45,7 +45,7 @@ export function createWakeLock({onNotice, onEvent, onRelease} = {}) {
     if (sentinel === granted) sentinel = null;
     if (!active) return;
     lost = true;
-    onNotice?.('The screen lock was released. Reacquiring — if it keeps happening, check Low Power Mode.');
+    onNotice?.('Screen lock released and taken again. If this repeats, turn off Low Power Mode.');
     onEvent?.('screen wake lock released');
     // iOS releases the lock before it suspends the page, so the round in flight hears of it first.
     onRelease?.();

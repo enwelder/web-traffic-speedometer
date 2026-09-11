@@ -65,7 +65,7 @@ export const PROBES = [
   // A new hostname per sample, so no sample is answered from a cache.
   {id: 'dns',     label: 'HEAD to a name no resolver has seen', kind: 'opaque', url: 'https://%RANDOM%.github.io/',      method: 'HEAD', samples: FIRST_CONTACT_SAMPLES, fresh: true},
   // Sampled like the other latency probes, so the medians are comparable.
-  {id: 'dns_ctl', label: 'HEAD to that host under a cached name', kind: 'opaque', url: 'https://wts-dns-control.github.io/', method: 'HEAD', samples: LATENCY_SAMPLES},
+  {id: 'dns_ctl', label: 'HEAD to that host under a cached name', kind: 'opaque', url: 'https://nulog-dns-control.github.io/', method: 'HEAD', samples: LATENCY_SAMPLES},
   {id: 'down',    label: 'parallel streams, read for a fixed window', kind: 'download', url: 'https://speed.cloudflare.com/__down', bytes: DOWN_REQUEST_BYTES},
   // The only request with a body: a fixed count of zero bytes, timed to the response the server
   // sends once the last byte arrived.

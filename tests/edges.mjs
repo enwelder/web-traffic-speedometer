@@ -438,7 +438,7 @@ d.test('runProbe MUST check the same host, another host and STUN WHEN a stream s
   assert.ok(r.stall_check, 'the check ran');
   assert.deepEqual([r.stall_check.same_host.ok, r.stall_check.other_host.ok, r.stall_check.udp.ok],
                    [true, true, true], JSON.stringify(r.stall_check));
-  assert.ok(urls.some(u => u.includes('wts-dns-control.github.io')), 'the other host is the dns_ctl host');
+  assert.ok(urls.some(u => u.includes('nulog-dns-control.github.io')), 'the other host is the dns_ctl host');
 });
 
 d.test('runProbe MUST omit stall_check WHEN every stream has headers within 2 s', async () => {
@@ -692,7 +692,7 @@ l.test('createRecorder MUST number from zero and carry over no rest, pause or po
   stubStun();
   let wedged = true;
   globalThis.fetch = async url => {
-    if (String(url).includes('wts-dns-control') && wedged) throw netError();
+    if (String(url).includes('nulog-dns-control') && wedged) throw netError();
     return okResponse();
   };
   const store = fakeStore();
@@ -774,9 +774,6 @@ l.test('createRecorder.stop MUST leave the store unchanged WHEN called before st
   await rec.stop();
   assert.equal(store.written.samples.length, after, 'and a second stop writes no further rows');
   assert.equal(rec.status().running, false);
-  rec.mark();
-  assert.equal(store.written.events.filter(e => e.type === 'mark').length, 0,
-               'a mark after the journey ended belongs to no journey');
 });
 
 l.test('createRecorder MUST keep mono monotonic and late_ms small WHEN the wall clock jumps backwards', async () => {
@@ -964,7 +961,7 @@ x.test('filename MUST return a name free of path and wildcard characters WHEN th
   const stamp = `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}`;
   for (const [operator, expected] of Object.entries(cases)) {
     const name = filename(meta({operator}));
-    assert.equal(name, `wts-${stamp}-${expected}.json`, `operator ${JSON.stringify(operator)}`);
+    assert.equal(name, `nulog-${stamp}-${expected}.json`, `operator ${JSON.stringify(operator)}`);
     assert.ok(!/[/\\:*?"<>|]/.test(name.slice(4)), `${name} has no path or wildcard characters`);
   }
   assert.match(filename(meta({operator: '', connection: 'wifi'})), /-wifi\.json$/,
@@ -989,7 +986,7 @@ x.test('sessionJson MUST round-trip quotes, newlines, markup and emoji WHEN they
 
 x.test('sessionJson MUST return a file carrying the probe set and the app version WHEN the session has no rows', () => {
   const back = JSON.parse(sessionJson(meta(), [], []));
-  assert.equal(back.format, 'wts/session');
+  assert.equal(back.format, 'nulog/session');
   assert.equal(back.summary.ran, 0);
   assert.deepEqual(back.samples, []);
   assert.ok(back.probes.length > 0, 'the probe configuration is present with no rows measured');

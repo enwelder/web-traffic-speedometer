@@ -19,7 +19,7 @@ const ALLOWED_ORIGINS = [
   'https://[2606:4700:4700::1111]',
   'https://1.1.1.1',
   'https://%RANDOM%.github.io',
-  'https://wts-dns-control.github.io',
+  'https://nulog-dns-control.github.io',
   'https://www.gstatic.com',
   'https://speed.cloudflare.com',
   'stun:stun.cloudflare.com:3478'
@@ -279,14 +279,14 @@ s.test('.dev MUST be untracked and ignored as a whole directory WHEN git ls-file
 
 // Fixtures are committed deliberately and are safe only because the anonymiser stripped
 // them, so each is checked by name.
-s.test('every committed fixture MUST carry format wts/fixture and pass assertClean WHEN read from tests/fixtures', async () => {
+s.test('every committed fixture MUST carry format nulog/fixture and pass assertClean WHEN read from tests/fixtures', async () => {
   const {assertClean} = await import('../tools/anonymise.mjs');
   const dir = new URL('../tests/fixtures/', import.meta.url);
   const files = readdirSync(dir).filter(f => f.endsWith('.json'));
   assert.ok(files.length > 0, 'there are fixtures to check');
   for (const f of files) {
     const j = JSON.parse(readFileSync(new URL(f, dir), 'utf8'));
-    assert.equal(j.format, 'wts/fixture', `${f} must not be mistakable for a real export`);
+    assert.equal(j.format, 'nulog/fixture', `${f} must not be mistakable for a real export`);
     assert.doesNotThrow(() => assertClean(j), `${f} still carries identifying data`);
   }
 });
@@ -300,7 +300,7 @@ s.test('the tracked text files MUST carry no session format marker and no coordi
   for (const f of tracked) {
     if (f === 'package.json' || f === 'package-lock.json' || binary.test(f)) continue;
     const text = readFileSync(new URL(`../${f}`, import.meta.url), 'utf8');
-    assert.ok(!/"format"\s*:\s*"wts\/(session|bundle)"/.test(text),
+    assert.ok(!/"format"\s*:\s*"nulog\/(session|bundle)"/.test(text),
               `${f} is a recorded journey and must not be committed`);
     // Applies to the fixtures too: they keep every measurement and no position.
     assert.ok(!/"lat"\s*:\s*-?\d/.test(text), `${f} contains coordinates`);
@@ -348,8 +348,8 @@ s.test('APP_VERSION and the service worker CACHE MUST match the package.json ver
   const app = /APP_VERSION = '([^']+)'/.exec(read('js/session.js'))[1];
   assert.equal(app, version, `js/session.js APP_VERSION (${app}) must match package.json (${version})`);
   const cache = /const CACHE = '([^']+)'/.exec(read('sw.js'))[1];
-  assert.equal(cache, `wts-v${version}`,
-               `the service worker cache (${cache}) must be wts-v${version}, or clients keep the old build`);
+  assert.equal(cache, `nulog-v${version}`,
+               `the service worker cache (${cache}) must be nulog-v${version}, or clients keep the old build`);
 });
 
 await s.run();

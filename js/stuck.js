@@ -30,8 +30,8 @@ export function createStuckTracker({onNotice} = {}) {
         r.stuck = true;
         restingUntil[p.id] = seq + STUCK_COOLDOWN;
         consecutiveFails[p.id] = 0;
-        onNotice?.(`${p.id} has failed ${n} rounds while the others answer; ` +
-                   `resting it for ${STUCK_COOLDOWN} rounds to clear the connection.`);
+        onNotice?.(`${p.id} failed ${n} rounds while the others answered; ` +
+                   `paused for ${STUCK_COOLDOWN} rounds to reset its connection.`);
       }
     }
   }

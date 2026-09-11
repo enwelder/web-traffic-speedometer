@@ -66,7 +66,7 @@ s.test('runProbe MUST request a fresh hostname per dns sample and one fixed host
   let method;
   globalThis.fetch = async (url, o) => {
     const h = new URL(url).hostname;
-    (h.startsWith('wts-') ? seen.dns_ctl : seen.dns).push(h);
+    (h.startsWith('nulog-') ? seen.dns_ctl : seen.dns).push(h);
     method = o.method;
     return {type: 'opaque', ok: false, status: 0};
   };
@@ -955,7 +955,7 @@ l.test('createRecorder MUST retry held rows and write each seq once WHEN the sto
   store.failNext(3);
   await sleep(500);
   await rec.stop();
-  assert.ok(notices.some(n => n.includes('Storage write failed')), 'the failure reaches the screen');
+  assert.ok(notices.some(n => n.includes('Saving failed')), 'the failure reaches the screen');
   assert.ok(store.written.samples.length > held, 'and the held rows land on retry');
 
   // Checked by sequence number: dropping the rejected batch and carrying on also grows the
@@ -977,11 +977,11 @@ l.test('projectedBytes MUST scale linearly with the number of rounds and the dur
   // The cost is rounds times the byte ceiling, so halving the interval doubles it.
   assert.ok(Math.abs(fine - coarse * 2) < coarse * 0.02,
             `twice the rounds costs twice as much: ${(fine / 1e6) | 0} vs ${(coarse / 1e6) | 0} MB`);
-  assert.ok(fine > 40 * DOWNLOAD_DEFAULTS.capBytes,
-            'and a 40-minute run is priced in hundreds of megabytes, not tens');
+  assert.ok(fine > 60 * DOWNLOAD_DEFAULTS.capBytes,
+            'and an hour is priced in hundreds of megabytes, not tens');
 
   const ten = projectedBytes(PROFILES.fine.intervalMs, DOWNLOAD_DEFAULTS, 10);
-  assert.ok(Math.abs(ten * 4 - fine) < fine * 0.02, 'the estimate is linear in duration too');
+  assert.ok(Math.abs(ten * 6 - fine) < fine * 0.02, 'the estimate is linear in duration too');
 });
 
 
@@ -1193,6 +1193,12 @@ const round = over => ({t: Date.parse('2026-09-09T12:00:00Z'), probes: {
   ...over
 }});
 
+r.test('volume MUST print one decimal in GB from 1 GB and whole MB below WHEN given byte counts', () => {
+  assert.equal(ui.volume(1399.5e6), '1.4 GB');
+  assert.equal(ui.volume(1e9), '1.0 GB');
+  assert.equal(ui.volume(699.7e6), '700 MB');
+});
+
 r.test('notice MUST clear only the text of its owner WHEN two owners write the notice line', () => {
   const line = {textContent: ''};
   const saved = globalThis.document;
@@ -1377,7 +1383,7 @@ e.test('sessionJson MUST round-trip the session, samples, events and probe set W
                     probes: healthy()}];
   const events = [{sessionId: 'a', t: sess.started + 60, mono: 60, type: 'mark', lat: 51.9, lon: 4.4, text: 'stalled'}];
   const out = JSON.parse(sessionJson(sess, samples, events));
-  assert.equal(out.format, 'wts/session');
+  assert.equal(out.format, 'nulog/session');
   assert.deepEqual(out.session, sess, 'the session round-trips whole');
   assert.deepEqual(out.samples, samples, 'every nested probe field survives');
   assert.deepEqual(out.events, events);
@@ -1388,18 +1394,18 @@ e.test('filename MUST strip quotes, commas, newlines and backslashes WHEN the se
   const sess = {id: 'a', name: 'x", y\n\\', operator: 'K,P"N', started: Date.parse('2026-09-03T06:14:00Z')};
   const f = filename(sess);
   assert.ok(!/["',\n\\]/.test(f), `filename is sanitised: ${f}`);
-  assert.match(f, /^wts-20260903-\d{4}-k-p-n\.json$/, f);
+  assert.match(f, /^nulog-20260903-\d{4}-k-p-n\.json$/, f);
   assert.deepEqual(JSON.parse(sessionJson(sess, [], [])).session.name, 'x", y\n\\');
 });
 
 e.test('bundleFilename MUST stamp the local export time with a separator WHEN called', () => {
-  // Recorded 11 Sep: the bundle exported at 08:15 in Amsterdam was named wts-all-2026-09-110615.
+  // 06:15 UTC is 08:15 in Amsterdam: the name carries the hour of the runner's timezone.
   const exportedAt = Date.parse('2026-09-11T06:15:50Z');
   const d = new Date(exportedAt);
   const p = n => String(n).padStart(2, '0');
   const local = `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}`;
-  assert.equal(bundleFilename(exportedAt), `wts-all-${local}.json`);
-  assert.match(bundleFilename(exportedAt), /^wts-all-\d{8}-\d{4}\.json$/);
+  assert.equal(bundleFilename(exportedAt), `nulog-all-${local}.json`);
+  assert.match(bundleFilename(exportedAt), /^nulog-all-\d{8}-\d{4}\.json$/);
 });
 
 e.test('summarise MUST exclude an interrupted round from ran and count it WHEN a row carries interrupted', () => {

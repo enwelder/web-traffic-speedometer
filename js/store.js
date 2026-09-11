@@ -1,9 +1,9 @@
 // IndexedDB persistence. Only raw samples are stored: where the line falls between noise
 // and outage is an analysis decision made downstream.
 
-const DB_NAME = 'wts';
+const DB_NAME = 'nulog';
 const DB_VERSION = 1;
-const ACTIVE_KEY = 'wts.active';
+const ACTIVE_KEY = 'nulog.active';
 
 let dbPromise = null;
 

@@ -40,7 +40,7 @@ s.test('createStuckTracker MUST rest a probe only after STUCK_AFTER consecutive 
   assert.equal(last.probes.dns_ctl.stuck, true, `stuck on failure ${STUCK_AFTER}`);
   assert.deepEqual([...t.resting(STUCK_AFTER)], ['dns_ctl'], 'and it is the only one rested');
   assert.equal(notices.length, 1, 'one notice');
-  assert.match(notices[0], /dns_ctl has failed/, notices[0]);
+  assert.match(notices[0], /dns_ctl failed/, notices[0]);
 });
 
 s.test('createStuckTracker.resting MUST hold a rest for exactly STUCK_COOLDOWN rounds WHEN a probe was rested', () => {

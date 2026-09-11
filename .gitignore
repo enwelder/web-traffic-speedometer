@@ -7,6 +7,6 @@ test-results/
 playwright-report/
 
 # Kept as a second line of defence, in case an export lands outside .dev by accident.
-wts-*.json
+nulog-*.json
 webspeed-*.json
 spoormeter-*.json

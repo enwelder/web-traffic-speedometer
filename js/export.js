@@ -59,7 +59,7 @@ function rateSummary(rs) {
   };
 }
 
-// Grades as resolved during the run, for threshold checks against marks without regrading.
+// Grades as resolved during the run, for threshold checks without regrading.
 function gradeTally(ran, keys, field) {
   const grades = {};
   for (const key of keys) {
@@ -73,8 +73,8 @@ function gradeTally(ran, keys, field) {
   return grades;
 }
 
-// 13: `up` carries `saturated` and `ceiling_bps`; `abort` leaves the failure tallies.
-const FORMAT_VERSION = 13;
+// 14: format ids and file names carry `nulog`; `mark` events are no longer written.
+const FORMAT_VERSION = 14;
 
 // A row carrying `skipped` comes from a file written before format 11, where a slot that could
 // not start was a row.
@@ -96,7 +96,7 @@ export function summarise(samples, events = []) {
     probe_scales: PROBE_SCALES,
     grades: gradeTally(ran, ACTIVITY_IDS, 'grades'),
     grades_by_probe: gradeTally(ran, Object.keys(PROBE_SCALES), 'pgrades'),
-    generated_by: `wts ${APP_VERSION}`,
+    generated_by: `nulog ${APP_VERSION}`,
     rounds: samples.length,
     ran: ran.length,
     // Every slot the scheduler reached: the rounds that ran and the slots that could not start.
@@ -119,7 +119,7 @@ export function summarise(samples, events = []) {
 
 export function sessionJson(session, samples, events) {
   return JSON.stringify({
-    format: 'wts/session',
+    format: 'nulog/session',
     version: FORMAT_VERSION,
     app_version: APP_VERSION,
     exported: new Date().toISOString(),
@@ -143,10 +143,10 @@ function localStamp(t) {
 export function filename(session) {
   // An unreadable start time falls back to the current time, which keeps NaN out of the filename.
   const started = Number.isFinite(session.started) ? session.started : Date.now();
-  return `wts-${localStamp(started)}-${slug(session.operator || session.connection)}.json`;
+  return `nulog-${localStamp(started)}-${slug(session.operator || session.connection)}.json`;
 }
 
-export const bundleFilename = exportedAt => `wts-all-${localStamp(exportedAt)}.json`;
+export const bundleFilename = exportedAt => `nulog-all-${localStamp(exportedAt)}.json`;
 
 function download(text, name) {
   const url = URL.createObjectURL(new Blob([text], {type: 'application/json;charset=utf-8'}));
@@ -173,7 +173,7 @@ export async function exportAll() {
     bundles.push({session, samples, events});
   }
   download(JSON.stringify({
-    format: 'wts/bundle', version: FORMAT_VERSION, app_version: APP_VERSION,
+    format: 'nulog/bundle', version: FORMAT_VERSION, app_version: APP_VERSION,
     exported: new Date().toISOString(),
     probes: PROBES.map(p => ({id: p.id, label: p.label, url: p.url, kind: p.kind})),
     sessions: bundles
