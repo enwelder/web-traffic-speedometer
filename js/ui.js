@@ -179,12 +179,19 @@ export function clearStrip() {
   }
 }
 
-// An interrupted round draws the pause hatch: the page was suspended and the round holds no grade.
+// A hatch stands for a gap in the record, so a second one beside it carries no further reading.
+// Consecutive hatches collapse into the first, leaving the slots to the rounds that were graded;
+// how many rounds a gap covered is in the log and the export.
+export const collapsesHatch = (previous, className) => className === 'pause' && previous === 'pause';
+
+// An interrupted round draws the pause hatch: it holds no grade.
 export function pushStrip(sample) {
   for (const activity of ACTIVITY_IDS) {
     const strip = $(`strip-${activity}`);
+    const className = sample.interrupted ? 'pause' : gradeFor(activity, sample);
+    if (collapsesHatch(strip.lastElementChild?.className, className)) continue;
     const bar = document.createElement('i');
-    bar.className = sample.interrupted ? 'pause' : gradeFor(activity, sample);
+    bar.className = className;
     strip.appendChild(bar);
     while (strip.children.length > STRIP_BARS) strip.removeChild(strip.firstChild);
   }
@@ -194,6 +201,7 @@ export function pushStrip(sample) {
 export function pushStripPause() {
   for (const activity of ACTIVITY_IDS) {
     const strip = $(`strip-${activity}`);
+    if (collapsesHatch(strip.lastElementChild?.className, 'pause')) continue;
     const bar = document.createElement('i');
     bar.className = 'pause';
     strip.appendChild(bar);

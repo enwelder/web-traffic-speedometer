@@ -16,7 +16,7 @@ Request timing is the only measurement a browser allows.
 
 ## A round
 
-Rounds run every 15 s (Fine) or 30 s (Coarse). Three phases run in sequence, as in RTR's
+Rounds run every 20 s (Fine) or 60 s (Coarse). Three phases run in sequence, as in RTR's
 [RMBT](https://github.com/rtr-nettest/rmbt-server/blob/master/RMBT_specification.md):
 
 | phase | runs | budget |
@@ -127,8 +127,8 @@ below the 25 Mb/s ceiling costs proportionally less:
 
 | interval | rounds per hour | worst case per hour |
 |---|---|---|
-| 15 s (Fine, default) | 240 | 1.4 GB |
-| 30 s (Coarse) | 120 | 700 MB |
+| 20 s (Fine, default) | 180 | 1.05 GB |
+| 60 s (Coarse) | 60 | 350 MB |
 
 ## What this cannot measure
 

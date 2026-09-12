@@ -9,7 +9,7 @@ import {readDb} from './netsim.mjs';
 import {ACTIVITY_IDS, ACTIVITIES} from '../js/grade.js';
 import {PROBES} from '../js/probe.js';
 import * as ui from '../js/ui.js';
-import {APP_VERSION} from '../js/session.js';
+import {APP_VERSION, PROFILES, projectedBytes} from '../js/session.js';
 
 const PORT = 8799;
 // ?interval shortens the round; the app honours it on localhost only.
@@ -143,7 +143,7 @@ b.test('the page MUST load with no script error and offer only the fields it can
   await ctx.close();
 });
 
-b.test('the budget projection MUST double WHEN the interval halves', async () => {
+b.test('the budget projection MUST scale with the round count WHEN the interval changes', async () => {
   const {ctx} = await context();
   const page = await ctx.newPage();
   await page.goto(PLAIN, {waitUntil: 'networkidle'});
@@ -153,15 +153,11 @@ b.test('the budget projection MUST double WHEN the interval halves', async () =>
   await page.selectOption('#f-profile', 'fine');
   const fine = await read();
 
-  // A round streams a byte-capped window, so the interval sets the cost and the projection is the
-  // exact worst case.
-  const mb = t => {
-    const [, n, unit] = t.match(/≈ ([\d.]+) (GB|MB)/);
-    return Number(n) * (unit === 'GB' ? 1000 : 1);
-  };
-  assert.ok(Math.abs(mb(fine) - mb(coarse) * 2) < mb(coarse) * 0.1,
-            `halving the interval doubles the bill: ${mb(coarse)} then ${mb(fine)} MB`);
-  assert.match(fine, /per hour/, 'the estimate covers an hour');
+  // A round streams a byte-capped window, so the interval sets the cost and the screen states the
+  // worst case the projection computes, at the precision it prints.
+  const expected = profile => `≈ ${ui.volume(projectedBytes(PROFILES[profile].intervalMs))} per hour`;
+  assert.ok(coarse.includes(expected('coarse')), `${expected('coarse')} missing from: ${coarse}`);
+  assert.ok(fine.includes(expected('fine')), `${expected('fine')} missing from: ${fine}`);
   assert.equal(await page.$eval('#budget', e => e.classList.contains('warn')), true,
                'a run in the hundreds of megabytes is flagged, not just stated');
   await ctx.close();

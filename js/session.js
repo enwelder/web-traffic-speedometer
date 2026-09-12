@@ -29,12 +29,12 @@ const handshakes = (probe, attempts, first) =>
 const cost = p => (WARM_BYTES[p.kind] * (p.samples || 1)) + handshakes(p, p.samples || 1, false) +
                   (p.bodyBytes || 0);
 
-export const APP_VERSION = '3.17.1';
+export const APP_VERSION = '3.18.0';
 
 // The download runs every round, so the interval is what controls data use.
 export const PROFILES = {
-  fine:   {label: 'Fine — every 15 s',   intervalMs: 15000},
-  coarse: {label: 'Coarse — every 30 s', intervalMs: 30000}
+  fine:   {label: 'Fine — every 20 s',   intervalMs: 20000},
+  coarse: {label: 'Coarse — every 60 s', intervalMs: 60000}
 };
 
 // Download settings, copied into every export so each file carries its saturation point.

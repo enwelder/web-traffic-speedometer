@@ -1,6 +1,6 @@
 {
   "name": "network-usability-log",
-  "version": "3.17.1",
+  "version": "3.18.0",
   "description": "Rates whether calls, reading and video work on the current network, round by round, and saves each session as a JSON file. Runs in the browser, no backend.",
   "license": "0BSD",
   "private": false,

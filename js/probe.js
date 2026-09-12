@@ -869,8 +869,9 @@ export async function runRound({signal, download = {}, intervalMs = 5000,
   // idle round trip is the queueing delay under load.
   const down = PROBES.find(p => p.kind === 'download');
   const loaded = [];
-  // Sequential phases: the download gets the interval remainder after the idle phase. Two full 8 s
-  // budgets (a dead IPv6 literal, then the download) exceed a 15 s slot.
+  // Sequential phases: each measures a link the others leave alone. The download takes the
+  // interval remainder after the idle phase, and the upload what the download leaves; a 20 s
+  // interval holds two full 8 s deadlines and still leaves the upload its second.
   const left = intervalMs - ROUND_SLACK_MS - (performance.now() - t0);
   const downOpts = {...opts(down),
                     timeoutMs: Math.max(MIN_TIMEOUT_MS, Math.min(timeoutFor(down, intervalMs), left))};

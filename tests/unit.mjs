@@ -966,17 +966,18 @@ l.test('createRecorder MUST retry held rows and write each seq once WHEN the sto
                    `every round survived the outage: wrote ${seqs.length} of ${produced.length}`);
 });
 
-l.test('projectedBytes MUST scale linearly with the number of rounds and the duration WHEN the interval halves', async () => {
+l.test('projectedBytes MUST scale linearly with the number of rounds and the duration WHEN the interval changes', async () => {
   const {DOWNLOAD_DEFAULTS} = await import('../js/session.js');
-  assert.equal(PROFILES.fine.intervalMs, 15000);
-  assert.equal(PROFILES.coarse.intervalMs, 30000);
+  assert.equal(PROFILES.fine.intervalMs, 20000);
+  assert.equal(PROFILES.coarse.intervalMs, 60000);
 
   const fine = projectedBytes(PROFILES.fine.intervalMs, DOWNLOAD_DEFAULTS);
   const coarse = projectedBytes(PROFILES.coarse.intervalMs, DOWNLOAD_DEFAULTS);
 
-  // The cost is rounds times the byte ceiling, so halving the interval doubles it.
-  assert.ok(Math.abs(fine - coarse * 2) < coarse * 0.02,
-            `twice the rounds costs twice as much: ${(fine / 1e6) | 0} vs ${(coarse / 1e6) | 0} MB`);
+  // The cost is rounds times the byte ceiling, so a third of the interval costs three times as much.
+  const ratio = PROFILES.coarse.intervalMs / PROFILES.fine.intervalMs;
+  assert.ok(Math.abs(fine - coarse * ratio) < coarse * 0.02,
+            `${ratio} times the rounds costs ${ratio} times as much: ${(fine / 1e6) | 0} vs ${(coarse / 1e6) | 0} MB`);
   assert.ok(fine > 60 * DOWNLOAD_DEFAULTS.capBytes,
             'and an hour is priced in hundreds of megabytes, not tens');
 
@@ -1222,6 +1223,14 @@ r.test('hatchesStrip MUST return false WHEN the pause event names an interrupted
   assert.equal(ui.hatchesStrip({type: 'pause', round: 4}), false);
   assert.equal(ui.hatchesStrip({type: 'pause'}), true);
   assert.equal(ui.hatchesStrip({type: 'skip'}), false);
+});
+
+r.test('collapsesHatch MUST return true only for a hatch that follows a hatch WHEN the next bar is drawn', () => {
+  assert.equal(ui.collapsesHatch('pause', 'pause'), true, 'a run of interruptions is one gap');
+  assert.equal(ui.collapsesHatch('green', 'pause'), false, 'the first hatch after a reading is drawn');
+  assert.equal(ui.collapsesHatch('pause', 'green'), false, 'a graded round after a gap is drawn');
+  assert.equal(ui.collapsesHatch('none', 'pause'), false, 'an empty slot is not a hatch');
+  assert.equal(ui.collapsesHatch(undefined, 'pause'), false, 'the first bar on a strip is drawn');
 });
 
 r.test('changes MUST return no line WHEN the row carries interrupted', () => {
