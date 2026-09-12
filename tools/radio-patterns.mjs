@@ -79,8 +79,8 @@ export const PATTERNS = [
     }
   },
   {
-    // The identity source: 3472 lines in a 93-minute session, against 63 `GCI:` lines, and the
-    // CommCenter table reports `Cell ID: <private>`.
+    // The identity source: it carries `cell_id` unredacted, which the CommCenter table reports as
+    // `Cell ID: <private>`.
     name: 'rat_info',
     subsystem: IRAT, category: 'TraceCellular', required: true,
     regex: /RAT Info: (\w+), MCC (\d+), MNC (\d+), TAC (\d+), cell_id (\d+)/,
@@ -97,7 +97,7 @@ export const PATTERNS = [
   },
   {
     // A reselection is read here and nowhere else: consecutive identity reports alternate between
-    // two cells inside one second, which counts 718 changes where 60 happened.
+    // two cells inside one second, so comparing identities overstates reselections.
     name: 'cell_changed',
     subsystem: IRAT, category: 'TraceCellular', required: true,
     regex: /Cell Changed (\d)/,

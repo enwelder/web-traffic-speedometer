@@ -60,7 +60,8 @@ and `phase_up_ms` split it further.
 | cell change | `updateConnectedStateSummary 1, Cell Changed 1` |
 | neighbours | `EARFCN: 6400, PCI: 395, Bandwidth: 50, Neighbor Type: 3` |
 
-Values arrive several times a second while the radio is active.
+Reporting follows radio activity, so the number of samples differs per round. The join records how
+many fell inside each one.
 
 ## Reading it by hand
 
@@ -70,9 +71,9 @@ These are the commands the tool runs, against an unpacked bundle:
 /usr/bin/log show <bundle>/system_logs.logarchive --info --debug --style syslog \
   --predicate 'subsystem == "com.apple.CommCenter" OR subsystem BEGINSWITH "com.apple.WirelessRadioManager"'
 
-date -r $((1757606593))          # a row's t/1000, as local time
+date -r $((T / 1000))            # T is a row's `t`; prints it as local time
 /usr/bin/log show <bundle>/system_logs.logarchive --info --debug --style syslog \
-  --start '2026-09-12 15:23:20' --end '2026-09-12 15:23:40' \
+  --start 'YYYY-MM-DD HH:MM:SS' --end 'YYYY-MM-DD HH:MM:SS' \
   --predicate 'subsystem == "com.apple.CommCenter"'
 ```
 
@@ -81,19 +82,18 @@ Console.app.
 
 ## Limits
 
-"measured" means observed in this repository's own captures, on one device and one iOS build, not a
-figure Apple documents.
+Rows marked *log format* describe lines read on iOS 27.0 (24A435). Apple versions none of them.
 
 | limit | basis | consequence |
 |---|---|---|
-| the log holds a limited window of radio detail | measured: 56.9 min before the sysdiagnose | in that capture 48 of 248 rounds had no radio detail; the busiest streams roll over first, so the window varies |
-| an absent value is written as a sentinel | measured | `32767`, `-32768`, `-3276`, unsigned `4294934528`, and `Band info: 0`, `EARFCN: 0`, `Area code: 0`; read as numbers they produce nonsense |
-| the NR cell has no serving-cell block | measured | it is listed under `NR Neighbor cells`, where `Neighbor Type: 1` is the aggregated leg and the only type carrying a level; its RSRP and RSRQ are unsigned 32-bit, so `4294967221` is −75 dBm |
-| the NR report lags its round | measured | a cell is named only for a round that measured NR signal, and never from a report over 120 s older than the round |
+| the log retains a limited window | not documented, and varies with how much the device logs | a sysdiagnose need not reach back to the session's start, so read `coverage` on each round instead of assuming the session is covered |
+| an absent value is written as a sentinel | log format | `32767`, `-32768`, `-3276`, unsigned `4294934528`, and `Band info: 0`, `EARFCN: 0`, `Area code: 0`; read as numbers they produce nonsense |
+| the NR cell has no serving-cell block | log format | it is listed under `NR Neighbor cells`, where `Neighbor Type: 1` is the aggregated leg and the only type carrying a level; its RSRP and RSRQ are unsigned 32-bit, so `4294967221` is −75 dBm |
+| identity reports alternate between cells inside a second | log format | a cell change is read from `Cell Changed`, since comparing consecutive identities overstates reselections |
+| an NR report need not fall inside its round | tool rule | a cell is named only for a round that measured NR signal, and never from a report over 120 s older than the round |
 | an NR ARFCN does not name one band | 3GPP TS 38.104 table 5.4.2.3-1 | the FR1 ranges overlap, so 646848 is 3702.72 MHz in either n77 or n78; the frequency is exact and the band is a candidate list |
-| the serving cell is reported in bursts | measured | consecutive reports alternate between cells, so a cell change is read from `Cell Changed`, not from comparing identities |
 | it is the phone's own view | by construction | no radio-block utilisation, no scheduling decisions, no other user's experience, so it names a cell without proving what the cell did |
-| line formats are unversioned by Apple | by construction | they were read on iOS 27.0 (24A435), and a required pattern matching nothing fails the run |
+| line formats are unversioned | by construction | a required pattern matching nothing fails the run and names itself |
 | the profile expires after 7 days | Apple: `DurationUntilRemoval` is 604800 s in `Baseband.mobileconfig` | reinstall before a trip, and remove it afterwards under Settings → General → VPN & Device Management, then restart |
 
 ## Before sharing any of it
