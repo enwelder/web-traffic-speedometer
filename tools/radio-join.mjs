@@ -18,6 +18,9 @@ const MIN_SAMPLES = 2;
 const MAX_GAP_MS = 6000;
 // Reports alternate between cells inside a second, so reselections are collapsed to one.
 const CHANGE_DEDUPE_MS = 1000;
+// NR reports arrive further apart than a round lasts, so an older one still names the round's cell.
+// Beyond this it would be inherited across a coverage gap.
+const NR_STALE_MS = 120000;
 
 const q = (xs, p) => {
   const s = [...xs].sort((a, b) => a - b);
@@ -106,6 +109,7 @@ export function enrich(session, events) {
   const of = kind => sorted.filter(e => e.kind === kind);
   const identities = of('identity');
   const configs = of('radio_config');
+  const nrCells = of('nr_cell');
 
   const cellAt = t => {
     const last = identities.filter(e => e.t <= t).at(-1);
@@ -118,6 +122,17 @@ export function enrich(session, events) {
       enb: eci == null ? null : eci >> 8, sector: eci == null ? null : eci & 255,
       pci: config?.pci ?? null, earfcn: config?.earfcn ?? null, band: config?.band ?? null,
       bw_rb: config?.bw_rb ?? null, rat: last.rat, age_ms: t - last.t
+    };
+  };
+
+  // The last report up to the round's end stands. `offset_ms` is negative when it predates the
+  // round.
+  const nrCellIn = (start, end) => {
+    const last = nrCells.filter(e => e.t <= end && e.t >= start - NR_STALE_MS).at(-1);
+    if (!last) return null;
+    return {
+      arfcn: last.arfcn, dl_mhz: last.dl_mhz, bands: last.bands, pci: last.pci,
+      bw_mhz: last.bw_mhz, rsrp: last.rsrp, rsrq: last.rsrq, offset_ms: last.t - start
     };
   };
 
@@ -164,6 +179,9 @@ export function enrich(session, events) {
       coverage: cov.state, first_offset_ms: cov.first_offset_ms,
       last_offset_ms: cov.last_offset_ms, gap_max_ms: cov.gap_max_ms,
       cell: cov.state === 'none' ? null : cellAt(start),
+      // The RAT field lags, reading `kLTE` on rounds that measured NR signal, so identity alone
+      // does not establish an NR leg. A cell is named only where the round measured that signal.
+      nr_cell: cov.state !== 'none' && nr.length ? nrCellIn(start, end) : null,
       cell_changes: changes.length,
       cells: changes.length
         ? [...new Set([cellAt(start)?.gci, ...changes.map(t => cellAt(t)?.gci)].filter(Boolean))]
@@ -241,6 +259,9 @@ export const LIMITATIONS = [
   'Absent values are written as sentinels in the log and are dropped, not read as numbers.',
   'A cell change is read from the log\'s own flag; identity reports alternate within a second.',
   'Cell identity is the phone\'s view: no radio-block utilisation and no scheduling decisions.',
+  'The NR cell is listed among neighbours; the aggregated type is the only one carrying a level.',
+  'An NR cell is named only for a round that measured NR signal, since reports lag their round.',
+  'An NR ARFCN falls in overlapping bands, so `bands` lists candidates and `dl_mhz` is exact.',
   'Position is a phone fix, often a tower estimate, and can precede its round.',
   'The download ceiling makes a saturated round a lower bound.',
   `Line formats are unversioned by Apple and were read on ${BUILD_SEEN}.`

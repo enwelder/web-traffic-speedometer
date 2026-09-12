@@ -143,6 +143,72 @@ r.test('enrich MUST bound a round by the interval WHEN the round never recorded 
   assert.equal(samples[0].radio.lte.n, 2, 'the 20 s interval bounds a round with no round_ms');
 });
 
+const nrCell = (offsetMs, over = '') =>
+  record(byName('nr_cell'),
+         `NRARFCN: 646848, PCI: 119, RSRP: 4294967221, RSRQ: 4294967285, SCS: 0, Is SA: 0, ` +
+         `Bandwidth: 100000000, BWP Support: 0, Neighbor Type: ${over || '1'}, Throughput: 0`,
+         offsetMs);
+const nrSignal = (offsetMs, rsrp) =>
+  record(byName('nr_signal'), `QMI.NAS.2: received New SigInfo snr 24 rsrp ${rsrp}`, offsetMs);
+
+r.test('nr_cell MUST read a signed level WHEN the log prints it as an unsigned integer', () => {
+  const [cell] = collect([nrCell(0)]).events;
+  assert.deepEqual([cell.rsrp, cell.rsrq], [-75, -11]);
+  assert.equal(cell.bw_mhz, 100);
+});
+
+r.test('nr_cell MUST derive the frequency and every band the ARFCN falls in WHEN it is read', () => {
+  const p = byName('nr_cell');
+  const read = arfcn => p.read((`NRARFCN: ${arfcn}, PCI: 1, RSRP: 4294967221, RSRQ: 4294967285, ` +
+    'SCS: 0, Is SA: 0, Bandwidth: 20000000, BWP Support: 0, Neighbor Type: 1').match(p.regex));
+  assert.equal(read(646848).dl_mhz, 3702.72);
+  assert.deepEqual(read(646848).bands, ['n77', 'n78'], 'the FR1 band ranges overlap');
+  assert.equal(read(432030).dl_mhz, 2160.15);
+  assert.deepEqual(read(432030).bands, ['n1', 'n65']);
+});
+
+r.test('nr_cell MUST keep no event WHEN the report is a cell the phone did not aggregate', () => {
+  const c = collect([nrCell(0, '2')]);
+  assert.equal(c.counts.nr_cell, 0);
+  assert.equal(c.events.length, 0);
+});
+
+r.test('nr_cell MUST null the level and keep the identity WHEN the level is a sentinel', () => {
+  const [cell] = collect([record(byName('nr_cell'),
+    'NRARFCN: 646848, PCI: 456, RSRP: 4294934528, RSRQ: 4294934528, SCS: 0, Is SA: 0, ' +
+    'Bandwidth: 100000000, BWP Support: 0, Neighbor Type: 1, Throughput: 0')]).events;
+  assert.deepEqual([cell.rsrp, cell.rsrq], [null, null]);
+  assert.equal(cell.pci, 456);
+});
+
+const lteRound = (...extra) =>
+  collect([identity(0, 16461107), signal(100, -100), signal(1000, -101), ...extra]).events;
+const nrCellOf = events => enrich(session([round(0, 0)]), events).samples[0].radio.nr_cell;
+
+r.test('enrich MUST attach the NR cell beside the LTE cell WHEN the round measured NR signal', () => {
+  const events = lteRound(nrCell(200), nrSignal(300, -80));
+  const {radio} = enrich(session([round(0, 0)]), events).samples[0];
+  assert.equal(radio.cell.gci, '204.8.32004.16461107');
+  assert.deepEqual([radio.nr_cell.arfcn, radio.nr_cell.pci, radio.nr_cell.rsrp,
+                    radio.nr_cell.offset_ms], [646848, 119, -75, 200]);
+});
+
+r.test('enrich MUST name no NR cell WHEN the round measured no NR signal', () => {
+  assert.equal(nrCellOf(lteRound(nrCell(200))), null);
+});
+
+r.test('enrich MUST name no NR cell WHEN no report reaches the round', () => {
+  assert.equal(nrCellOf(lteRound(nrSignal(300, -80))), null);
+});
+
+r.test('enrich MUST name no NR cell WHEN the report predates the round beyond the bound', () => {
+  assert.equal(nrCellOf(lteRound(nrSignal(300, -80), nrCell(-130000))), null);
+});
+
+r.test('enrich MUST name the NR cell WHEN the report predates the round within the bound', () => {
+  assert.equal(nrCellOf(lteRound(nrSignal(300, -80), nrCell(-60000))).offset_ms, -60000);
+});
+
 r.test('withoutDeviceAddresses MUST carry an address as its prefix WHEN a probe reported one', () => {
   const row = withoutDeviceAddresses({probes: {
     down: {egress_ip: '2a02:a420:27a2:805c:3df8:69d4:63d3:56d9'},

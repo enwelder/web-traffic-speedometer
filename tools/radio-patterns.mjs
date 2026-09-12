@@ -29,6 +29,21 @@ export const isSentinel = n => n == null || Number.isNaN(n) || SENTINELS.has(n);
 
 const num = s => (s == null ? null : Number(s));
 
+// NR levels are printed as unsigned 32-bit: -75 arrives as 4294967221.
+const signed32 = n => (n > 2 ** 31 ? n - 2 ** 32 : n);
+
+// 3GPP 38.104 5.4.2.1, FR1. The phone reports `Is SA: 0` and FR1 throughout.
+const nrDlMhz = n => (n < 600000 ? n * 0.005 : 3000 + (n - 600000) * 0.015);
+
+// 38.104 table 5.4.2.3-1. The ranges overlap, so an ARFCN names every band it could belong to and
+// never one; the frequency is exact.
+const NR_BANDS = [['n1', 422000, 434000], ['n3', 361000, 376000], ['n7', 524000, 538000],
+  ['n8', 185000, 192000], ['n20', 158200, 164200], ['n28', 151600, 160600],
+  ['n38', 514000, 524000], ['n40', 460000, 480000], ['n41', 499200, 537999],
+  ['n65', 422000, 440000], ['n75', 286400, 303400], ['n77', 620000, 680000],
+  ['n78', 620000, 653333], ['n79', 693334, 733333]];
+const nrBands = n => NR_BANDS.filter(([, lo, hi]) => n >= lo && n <= hi).map(([b]) => b);
+
 export const PATTERNS = [
   {
     name: 'lte_signal',
@@ -43,6 +58,25 @@ export const PATTERNS = [
     regex: /received New SigInfo snr (-?[\d.]+) rsrp (-?\d+)/,
     example: 'QMI.NAS.2: received New SigInfo snr 24 rsrp -80',
     read: m => ({kind: 'nr', snr: num(m[1]), rsrp: num(m[2])})
+  },
+  {
+    // The NR leg's identity, listed under the LTE serving cell's `NR Neighbor cells` heading; no
+    // `NR Serving Cells` block exists. A report holds exactly one `Neighbor Type: 1` line, the
+    // aggregated cell, and it is the only type ever carrying a level, so the type is matched here
+    // rather than filtered later. `SCS`, `Is SA` and `BWP Support` read 0 on every line.
+    name: 'nr_cell',
+    subsystem: COMMCENTER, category: 'cm.2', required: false,
+    regex: /NRARFCN: (\d+), PCI: (\d+), RSRP: (-?\d+), RSRQ: (-?\d+), SCS: \d+, Is SA: \d+, Bandwidth: (\d+), BWP Support: \d+, Neighbor Type: 1\b/,
+    example: 'NRARFCN: 646848, PCI: 119, RSRP: 4294967221, RSRQ: 4294967285, SCS: 0, Is SA: 0, ' +
+             'Bandwidth: 100000000, BWP Support: 0, Neighbor Type: 1, Throughput: 0',
+    // A bandwidth of zero means the report carries none. PCI 0 is a valid identity.
+    zeroAbsent: ['bw_mhz'],
+    read: m => {
+      const arfcn = num(m[1]);
+      return {kind: 'nr_cell', arfcn, dl_mhz: Math.round(nrDlMhz(arfcn) * 100) / 100,
+              bands: nrBands(arfcn), pci: num(m[2]), rsrp: signed32(num(m[3])),
+              rsrq: signed32(num(m[4])), bw_mhz: num(m[5]) / 1e6};
+    }
   },
   {
     // The identity source: 3472 lines in a 93-minute session, against 63 `GCI:` lines, and the

@@ -31,6 +31,7 @@ a ride over an hour, trigger one part way through as well.
 | signal | `QMI.NAS.2: received LTE SigInfo rssi -80 snr 0 rsrq -14 rsrp -112` |
 | radio state | `evaluateCellularScore: RRC state: 1, RSRP: -103, SNR: 0.4, RSRQ: -16` |
 | serving cell | `Index: 0, MCC: 204, MNC: 08, Band info: 7, Area code: 32004, Cell ID: <private>, EARFCN: 3150, PID: 253` |
+| NR cell | `NRARFCN: 646848, PCI: 119, RSRP: 4294967221, RSRQ: 4294967285, Bandwidth: 100000000, Neighbor Type: 1` |
 | cell id, unredacted | `kCTCellMonitorCellId = 16461107` |
 | cell change | `updateConnectedStateSummary 1, Cell Changed 1` |
 | neighbours | `EARFCN: 6400, PCI: 395, Bandwidth: 50, Neighbor Type: 3` |
@@ -89,6 +90,9 @@ date -r $((1757606593))          # a row's t/1000, as local time
 |---|---|
 | the radio detail reaches back about an hour | the busiest log streams roll over before the quiet ones, so a long ride needs a sysdiagnose part way through |
 | an absent value is a sentinel | `32767`, `-32768`, `-3276`, and serving-cell lines with `Band info: 0`, `EARFCN: 0` or `Area code: 0`; read as numbers they produce nonsense |
+| the NR cell has no serving-cell block | it is listed under `NR Neighbor cells`, where `Neighbor Type: 1` is the aggregated leg and the only type carrying a level; its RSRP and RSRQ are printed as unsigned 32-bit, so `4294967221` is −75 dBm |
+| the NR report lags its round | a cell is named only for a round that measured NR signal, and never from a report over 120 s older than the round, so a report is never inherited across a gap |
+| an NR ARFCN does not name one band | the FR1 ranges overlap, so 646848 is 3702.72 MHz in either n77 or n78; the frequency is exact and the band is a candidate list |
 | the serving cell is reported in bursts | consecutive reports alternate between cells, so a cell change is read from `Cell Changed`, not from comparing identities |
 | it is the phone's own view | no radio-block utilisation, no scheduling decisions, no other user's experience, so it names a cell without proving what the cell did |
 | the profile expires after 7 days | `DurationUntilRemoval` is 604800 seconds; reinstall before a trip, and remove it afterwards under Settings → General → VPN & Device Management, then restart |
