@@ -2,9 +2,14 @@
 // allowed to claim. Log records here are written by hand, since a real archive carries a home
 // address and the phone's identifiers.
 import assert from 'node:assert';
+import {execFileSync} from 'node:child_process';
+import {existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
 import {suite} from './helpers.mjs';
 import {PATTERNS, REQUIRED, predicate} from '../tools/radio-patterns.mjs';
-import {createCollector, enrich, prefix64, withoutDeviceAddresses} from '../tools/radio-join.mjs';
+import {createCollector, enrich, extractSysdiagnose, isSysdiagnoseArchive, prefix64,
+        withoutDeviceAddresses} from '../tools/radio-join.mjs';
 
 const r = suite('radio');
 
@@ -218,6 +223,43 @@ r.test('withoutDeviceAddresses MUST carry an address as its prefix WHEN a probe 
   assert.deepEqual(row.probes.udp.public_ips, ['2a02:a420:27a2:805c::/64', '77.63.125.222'],
                    'a public IPv4 address has no device half and is carried whole');
   assert.equal(prefix64(null), null);
+});
+
+r.test('isSysdiagnoseArchive MUST hold only for a packed archive WHEN a path is given', () => {
+  assert.equal(isSysdiagnoseArchive('sysdiagnose_2026.09.12_15-50-12+0200_iPhone.tar.gz'), true);
+  assert.equal(isSysdiagnoseArchive('/a/b/system_logs.logarchive'), false);
+});
+
+r.test('extractSysdiagnose MUST unpack the log bundle alone and remove it WHEN cleanup runs', () => {
+  const src = mkdtempSync(join(tmpdir(), 'nulog-fixture-'));
+  const name = 'sysdiagnose_2026.09.12_15-50-12+0200_iPhone-OS_iPhone_24A435';
+  mkdirSync(join(src, name, 'system_logs.logarchive', 'Persist'), {recursive: true});
+  mkdirSync(join(src, name, 'logs', 'SystemVersion'), {recursive: true});
+  mkdirSync(join(src, name, 'WiFi'), {recursive: true});
+  writeFileSync(join(src, name, 'system_logs.logarchive', 'Persist', '0001.tracev3'), 'trace');
+  writeFileSync(join(src, name, 'logs', 'SystemVersion', 'SystemVersion.plist'), 'plist');
+  writeFileSync(join(src, name, 'WiFi', 'wifi.log'), 'not part of the join');
+  const archive = join(src, `${name}.tar.gz`);
+  execFileSync('tar', ['czf', archive, '-C', src, name]);
+
+  const {archive: bundle, cleanup} = extractSysdiagnose(archive);
+  assert.ok(existsSync(join(bundle, 'Persist', '0001.tracev3')), 'the log bundle is unpacked');
+  assert.ok(existsSync(join(bundle, '..', 'logs', 'SystemVersion', 'SystemVersion.plist')),
+            'the build plist is unpacked beside it');
+  assert.equal(existsSync(join(bundle, '..', 'WiFi')), false, 'nothing else is unpacked');
+  cleanup();
+  assert.equal(existsSync(bundle), false, 'the unpacked copy is removed');
+  rmSync(src, {recursive: true, force: true});
+});
+
+r.test('extractSysdiagnose MUST fail and leave nothing WHEN the archive holds no log bundle', () => {
+  const src = mkdtempSync(join(tmpdir(), 'nulog-fixture-'));
+  mkdirSync(join(src, 'other'), {recursive: true});
+  writeFileSync(join(src, 'other', 'notes.txt'), 'no log bundle here');
+  const archive = join(src, 'empty.tar.gz');
+  execFileSync('tar', ['czf', archive, '-C', src, 'other']);
+  assert.throws(() => extractSysdiagnose(archive), /system_logs\.logarchive/);
+  rmSync(src, {recursive: true, force: true});
 });
 
 await r.run();

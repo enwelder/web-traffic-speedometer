@@ -1,12 +1,15 @@
 // Joins an exported session to the phone's baseband log, writing one enriched file: every round
 // gains the serving cell and the signal measured while it ran.
 //
-//   node tools/radio-join.mjs <session.json> <path/to/system_logs.logarchive> [--out <file>]
+//   node tools/radio-join.mjs <session.json> <sysdiagnose.tar.gz> [--out <file>]
 //
-// Both sides are stamped by the same phone clock, so no offset is applied. Needs macOS: it reads
-// the archive through `/usr/bin/log`. The extract is personal data and never reaches disk.
+// A packed sysdiagnose is unpacked to a temporary directory and removed again; an unpacked
+// `system_logs.logarchive` is read where it lies. Both sides are stamped by the same phone clock,
+// so no offset is applied. Needs macOS: it reads the archive through `/usr/bin/log`. The extract is
+// personal data and never reaches disk.
 import {execFileSync, spawn} from 'node:child_process';
-import {readFileSync, writeFileSync, existsSync} from 'node:fs';
+import {readFileSync, writeFileSync, existsSync, mkdtempSync, readdirSync, rmSync} from 'node:fs';
+import {tmpdir} from 'node:os';
 import {dirname, basename, join} from 'node:path';
 import {createInterface} from 'node:readline';
 import {BUILD_SEEN, IDENTIFIERS, PATTERNS, REQUIRED, isSentinel, predicate} from './radio-patterns.mjs';
@@ -267,10 +270,10 @@ export const LIMITATIONS = [
   `Line formats are unversioned by Apple and were read on ${BUILD_SEEN}.`
 ];
 
-export function buildOutput(session, collector, archivePath) {
+export function buildOutput(session, collector, archivePath, sourcePath = archivePath) {
   const joined = enrich(session, collector.events);
   const rows = joined.samples;
-  const taken = sysdiagnoseTaken(archivePath);
+  const taken = sysdiagnoseTaken(sourcePath);
   const stopped = session.session?.stopped;
 
   return {
@@ -294,7 +297,7 @@ export function buildOutput(session, collector, archivePath) {
         sysdiagnose: {
           taken: taken ? iso(taken) : null,
           lag_after_stop_s: taken && stopped ? Math.round((taken - stopped) / 1000) : null,
-          archive: basename(archivePath)
+          archive: basename(sourcePath)
         },
         ...osVersion(archivePath),
         // The stretch of the ride the log still held. A count of covered rounds is left to the
@@ -317,6 +320,35 @@ export function buildOutput(session, collector, archivePath) {
   };
 }
 
+export const isSysdiagnoseArchive = path => /\.(tar\.gz|tgz)$/i.test(path);
+
+// Everything the join reads: the log bundle and the plist naming the build.
+const WANTED = /\/(system_logs\.logarchive|logs\/SystemVersion)\//;
+
+// Unpacks those two alone from a sysdiagnose, into a directory the caller removes. Members are
+// named exactly rather than by pattern, since tar implementations differ on wildcards.
+export function extractSysdiagnose(archivePath) {
+  const dir = mkdtempSync(join(tmpdir(), 'nulog-sysdiagnose-'));
+  const remove = () => rmSync(dir, {recursive: true, force: true});
+  try {
+    const listing = execFileSync('tar', ['tzf', archivePath],
+                                 {encoding: 'utf8', maxBuffer: 1 << 28});
+    const members = listing.split('\n').filter(name => WANTED.test(name));
+    if (!members.length) throw new Error('holds no system_logs.logarchive');
+    const list = join(dir, 'members.txt');
+    writeFileSync(list, `${members.join('\n')}\n`);
+    execFileSync('tar', ['xzf', archivePath, '-C', dir, '-T', list],
+                 {stdio: ['ignore', 'ignore', 'pipe']});
+    const top = readdirSync(dir).map(name => join(dir, name))
+      .find(path => existsSync(join(path, 'system_logs.logarchive')));
+    if (!top) throw new Error('holds no system_logs.logarchive');
+    return {archive: join(top, 'system_logs.logarchive'), cleanup: remove};
+  } catch (e) {
+    remove();
+    throw new Error(`${basename(archivePath)}: ${e.message}`, {cause: e});
+  }
+}
+
 async function readArchive(archivePath, from, to, collector) {
   const argv = ['show', archivePath, '--info', '--debug', '--style', 'ndjson',
                 '--start', localStamp(from), '--end', localStamp(to), '--predicate', predicate()];
@@ -332,8 +364,8 @@ async function main() {
   const args = process.argv.slice(2);
   const [sessionPath, archivePath] = args.filter(a => !a.startsWith('--'));
   if (!sessionPath || !archivePath) {
-    console.error('usage: node tools/radio-join.mjs <session.json> <system_logs.logarchive> ' +
-                  '[--out <file>]');
+    console.error('usage: node tools/radio-join.mjs <session.json> ' +
+                  '<sysdiagnose.tar.gz|system_logs.logarchive> [--out <file>]');
     process.exit(2);
   }
   const flag = name => {
@@ -353,32 +385,40 @@ async function main() {
   const to = rows.at(-1).t + (rows.at(-1).round_ms ?? intervalMs) + PAD_MS;
 
   const collector = createCollector();
+  let bundle = archivePath;
+  let cleanup = null;
+  // The exit code is set rather than taken, so the unpacked copy is removed on every path.
   try {
-    await readArchive(archivePath, from, to, collector);
+    if (isSysdiagnoseArchive(archivePath)) {
+      console.error(`unpacking ${basename(archivePath)} …`);
+      ({archive: bundle, cleanup} = extractSysdiagnose(archivePath));
+    }
+    await readArchive(bundle, from, to, collector);
+
+    const missing = collector.missingRequired();
+    if (missing.length) {
+      throw new Error(`no line matched: ${missing.join(', ')}\n` +
+        `the patterns were read on ${BUILD_SEEN}; this log is ` +
+        `${JSON.stringify(osVersion(bundle))}\nfix tools/radio-patterns.mjs, do not ignore this`);
+    }
+
+    const out = buildOutput(session, collector, bundle, archivePath);
+    const outPath = flag('out') ||
+      join(dirname(sessionPath), `${basename(sessionPath, '.json')}-radio.json`);
+    writeFileSync(outPath, JSON.stringify(out, null, 1));
+
+    const covered = out.samples.filter(r => r.radio.coverage !== 'none').length;
+    console.log(`${outPath}: ${out.samples.length} rounds, ${covered} with radio coverage`);
+    console.log(`  parsed ${collector.state.lines_read} records; ` +
+      Object.entries(collector.counts).map(([k, v]) => `${k} ${v}`).join(', '));
+    console.log(`  dropped ${collector.state.identifiers_dropped} records carrying identifiers, ` +
+      `${collector.state.sentinels_dropped} sentinel values`);
   } catch (e) {
     console.error(e.message);
-    process.exit(1);
+    process.exitCode = 1;
+  } finally {
+    if (cleanup) cleanup();
   }
-
-  const missing = collector.missingRequired();
-  if (missing.length) {
-    console.error(`no line matched: ${missing.join(', ')}\n` +
-      `the patterns were read on ${BUILD_SEEN}; this log is ` +
-      `${JSON.stringify(osVersion(archivePath))}\nfix tools/radio-patterns.mjs, do not ignore this`);
-    process.exit(1);
-  }
-
-  const out = buildOutput(session, collector, archivePath);
-  const outPath = flag('out') ||
-    join(dirname(sessionPath), `${basename(sessionPath, '.json')}-radio.json`);
-  writeFileSync(outPath, JSON.stringify(out, null, 1));
-
-  const covered = out.samples.filter(r => r.radio.coverage !== 'none').length;
-  console.log(`${outPath}: ${out.samples.length} rounds, ${covered} with radio coverage`);
-  console.log(`  parsed ${collector.state.lines_read} records; ` +
-    Object.entries(collector.counts).map(([k, v]) => `${k} ${v}`).join(', '));
-  console.log(`  dropped ${collector.state.identifiers_dropped} records carrying identifiers, ` +
-    `${collector.state.sentinels_dropped} sentinel values`);
 }
 
 if (process.argv[1] && process.argv[1].endsWith('radio-join.mjs')) await main();
