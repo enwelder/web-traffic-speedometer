@@ -1,13 +1,14 @@
-# Enriching a session with baseband data on iOS
+# Enriching a session with iPhone baseband data
 
-An exported session says when a path degraded. The phone's baseband log says which cell it was on
-and at what signal. Apple's Telephony Logging profile makes that log readable, with no jailbreak and
-no private API: the entitlements that reach these metrics are issued by Apple and checked by the
-telephony daemon, so a self-signed build gets nothing.
+A session says when a path degraded. It cannot say which cell carried it, because no browser exposes
+cell identity or signal. An iPhone's baseband log carries both, and Apple's Telephony Logging
+profile makes that log readable with no jailbreak and no private API: the entitlements reaching
+these metrics are issued by Apple and checked by the telephony daemon, so a self-signed build gets
+nothing.
 
-Needed: the iPhone, a Mac, a cable.
+This procedure is iPhone-only. Needed: the iPhone and a Mac.
 
-## Order of operations
+## Capturing
 
 1. Install `Baseband.mobileconfig` from Apple's
    [Profiles and Logs](https://developer.apple.com/bug-reporting/profiles-and-logs/) page. Open it
@@ -21,8 +22,31 @@ Needed: the iPhone, a Mac, a cable.
    `sysdiagnose_…` → share → AirDrop to the Mac.
 7. Export the session from the app.
 
-A sysdiagnose saves what the phone still holds, so nothing starts or stops in step with the app. On
-a ride over an hour, trigger one part way through as well.
+The phone keeps a limited window of radio detail, so a sysdiagnose taken after the session may not
+reach back to its start. For a session longer than that window, trigger one during the session as
+well and join each in turn.
+
+## Joining
+
+```
+node tools/radio-join.mjs <session.json> <sysdiagnose.tar.gz>
+```
+
+The archive is taken as AirDropped. Only `system_logs.logarchive` and the build plist are unpacked,
+into a temporary directory that is removed when the run ends, including when it fails. An already
+unpacked `system_logs.logarchive` is accepted in place of the archive and is read where it lies.
+
+Writes `<session>-radio.json`: the session with a `radio` object on every round carrying the serving
+cell, the NR cell, the signal samples taken while it ran, the RAT, the RRC state, cell changes,
+stall detections and PDN events, plus a `session.radio` header naming the PLMN, the window, the iOS
+build and what each pattern matched. Device identifiers never reach it, and addresses are carried as
+a `/64`.
+
+A required pattern that matches nothing fails the run and names itself.
+
+Both sides carry the same clock: a row's `t` is `Date.now()` on the phone, and the log lines carry
+that phone's system time. A round covers `t` to `t + round_ms`, and `phase_idle_ms`, `phase_down_ms`
+and `phase_up_ms` split it further.
 
 ## What the log carries
 
@@ -38,68 +62,43 @@ a ride over an hour, trigger one part way through as well.
 
 Values arrive several times a second while the radio is active.
 
-## Reading it
+## Reading it by hand
 
-Pull the log from the connected phone:
-
-```
-/usr/bin/log collect --device --last 30m --output ~/Desktop/trip.logarchive
-```
-
-`log stream` takes no device, so live viewing runs through Console.app. A sysdiagnose holds the same
-material as `system_logs.logarchive` inside the archive.
-
-Extract the cellular lines:
+These are the commands the tool runs, against an unpacked bundle:
 
 ```
-/usr/bin/log show ~/Desktop/trip.logarchive --info --debug --style syslog \
-  --predicate 'subsystem == "com.apple.CommCenter" OR subsystem == "com.apple.telephony.bb" OR subsystem BEGINSWITH "com.apple.WirelessRadioManager"' \
-  > ~/Desktop/trip-cell.txt
-```
+/usr/bin/log show <bundle>/system_logs.logarchive --info --debug --style syslog \
+  --predicate 'subsystem == "com.apple.CommCenter" OR subsystem BEGINSWITH "com.apple.WirelessRadioManager"'
 
-## Joining it to the session
-
-```
-node tools/radio-join.mjs <session.json> <path/to/system_logs.logarchive>
-```
-
-Writes `<session>-radio.json`: the session with a `radio` object on every round carrying the serving
-cell, the signal samples taken while it ran, the RAT, the RRC state, cell changes, stall detections
-and PDN events, plus a `session.radio` header naming the PLMN, the window, the iOS build and what
-each pattern matched. Device identifiers never reach it, and addresses are carried as a `/64`.
-
-A required pattern that matches nothing fails the run and names itself: the line formats are
-Apple's, unversioned, and read on one build.
-
-The commands below are what the tool runs, for reading the log by hand.
-
-Both sides carry the same clock: a row's `t` is `Date.now()` on the phone, and the log lines carry
-that phone's system time. A round covers `t` to `t + round_ms`, and `phase_idle_ms`,
-`phase_down_ms` and `phase_up_ms` split it further.
-
-```
 date -r $((1757606593))          # a row's t/1000, as local time
-/usr/bin/log show ~/Desktop/trip.logarchive --info --debug --style syslog \
+/usr/bin/log show <bundle>/system_logs.logarchive --info --debug --style syslog \
   --start '2026-09-12 15:23:20' --end '2026-09-12 15:23:40' \
   --predicate 'subsystem == "com.apple.CommCenter"'
 ```
 
+`log stream` takes no device argument, so live viewing from a connected phone runs through
+Console.app.
+
 ## Limits
 
-| limit | consequence |
-|---|---|
-| the radio detail reaches back about an hour | the busiest log streams roll over before the quiet ones, so a long ride needs a sysdiagnose part way through |
-| an absent value is a sentinel | `32767`, `-32768`, `-3276`, and serving-cell lines with `Band info: 0`, `EARFCN: 0` or `Area code: 0`; read as numbers they produce nonsense |
-| the NR cell has no serving-cell block | it is listed under `NR Neighbor cells`, where `Neighbor Type: 1` is the aggregated leg and the only type carrying a level; its RSRP and RSRQ are printed as unsigned 32-bit, so `4294967221` is −75 dBm |
-| the NR report lags its round | a cell is named only for a round that measured NR signal, and never from a report over 120 s older than the round, so a report is never inherited across a gap |
-| an NR ARFCN does not name one band | the FR1 ranges overlap, so 646848 is 3702.72 MHz in either n77 or n78; the frequency is exact and the band is a candidate list |
-| the serving cell is reported in bursts | consecutive reports alternate between cells, so a cell change is read from `Cell Changed`, not from comparing identities |
-| it is the phone's own view | no radio-block utilisation, no scheduling decisions, no other user's experience, so it names a cell without proving what the cell did |
-| the profile expires after 7 days | `DurationUntilRemoval` is 604800 seconds; reinstall before a trip, and remove it afterwards under Settings → General → VPN & Device Management, then restart |
+"measured" means observed in this repository's own captures, on one device and one iOS build, not a
+figure Apple documents.
+
+| limit | basis | consequence |
+|---|---|---|
+| the log holds a limited window of radio detail | measured: 56.9 min before the sysdiagnose | in that capture 48 of 248 rounds had no radio detail; the busiest streams roll over first, so the window varies |
+| an absent value is written as a sentinel | measured | `32767`, `-32768`, `-3276`, unsigned `4294934528`, and `Band info: 0`, `EARFCN: 0`, `Area code: 0`; read as numbers they produce nonsense |
+| the NR cell has no serving-cell block | measured | it is listed under `NR Neighbor cells`, where `Neighbor Type: 1` is the aggregated leg and the only type carrying a level; its RSRP and RSRQ are unsigned 32-bit, so `4294967221` is −75 dBm |
+| the NR report lags its round | measured | a cell is named only for a round that measured NR signal, and never from a report over 120 s older than the round |
+| an NR ARFCN does not name one band | 3GPP TS 38.104 table 5.4.2.3-1 | the FR1 ranges overlap, so 646848 is 3702.72 MHz in either n77 or n78; the frequency is exact and the band is a candidate list |
+| the serving cell is reported in bursts | measured | consecutive reports alternate between cells, so a cell change is read from `Cell Changed`, not from comparing identities |
+| it is the phone's own view | by construction | no radio-block utilisation, no scheduling decisions, no other user's experience, so it names a cell without proving what the cell did |
+| line formats are unversioned by Apple | by construction | they were read on iOS 27.0 (24A435), and a required pattern matching nothing fails the run |
+| the profile expires after 7 days | Apple: `DurationUntilRemoval` is 604800 s in `Baseband.mobileconfig` | reinstall before a trip, and remove it afterwards under Settings → General → VPN & Device Management, then restart |
 
 ## Before sharing any of it
 
 The profile's consent text states the files may contain the contents of SMS messages, device
 identifiers and names, the IP addresses and recent location history of the device, phone numbers,
-the Apple Accounts signed in, and logs of calls and audio routes. Send the cellular lines extracted
-for the window in question, never the archive.
+the Apple Accounts signed in, and logs of calls and audio routes. Send the joined output or the
+cellular lines for the window in question, never the archive.
