@@ -164,6 +164,7 @@ service worker caches the shell so the page loads on a network too degraded to f
 | `npm test` | every suite; `test:unit`, `test:security`, `test:browser` select one. `tests/replay.mjs` runs four anonymised recorded journeys through grading and the rollup |
 | `NULOG_ENGINES=chromium,webkit,firefox npm test` | browser suites run once per engine (Chromium for Android, WebKit for iOS); each needs `npx playwright install <engine>` |
 | `node tools/anonymise.mjs <recording> <fixture>` | strips coordinates, addresses and user agents; shifts timestamps, keeps intervals and measurements |
+| `node tools/radio-join.mjs <session.json> <logarchive>` | attaches the serving cell and the signal from the phone's own baseband log to every round, on iOS; [docs/radio-evidence.md](docs/radio-evidence.md) states how to capture one |
 | `node tools/profile-from-log.mjs <session.json> <name>`, `node tools/simulate.mjs --profile <name> [--headed]` | derives a simulation profile from a recorded stretch and runs the app under it (WebKit only); `tests/simulation.mjs` asserts the grades a user would read |
 
 Machine-local recordings go in `.dev/`, ignored as a directory: a recording contains a home

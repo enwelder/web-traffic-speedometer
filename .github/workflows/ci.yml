@@ -28,6 +28,8 @@ jobs:
         run: node tests/run.mjs grading replay regressions
       - name: boundary values, network events and rollups
         run: node tests/run.mjs edges
+      - name: the radio join over hand-written log records
+        run: node tests/run.mjs radio
       # --with-deps runs apt-get update, and the runner image ships third-party repositories
       # this project does not need. Google's has been serving an index whose hash does not
       # match its own Release file, which fails the whole update and so the whole step. Drop
