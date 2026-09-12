@@ -50,10 +50,8 @@ main{flex:1;overflow-y:auto;overscroll-behavior:contain;-webkit-overflow-scrolli
 .probe.orange,.strip i.orange{--grade:var(--poor)}
 .probe.red,.strip i.red{--grade:var(--bad)}
 
-/* One column until there is room for two: two half-width cells on a 390px phone leave the
-   name about 30px, too narrow for its label. */
-.probes{display:grid;grid-template-columns:1fr;gap:4px 8px}
-@media (min-width:560px){.probes{grid-template-columns:repeat(2,1fr)}}
+/* Two cells per row at every width, which keeps the log on screen. */
+.probes{display:grid;grid-template-columns:repeat(2,1fr);gap:4px 8px}
 /* Fixed columns: the numbers line up on their right edge, so a column of rows reads down as
    well as across. The last column holds "ms", the only unit rendered on its own; a rate
    carries its unit inside the value and takes that column too. */
@@ -78,6 +76,15 @@ main{flex:1;overflow-y:auto;overscroll-behavior:contain;-webkit-overflow-scrolli
 .probe.orange .value{color:var(--poor)}
 .probe .explain{grid-column:1/-1;font-size:11.5px;color:var(--text);line-height:1.35;
                 margin-top:4px}
+/* Half of a 390px phone leaves about 60px beside the number, too narrow for a label: the name
+   takes its own line. */
+@media (max-width:559px){
+  .probe{grid-template-columns:1fr auto;row-gap:1px}
+  .probe .name{grid-column:1/-1;white-space:normal}
+  .probe .value{grid-column:1/2}
+  .probe.words .value,.probe:has(.unit:empty) .value{grid-column:1/-1}
+  .probe .unit{grid-column:2/3}
+}
 
 .intro{font-size:13.5px;line-height:1.45;margin:0}
 .hint{font-size:12.5px;color:var(--muted);margin:-4px 0 0}

@@ -5,6 +5,7 @@ import {readFileSync} from 'node:fs';
 import {spawn} from 'node:child_process';
 import {chromium, webkit, firefox} from 'playwright';
 import {suite} from './helpers.mjs';
+import {readDb} from './netsim.mjs';
 import {ACTIVITY_IDS, ACTIVITIES} from '../js/grade.js';
 import {PROBES} from '../js/probe.js';
 import * as ui from '../js/ui.js';
@@ -104,18 +105,6 @@ async function context(extra = {}) {
   return {ctx, state};
 }
 
-const readDb = page => page.evaluate(async () => {
-  const db = await new Promise((res, rej) => {
-    const q = indexedDB.open('nulog');
-    q.onsuccess = () => res(q.result); q.onerror = () => rej(q.error);
-  });
-  const read = s => new Promise((res, rej) => {
-    const q = db.transaction(s).objectStore(s).getAll();
-    q.onsuccess = () => res(q.result); q.onerror = () => rej(q.error);
-  });
-  return {sessions: await read('sessions'), samples: await read('samples'), events: await read('events')};
-});
-
 const b = suite(`browser (${engineName})`);
 
 b.test('the readout MUST label the strips from ACTIVITIES and show one row per probe pair WHEN the page loads', async () => {
@@ -212,8 +201,8 @@ b.test('the main button MUST read New session after Stop and restore the setup s
   await ctx.close();
 });
 
-// The app is backgrounded during a session on purpose. iOS then freezes it, which the recorder
-// suites cover through the timer gap; here the page reports hidden and visible as a browser does.
+// Backgrounding during a session is expected use. The page reports hidden and visible here; the
+// timer-gap path iOS takes is covered in the recorder suites.
 b.test('a session MUST keep recording with a contiguous seq and mark the hidden rounds WHEN the page is backgrounded and returns', async () => {
   const {ctx} = await context();
   await ctx.addInitScript(`
@@ -239,8 +228,10 @@ b.test('a session MUST keep recording with a contiguous seq and mark the hidden 
   const measured = db.samples.filter(r => !r.interrupted).sort((a, b) => a.seq - b.seq);
   assert.ok(db.samples.length > before, 'rounds continue while the page is hidden');
   assert.deepEqual(seqs, seqs.map((_, i) => i), 'seq stays contiguous across the absence');
-  assert.ok(measured.some(r => r.visible === false), 'a round taken while hidden is marked');
-  assert.equal(measured.at(-1).visible, true, 'and the last round ran in the foreground');
+  const lastHidden = measured.filter(r => r.visible === false).at(-1);
+  assert.ok(lastHidden, 'a round taken while hidden is marked');
+  assert.ok(measured.some(r => r.visible && r.seq > lastHidden.seq),
+            `a round after the return ran in the foreground: ${JSON.stringify(measured.map(r => r.visible))}`);
   const pages = db.events.filter(e => e.type === 'page').map(e => e.text);
   assert.ok(pages.includes('hidden') && pages.includes('visible'), `page events: ${pages.join(',')}`);
   await ctx.close();

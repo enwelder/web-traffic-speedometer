@@ -1,10 +1,10 @@
 {
   "name": "good-5g",
-  "note": "A working mobile link: round trips under 50 ms and a link faster than the tool can measure, so the download reports its ceiling and saturates.",
+  "note": "A working mobile link: round trips under 50 ms and a link far faster than the tool can measure, so the download reports its ceiling and saturates.",
   "hosts": {
     "default": {"latencyMs": 25, "jitterMs": 8},
     "dns": {"latencyMs": 60, "jitterMs": 15},
-    "down": {"latencyMs": 20, "rateBps": 60000000},
+    "down": {"latencyMs": 20, "rateBps": 120000000},
     "up": {"latencyMs": 30}
   },
   "udp": {"latencyMs": 25}

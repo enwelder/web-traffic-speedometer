@@ -14,7 +14,9 @@ if (!file || !name) {
 }
 const flag = key => {
   const i = rest.indexOf(`--${key}`);
-  return i === -1 ? null : rest[i + 1];
+  const value = i === -1 ? null : rest[i + 1];
+  // A missing value takes the next flag as its own; both windows are clock times.
+  return value && !value.startsWith('--') ? value : null;
 };
 
 const median = xs => {

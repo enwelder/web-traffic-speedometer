@@ -376,12 +376,12 @@ function interruptible() {
   return {grants, inRound, started: () => started(), restore};
 }
 
-// A release is the system reclaiming the screen, typically in Low Power Mode. Two rounds inside the
-// Delft tunnel were discarded for it while the page kept running on schedule.
+// A release is the system reclaiming the screen, typically in Low Power Mode; the page keeps
+// running, and only a timer gap proves it stopped.
 r.test('createRecorder MUST grade the round and record wake_lock_lost WHEN the wake lock is released without a timer gap', async () => {
   stubStun();
   const platform = interruptible();
-  // Short samples, so the round completes well inside the wait: the release no longer cuts it off.
+  // Short samples, so the round completes inside the wait.
   globalThis.fetch = async () => { platform.started(); await sleep(20); return okResponse(); };
   try {
     const store = fakeStore();

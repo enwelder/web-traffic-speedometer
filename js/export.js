@@ -22,9 +22,9 @@ const NOT_THE_LINK = new Set(['resting', 'short', 'no_budget', 'abort', 'error']
 export const countsAsFailure = r =>
   !!r && r.ok === false && !r.expected && !r.blocked && !r.unused && !NOT_THE_LINK.has(r.fail);
 
-// Spread within one round, excluding the first sample: that one pays the radio wake-up and the
-// connection setup, and is the worst of its burst in 70-86% of rounds on the TCP probes. Counted
-// only where every sample answered, so a time to fail cannot stand in for a round trip.
+// Spread within one round, first sample excluded: it pays the radio wake-up and the connection
+// setup, and is the largest of its burst in 70-86% of rounds on the TCP probes. Only rounds where
+// every sample answered count, so a time to fail never enters the spread.
 function roundSpread(r) {
   const all = r.ms_samples;
   if (!all || r.samples_ok !== all.length) return null;
@@ -85,9 +85,8 @@ function gradeTally(ran, keys, field) {
   return grades;
 }
 
-// 15: a round is interrupted by a confirmed suspension or by Stop, and carries `wake_lock_lost`;
-// the summary carries the per-probe sample spread; a renamed session names its own export file.
-const FORMAT_VERSION = 15;
+// 16: the summary counts the rounds that lost the wake lock.
+const FORMAT_VERSION = 16;
 
 // A row carrying `skipped` comes from a file written before format 11, where a slot that could
 // not start was a row.
@@ -122,6 +121,8 @@ export function summarise(samples, events = []) {
     // Rounds with at least one failure outside a known-absent path.
     degraded: ran.filter(s => PROBES.some(p => countsAsFailure(s.probes[p.id]))).length,
     wake_lock_held: ran.filter(s => s.wake_lock).length,
+    // Rounds that saw a wake-lock release. They are graded, and counted here.
+    wake_lock_lost: ran.filter(s => s.wake_lock_lost).length,
     fixes_gps: fixed.length,
     fixes_coarse: ran.filter(s => s.accuracy_class === 'coarse').length,
     first_t: samples[0]?.t ?? null,
@@ -156,7 +157,7 @@ function localStamp(t) {
 export function filename(session) {
   // An unreadable start time falls back to the current time, which keeps NaN out of the filename.
   const started = Number.isFinite(session.started) ? session.started : Date.now();
-  // A renamed session carries what the run was; the generated name only repeats operator and stamp.
+  // A renamed session names its file; the generated name repeats the operator and the stamp.
   const label = session.renamed ? session.name : session.operator || session.connection;
   return `nulog-${localStamp(started)}-${slug(label)}.json`;
 }

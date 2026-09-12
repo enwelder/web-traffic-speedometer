@@ -1,20 +1,18 @@
 // The app driven against simulated network conditions. Each case states the conditions and the
-// verdict a user would read off the screen, so grades are asserted rather than milliseconds.
+// verdict a user would read off the screen, so grades are asserted and not milliseconds.
 //
-// WebKit only: a rate needs bytes paced over the measurement window, which reaches the page through
-// a rewritten request to a local origin. Chromium refuses that rewrite. WebKit is also the engine
-// the recordings under study come from.
+// WebKit only: a rate needs bytes paced across the measurement window, which reaches the page
+// through a rewritten request to a local origin, and Chromium refuses that rewrite. WebKit is the
+// engine the recordings under study come from.
+//
+// Run lengths come from measurement: with every TCP path stalled the preflight costs 5.5 s and a
+// round 2.5 s.
 import assert from 'node:assert';
 import {spawn} from 'node:child_process';
+import {connect} from 'node:net';
 import {webkit} from 'playwright';
 import {suite} from './helpers.mjs';
 import {simContext, startCell, loadProfile, readDb} from './netsim.mjs';
-
-const engineName = process.env.NULOG_ENGINE || 'webkit';
-if (engineName !== 'webkit') {
-  console.log(`  ..    simulation runs on webkit; NULOG_ENGINE=${engineName} skipped`);
-  process.exit(0);
-}
 
 const PORT = 8801;
 const base = interval => `http://127.0.0.1:${PORT}/?interval=${interval}`;
@@ -23,7 +21,21 @@ const root = new URL('..', import.meta.url).pathname;
 const server = spawn('python3', ['-m', 'http.server', String(PORT), '--bind', '127.0.0.1'],
                      {cwd: root, stdio: 'ignore'});
 process.on('exit', () => { try { server.kill(); } catch { /* already gone */ } });
-await new Promise(r => setTimeout(r, 800));
+
+// The port answers before the first page load, so a slow start cannot fail a case.
+await new Promise((resolve, reject) => {
+  const deadline = Date.now() + 10000;
+  const attempt = () => {
+    const socket = connect(PORT, '127.0.0.1');
+    socket.on('connect', () => { socket.end(); resolve(); });
+    socket.on('error', () => {
+      socket.destroy();
+      if (Date.now() > deadline) return reject(new Error(`no server on ${PORT}`));
+      setTimeout(attempt, 100);
+    });
+  };
+  attempt();
+});
 
 const browser = await (async () => {
   try {
@@ -39,7 +51,7 @@ const cell = await startCell();
 const s = suite('simulation (webkit)');
 
 // Runs one session under a profile and returns the rounds it graded.
-async function run(profileName, {ms = 11000, interval = 2000} = {}) {
+async function run(profileName, {ms, interval}) {
   const ctx = await simContext(browser, loadProfile(profileName), {cell});
   const page = await ctx.newPage();
   await page.goto(base(interval), {waitUntil: 'networkidle'});
@@ -62,46 +74,53 @@ const tally = (rows, activity) => rows.reduce((a, r) => {
 const share = (rows, activity, grades) =>
   rows.filter(r => grades.includes(r.grades?.[activity])).length / rows.length;
 
-s.test('every activity MUST grade green WHEN the link is a working 5G cell', async () => {
-  const {rows} = await run('good-5g');
+// The upload needs a second of budget, which a 4 s interval leaves.
+s.test('every activity MUST grade green with a saturated download and a measured upload WHEN the link is a working 5G cell', async () => {
+  const {rows} = await run('good-5g', {ms: 17000, interval: 4000});
   for (const activity of ['voice', 'news', 'streaming']) {
     assert.equal(share(rows, activity, ['green']), 1,
                  `${activity}: ${JSON.stringify(tally(rows, activity))}`);
   }
   assert.ok(rows.every(r => r.probes.down?.saturated),
-            'the download reaches the rate the tool can still measure');
+            `download: ${JSON.stringify(rows.map(r => r.probes.down?.bps))}`);
+  assert.ok(rows.every(r => r.probes.up?.ok),
+            `upload: ${JSON.stringify(rows.map(r => r.probes.up?.fail))}`);
 });
 
-s.test('streaming MUST grade below green while calls stay green or yellow WHEN the cell starves the download', async () => {
-  // A wider interval, so the upload still has budget after the slow idle phase and download.
+s.test('streaming MUST grade below green while calls stay green or yellow WHEN the cell delivers 1.2 Mb/s', async () => {
   const {rows} = await run('delft-tunnel', {ms: 14000, interval: 3000});
   assert.ok(share(rows, 'streaming', ['orange', 'red']) >= 0.75,
             `streaming: ${JSON.stringify(tally(rows, 'streaming'))}`);
   assert.ok(share(rows, 'voice', ['green', 'yellow']) >= 0.75,
             `voice: ${JSON.stringify(tally(rows, 'voice'))}`);
-  assert.ok(rows.every(r => r.probes.udp?.ok), 'the UDP path carries the tunnel throughout');
-  // The cell is slow rather than broken: the download reports the profile's rate.
+  assert.ok(rows.every(r => r.probes.udp?.ok), `udp: ${JSON.stringify(rows.map(r => r.probes.udp?.fail))}`);
+});
+
+s.test('the download MUST report the profile rate WHEN the cell is slow and answering', async () => {
+  const {rows} = await run('delft-tunnel', {ms: 14000, interval: 3000});
   const rates = rows.map(r => r.probes.down?.bps);
-  assert.ok(rows.every(r => r.probes.down?.ok), 'the download reports a rate rather than failing');
+  assert.ok(rows.every(r => r.probes.down?.ok), `download: ${JSON.stringify(rows.map(r => r.probes.down?.fail))}`);
   assert.ok(rates.every(b => b > 0.6e6 && b < 2.5e6),
             `1.2 Mb/s profile measured as ${rates.map(b => (b / 1e6).toFixed(2)).join(' ')}`);
-  // The slow idle phase and download leave the upload without a second, which the recorder records
-  // as `no_budget`: the tool standing down rather than a link failure.
+  // Under a second of budget left: the upload is not sent and records `no_budget`, which is
+  // excluded from failure tallies.
   assert.ok(rows.every(r => r.probes.up?.ok || r.probes.up?.fail === 'no_budget'),
             `upload: ${JSON.stringify(rows.map(r => r.probes.up?.fail))}`);
 });
 
-s.test('reading MUST grade below green WHEN name resolution takes hundreds of milliseconds', async () => {
-  const {rows} = await run('delft-tunnel');
+s.test('reading MUST grade below green while video stays green WHEN a name lookup crosses the ttfb edge', async () => {
+  const {rows} = await run('slow-lookup', {ms: 14000, interval: 3000});
+  assert.ok(rows.every(r => r.probes.dns?.ok && r.probes.dns.ms > 800),
+            `lookups: ${JSON.stringify(rows.map(r => Math.round(r.probes.dns?.ms)))}`);
   assert.ok(share(rows, 'news', ['yellow', 'orange', 'red']) >= 0.75,
             `news: ${JSON.stringify(tally(rows, 'news'))}`);
-  assert.ok(rows.every(r => r.probes.dns.ok && r.probes.dns.ms > 300),
-            'the fresh-name lookup is slow rather than failing');
+  assert.ok(share(rows, 'streaming', ['green']) >= 0.75,
+            `streaming: ${JSON.stringify(tally(rows, 'streaming'))}`);
 });
 
 s.test('every activity MUST grade red with the TCP probes failing and UDP answering WHEN every TCP path hangs', async () => {
-  // Every TCP probe holds its deadline, so a round costs seconds and few of them fit.
-  const {rows} = await run('tcp-stall', {ms: 16000});
+  // Each probe holds its deadline, so the preflight costs 5.5 s and a round 2.5 s.
+  const {rows} = await run('tcp-stall', {ms: 26000, interval: 4000});
   for (const activity of ['voice', 'news', 'streaming']) {
     assert.ok(share(rows, activity, ['red']) >= 0.75,
               `${activity}: ${JSON.stringify(tally(rows, activity))}`);

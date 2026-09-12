@@ -30,6 +30,7 @@ const PORT = 8803;
 const root = new URL('..', import.meta.url).pathname;
 const server = spawn('python3', ['-m', 'http.server', String(PORT), '--bind', '127.0.0.1'],
                      {cwd: root, stdio: 'ignore'});
+process.on('exit', () => { try { server.kill(); } catch { /* already gone */ } });
 await new Promise(r => setTimeout(r, 800));
 
 const profile = loadProfile(profileName);
@@ -54,7 +55,10 @@ const follow = setInterval(async () => {
   } catch { /* the page is gone */ }
 }, 1000);
 
+let reporting = false;
 async function report() {
+  if (reporting) return;
+  reporting = true;
   clearInterval(follow);
   try {
     await page.click('#btn-start');

@@ -1,8 +1,8 @@
 // A simulated mobile cell for the browser suites: per-probe latency, failures, and a download and
 // upload that deliver bytes over time. Bad networks are rare and brief in the field, so the
-// conditions worth testing are reproduced here instead of driven to.
+// conditions worth testing are reproduced here.
 //
-// Two mechanisms, because one cannot do both jobs:
+// Two mechanisms, since one cannot do both jobs:
 //   - latency and failures come from the route layer, which fulfils a whole body at once;
 //   - a rate needs bytes paced across the measurement window, so the transfers are answered by a
 //     local HTTPS origin the request is rewritten to.
@@ -19,7 +19,8 @@ export const PROFILE_DIR = new URL('profiles/', import.meta.url);
 export const loadProfile = name =>
   JSON.parse(readFileSync(new URL(`${name}.json`, PROFILE_DIR), 'utf8'));
 
-// Deterministic noise: a profile replays identically for a given seed.
+// Jitter for the profile's latency. Draws follow the order requests arrive, so two runs differ by
+// a few milliseconds.
 function rng(seed) {
   let s = seed >>> 0 || 1;
   return () => {
@@ -30,7 +31,7 @@ function rng(seed) {
   };
 }
 
-// The probe a request belongs to, so a profile names probes rather than URLs.
+// The probe a request belongs to, so a profile is written in probe names.
 function probeOf(u) {
   if (u.hostname === '1.1.1.1') return 'ip4';
   if (u.hostname.includes('2606:4700:4700::1111')) return 'ip6';
@@ -46,8 +47,15 @@ const TRACE = 'fl=1\nip=2a09:bac5::9\nts=1\ncolo=AMS\n';
 const CORS = {'access-control-allow-origin': '*', 'timing-allow-origin': '*'};
 const CF_TIMING = 'cfL4;desc="?proto=TCP&rtt=6212&min_rtt=6209&lost=0&retrans=0"';
 const sleep = ms => new Promise(r => setTimeout(r, ms));
-// Small and frequent: the measurement window can close a few hundred ms after it opens, and a rate
-// has to hold over a short window as well as a long one.
+// Resolves on the next drain or when the client goes away. Both listeners are removed on resolve,
+// since one response writes hundreds of chunks.
+const drained = res => new Promise(resolve => {
+  const done = () => { res.off('drain', done); res.off('close', done); resolve(); };
+  res.on('drain', done);
+  res.on('close', done);
+});
+// The measurement window can close 200 ms after it opens, so chunks stay small enough to measure
+// a rate over one that short.
 const CHUNK_BYTES = 4000;
 
 // A self-signed certificate, generated per run and never stored in the repository.
@@ -79,23 +87,25 @@ export async function startCell() {
                           'server-timing': CF_TIMING});
       return res.end();
     }
+    // Headers wait for the latency, which is what the stall check reads. The starved index
+    // rotates across requests.
     const index = opened++ % 3;
+    await sleep(rule.firstByteMs);
     res.writeHead(200, {...CORS, 'content-type': 'application/octet-stream',
                         'access-control-expose-headers': 'server-timing, cf-meta-colo',
                         'cf-meta-colo': 'AMS', 'server-timing': CF_TIMING});
-    await sleep(rule.firstByteMs);
     // A starved stream holds its connection open with nothing on it.
     if (index < rule.starveStreams) return;
     // `rateBps` is what the link carries, so the streams still delivering share it.
     const perStream = rule.rateBps / 8 / Math.max(1, 3 - rule.starveStreams);
-    // About fifty writes a second: frequent enough that a short window still measures the rate,
-    // large enough that a fast link is not held back by the timer.
+    // Fifty writes a second per stream.
     const chunk = Math.max(CHUNK_BYTES, Math.round(perStream / 50));
-    const gapMs = Math.max(10, Math.round((chunk / perStream) * 1000));
+    const gapMs = Math.round((chunk / perStream) * 1000);
     const deadline = Date.now() + 6000;
     while (!res.writableEnded && Date.now() < deadline) {
-      if (!res.write(Buffer.alloc(chunk))) break;
-      await sleep(gapMs);
+      // Backpressure paces a fast link, the timer a slow one.
+      if (!res.write(Buffer.alloc(chunk))) await drained(res);
+      else if (gapMs >= 15) await sleep(gapMs);
     }
     res.end();
   });
@@ -132,7 +142,7 @@ export async function simContext(browser, profile, {seed = 1, cell} = {}) {
     // A stalled request is answered by nobody; the probe's own deadline ends it.
     if (rule.fail === 'stall') return new Promise(() => {});
 
-    // The transfers carry a rate, so they are served by the cell rather than fulfilled here.
+    // The transfers carry a rate, so the cell serves them.
     if ((probe === 'down' || probe === 'up') && cell) {
       return route.continue({url: `https://127.0.0.1:${cell.port}${u.pathname}${u.search}`});
     }
@@ -148,7 +158,7 @@ export async function simContext(browser, profile, {seed = 1, cell} = {}) {
 
   // STUN is not a fetch, so the peer connection carries the profile's UDP behaviour.
   const udp = profile.udp || {};
-  await ctx.addInitScript(({latencyMs, blocked, lossRate, seed: s}) => {
+  await ctx.addInitScript(({latencyMs, jitterMs, blocked, lossRate, seed: s}) => {
     let state = s >>> 0 || 1;
     const rand = () => {
       state ^= state << 13; state >>>= 0;
@@ -161,15 +171,17 @@ export async function simContext(browser, profile, {seed = 1, cell} = {}) {
       async createOffer() { return {type: 'offer', sdp: 'v=0'}; }
       async setLocalDescription() {
         if (blocked || window.__nulogUdpBlocked) return;
+        const ms = Math.max(1, latencyMs + (jitterMs ? Math.round((rand() - 0.5) * 2 * jitterMs) : 0));
         if (!(lossRate && rand() < lossRate)) {
           setTimeout(() => this.onicecandidate?.({candidate: {type: 'srflx', address: '2a09:bac5::9'}}),
-                     latencyMs);
+                     ms);
         }
-        setTimeout(() => this.onicecandidate?.({candidate: null}), latencyMs + 5);
+        setTimeout(() => this.onicecandidate?.({candidate: null}), ms + 5);
       }
       close() { window.__nulogClosed = (window.__nulogClosed || 0) + 1; }
     };
-  }, {latencyMs: udp.latencyMs ?? 5, blocked: !!udp.blocked, lossRate: udp.lossRate ?? 0, seed});
+  }, {latencyMs: udp.latencyMs ?? 5, jitterMs: udp.jitterMs ?? 0, blocked: !!udp.blocked,
+      lossRate: udp.lossRate ?? 0, seed});
   return ctx;
 }
 

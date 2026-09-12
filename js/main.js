@@ -290,8 +290,10 @@ const handlers = {
     const session = liveOrGiven(given);
     const name = prompt('Session name', session.name);
     if (name == null) return;
-    session.name = name.trim() || session.name;
-    // A named session names its export file.
+    const typed = name.trim();
+    // `renamed` marks a name typed by hand, which the export file is named after.
+    if (!typed || typed === session.name) return;
+    session.name = typed;
     session.renamed = true;
     await store.putSession(session);
     renderSessions();

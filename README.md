@@ -243,9 +243,10 @@ median for the same reason. `dns` takes five samples, each against a different r
 so each pays a full first contact. Before the first success, sampling stops at the first
 failure and the remaining budget goes to the rest of the round. `ms_samples`, `ms_min` and
 `ms_max` keep the spread, up to 52-4275 ms within one round, which the median omits.
-`summary.spread_p50` and `spread_p90` carry it across the session, measured after the first sample:
-that one pays the radio wake-up and the connection setup, and is the worst of its burst in 70-86%
-of rounds on the TCP probes. The spread is recorded, never graded — jitter as ITU-T and the
+`summary.spread_p50` and `spread_p90` carry it across the session, over the rounds where every
+sample answered, measured after the first sample: that one pays the radio wake-up and the
+connection setup, and is the worst of its burst in 70-86% of rounds on the TCP probes. On `dns`
+each sample reaches a different host, so its spread is the variation between hosts. The spread is recorded, never graded — jitter as ITU-T and the
 conferencing vendors define it is measured on a paced packet stream, and a burst of request round
 trips is not one.
 
@@ -364,7 +365,7 @@ round trips. The probe row therefore shows what the rate means for a call on the
 **What a round is.** A round starts when a slot comes due and none is running; a round that was
 interrupted chains the next one as soon as it settles. It ends when its three phases have run: the
 idle probes together, then the download, then the upload. It is interrupted only by a confirmed
-suspension, a 250 ms timer that fired over 1 s late on either clock, or by Stop; an interrupted
+suspension — a 250 ms timer that fired over 1 s late on either clock — or by Stop; an interrupted
 round keeps its probes, carries no grades and enters no tally. A round whose loop threw records
 `round_error` and grades nothing. Every round that starts is written, failures included, and its
 bytes are charged.

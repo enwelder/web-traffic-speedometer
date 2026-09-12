@@ -1,0 +1,11 @@
+{
+  "name": "slow-lookup",
+  "note": "A working link whose name resolution is slow: the fresh-name lookup crosses the ttfb edge at 800 ms while throughput and round trips stay good.",
+  "hosts": {
+    "default": {"latencyMs": 30, "jitterMs": 10},
+    "dns": {"latencyMs": 1200, "jitterMs": 100},
+    "down": {"latencyMs": 20, "rateBps": 120000000},
+    "up": {"latencyMs": 30}
+  },
+  "udp": {"latencyMs": 30, "jitterMs": 10}
+}
