@@ -4,7 +4,7 @@
   "hosts": {
     "default": {"latencyMs": 30, "jitterMs": 10},
     "dns": {"latencyMs": 1200, "jitterMs": 100},
-    "down": {"latencyMs": 20, "rateBps": 120000000},
+    "down": {"latencyMs": 20, "rateBps": 60000000},
     "up": {"latencyMs": 30}
   },
   "udp": {"latencyMs": 30, "jitterMs": 10}

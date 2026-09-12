@@ -54,7 +54,19 @@ const s = suite('simulation (webkit)');
 async function run(profileName, {ms, interval}) {
   const ctx = await simContext(browser, loadProfile(profileName), {cell});
   const page = await ctx.newPage();
-  await page.goto(base(interval), {waitUntil: 'networkidle'});
+  const errors = [];
+  page.on('console', m => { if (m.type() === 'error') errors.push(m.text().slice(0, 120)); });
+  page.on('pageerror', e => errors.push(String(e.message).slice(0, 120)));
+  // `networkidle` waits on the cell, which holds a starved stream open for seconds.
+  await page.goto(base(interval), {waitUntil: 'domcontentloaded', timeout: 30000});
+  try {
+    await page.waitForSelector('#btn-start', {timeout: 20000});
+  } catch {
+    const state = await page.evaluate(() => ({
+      url: location.href, title: document.title, text: document.body?.innerText.slice(0, 150)
+    })).catch(e => ({unreachable: e.message}));
+    throw new Error(`${profileName}: the app did not load. page=${JSON.stringify(state)} console=${JSON.stringify(errors.slice(0, 3))}`);
+  }
   await page.click('#btn-start');
   await page.waitForTimeout(ms);
   await page.click('#btn-start');
