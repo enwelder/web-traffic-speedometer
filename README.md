@@ -54,9 +54,12 @@ a host starts advertising HTTP/3 or drops a header the probes read. Method choic
 | `udp`: ICE candidate gathering against a STUN server, no data channel or track | the only browser mechanism that sends a UDP packet; gathering carries no payload |
 | a probe failing `timeout` or `network` for 3 rounds while most others answer rests for 6 rounds | a page cannot discard a wedged connection; `udp`, `down` and `up` hold none and are exempt |
 
-## The scales
+## Grading
 
-Edges are absolute; grading reads no session statistics. A value on an edge takes the worse grade.
+An activity takes the worst of its terms. A term is a scaled value or a red flag; one red term
+sets red. A scaled term with no measurement leaves the activity unrated unless another term is
+red. Edges are absolute, and a value on an edge takes the worse grade; grading reads no session
+statistics.
 
 | scale | graded on it | green | yellow | orange | red | source |
 |---|---|---|---|---|---|---|
@@ -85,34 +88,22 @@ Article model, an upper bound on the load time of a readable article:
 [221 kB at the mobile median](https://almanac.httparchive.org/en/2025/page-weight), and LCP waits
 on the largest image.
 
-## Activity grades
+Each activity takes the terms below. The note naming the term that set the grade is stored per
+round.
 
-An activity is the worst of its terms. A term is a scaled value or a red flag; one red term sets
-red. A scaled term with no measurement leaves the activity unrated unless another term is red.
-
-| activity | scaled terms | red when |
+| activity | terms | turns red when |
 |---|---|---|
-| voice & video calling | `round_trip` of the literal that answered (IPv6 first); `round_trip` of `udp`; `call_rate` of `up`; `call_rate` of `down` | `link down`; `no UDP`; `no route`; `round trip lost`; `no upload` |
-| reading articles | `ttfb` of `dns`; `article` model | `link down`; `lookup lost`; `no lookup`; `host gone`; `no data` |
-| streaming video | `rate` of `down` | `link down`; `no data` |
+| voice & video calling | `round_trip` of the literal that answered (IPv6 first) and of `udp`; `call_rate` of `up` and of `down` | `round trip lost`: neither literal answered and one failed on the link. `no route`: that, with no hostname probe reaching the network. `no UDP` or `no upload`: `udp` or `up` failed on the link. A failed download drops the `call_rate` term and adds no red |
+| reading articles | `ttfb` of `dns`; the `article` model | `no lookup` or `host gone`: `dns` or `dns_ctl` failed on the link. `lookup lost`: `dns` answered within 300 ms of a resolver retry timer, so the first query was lost. `no data`: `down` failed on the link |
+| streaming video | `rate` of `down` | `no data`: `down` failed on the link |
 
-The flags:
+Two flags apply to all three. `link down`: a download stream still waited for headers 2 s in, and
+the check that followed lost both the `dns_ctl` host and STUN. `far end`: every Cloudflare probe
+failed while `https://www.gstatic.com/generate_204` answered, which leaves the round unrated.
 
-| flag | condition |
-|---|---|
-| `link down` | a download stream still waited for headers 2 s in, and the check that followed lost both the `dns_ctl` host and STUN |
-| `no UDP` | `udp` failed on the link |
-| `round trip lost` | neither literal answered and one of them failed on the link |
-| `no route` | `round trip lost` and no hostname probe reached the network |
-| `no upload` | `up` failed on the link |
-| `lookup lost` | `dns` answered within 300 ms of a resolver retry timer (2 s or 5 s): the first query was lost |
-| `no lookup` `host gone` | `dns` or `dns_ctl` failed on the link |
-| `no data` | `down` failed on the link; calling loses its `call_rate` term and takes no red from it |
-| `far end` | every Cloudflare probe failed and `https://www.gstatic.com/generate_204` answered: all activities unrated |
-
-"Failed on the link" excludes `resting`, `short`, `no_budget`, `abort`, `error`, a server
-refusal, an absent family and a literal that was `blocked` or `unused`. Every `fail` value is
-listed in [docs/data-format.md](docs/data-format.md).
+"Failed on the link" excludes a server refusal, an absent family, a literal that was `blocked` or
+`unused`, and the reasons that describe the tool or the browser;
+[docs/data-format.md](docs/data-format.md) lists every `fail` value and which ones count.
 
 A failing literal is classified from the current round alone; a network carrying IPv6 only or
 IPv4 only is a working connection. A family carried traffic when its literal answered or
@@ -145,13 +136,13 @@ below the 25 Mb/s ceiling costs proportionally less:
 |---|---|
 | cell identity, RSRP, RSRQ, SINR, band, radio access technology | no browser exposes them; `navigator.connection` is absent in Safari and reports a coarse type elsewhere |
 | download rates above 25 Mb/s | 4.7 MB in 1.5 s is the ceiling; a round that reaches the cap is flagged `saturated`, prints `≥`, and proves a lower bound only |
-| upload capacity on a fast uplink | 40 kB leaves in two slow-start flights, so the span is two to three round trips whatever the uplink carries; a span under five round trips is flagged `saturated` and `bps` is a lower bound |
-| the user's link, in the `server` block | Cloudflare's `cfL4` timing describes the far end's TCP peer; behind an operator proxy that is the proxy leg, and an all-zero block means no data |
+| upload capacity on a fast uplink | 40 kB leaves in two slow-start flights, so the span holds two to three round trips whatever the uplink carries, and the rate is a lower bound |
+| the user's link, in the `server` block | Cloudflare's `cfL4` timing describes the far end's TCP peer, which is the operator's own proxy where it terminates TCP |
 | the network's queueing delay | `loaded_rtt_ms` is taken during the tool's own download; its excess over the idle value is queueing the tool itself causes |
 | the round trip itself | each latency sample brackets a full HTTPS request: TLS resumption, HTTP framing and browser scheduling are inside it, so the median is an upper bound |
 | jitter | ITU-T and the conferencing vendors define it on a paced packet stream; the spread of a request burst is recorded (`ms_min`, `ms_max`, `spread_p50`, `spread_p90`) and ungraded |
 | resolution time on its own | every endpoint except Cloudflare's speed host zeroes resource timing cross-origin, so DNS, connect and TLS are one number |
-| position on a phone | a fix over 100 m accuracy is a tower estimate, often hundreds of metres to 1414 m wide, and `pos_t` can precede the round by over a minute; speed is withheld on coarse pairs and above 400 km/h |
+| position on a phone | a fix over 100 m accuracy is a tower estimate, hundreds of metres to 1414 m wide, and it can precede the round by a minute or more, which on a train is kilometres; speed is withheld on coarse pairs and above 400 km/h |
 | operator and connection type | entered by the user; the recorded egress address makes the entry checkable against carrier ASNs |
 | the endpoints' behaviour | public infrastructure that can rate-limit or intercept; rounds run on a fixed interval uncoordinated with other tests |
 
