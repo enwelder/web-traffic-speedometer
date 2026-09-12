@@ -29,7 +29,7 @@ const handshakes = (probe, attempts, first) =>
 const cost = p => (WARM_BYTES[p.kind] * (p.samples || 1)) + handshakes(p, p.samples || 1, false) +
                   (p.bodyBytes || 0);
 
-export const APP_VERSION = '3.16.1';
+export const APP_VERSION = '3.17.0';
 
 // The download runs every round, so the interval is what controls data use.
 export const PROFILES = {
@@ -222,7 +222,7 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
   const stuck = createStuckTracker({onNotice: noticeFrom('stuck')});
   // The event carries the position and the session id, so it is the recorder's to write.
   const wake = createWakeLock({onNotice: noticeFrom('wake_lock'), onEvent: text => running && noteEvent(text),
-                               onRelease: () => interrupt('wake_lock')});
+                               onRelease: () => { if (round) round.wakeLockLost = true; }});
   const position = createPositionTracker({onNotice: noticeFrom('position'), onChange: () => emit(),
                                           onNote: text => running && noteEvent(text)});
 
@@ -298,7 +298,7 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
       mono: Math.round(mono()),
       late_ms: late,
       round_error: null,
-      // Set when the page left mid-round, `wake_lock` or `suspended`: the row keeps its probes and
+      // Set when the round was cut short, `suspended` or `stop`: the row keeps its probes and
       // carries no grades. `suspended_ms` is the largest timer gap the round saw.
       interrupted: null,
       suspended_ms: null,
@@ -311,6 +311,9 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
       in_pause: inPause,
       // Whether the screen was held awake for this round, which accounts for gaps.
       wake_lock: wake.held(),
+      // The lock was released mid-round and taken again. The round is graded: a release is the
+      // system reclaiming the screen, and only a measured timer gap proves the page stopped.
+      wake_lock_lost: false,
       // The round's own wall time and its phases. A frozen tab suspends the abort timers, so a
       // round can outlast every deadline in it; these separate a slow phase from a stalled app.
       round_ms: null,
@@ -402,7 +405,7 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
   // Each round aborts on its own controller, which a stop reaches through the session abort.
   function beginRound() {
     const ctl = new AbortController();
-    return {ctl, unlink: relayAbort(abort.signal, ctl), interrupted: null,
+    return {ctl, unlink: relayAbort(abort.signal, ctl), interrupted: null, wakeLockLost: false,
             watch: watchGaps(() => interrupt('suspended'))};
   }
 
@@ -412,6 +415,7 @@ export function createRecorder({onSample, onEvent, onStatus, onNotice, store = r
     // The final gap check runs before the cause is read, so a suspension that ended the round counts.
     row.suspended_ms = round.watch.end();
     row.interrupted = round.interrupted;
+    row.wake_lock_lost = round.wakeLockLost;
     round.unlink();
     round = null;
     row.round_ms = Math.round(mono() - startedAt);

@@ -43,6 +43,8 @@ jobs:
           npx playwright install --with-deps chromium webkit
       - name: end to end in a browser
         run: node tests/run.mjs browser
+      - name: grades under simulated network conditions
+        run: node tests/run.mjs simulation
 
   security:
     name: security tests

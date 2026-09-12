@@ -212,6 +212,40 @@ b.test('the main button MUST read New session after Stop and restore the setup s
   await ctx.close();
 });
 
+// The app is backgrounded during a session on purpose. iOS then freezes it, which the recorder
+// suites cover through the timer gap; here the page reports hidden and visible as a browser does.
+b.test('a session MUST keep recording with a contiguous seq and mark the hidden rounds WHEN the page is backgrounded and returns', async () => {
+  const {ctx} = await context();
+  await ctx.addInitScript(`
+    let hidden = false;
+    Object.defineProperty(document, 'visibilityState', {configurable: true, get: () => hidden ? 'hidden' : 'visible'});
+    Object.defineProperty(document, 'hidden', {configurable: true, get: () => hidden});
+    window.__nulogHidden = v => { hidden = v; document.dispatchEvent(new Event('visibilitychange')); };
+  `);
+  const page = await ctx.newPage();
+  await page.goto(BASE, {waitUntil: 'networkidle'});
+  await page.click('#btn-start');
+  await page.waitForTimeout(2500);
+  const before = (await readDb(page)).samples.length;
+
+  await page.evaluate(() => window.__nulogHidden(true));
+  await page.waitForTimeout(4500);
+  await page.evaluate(() => window.__nulogHidden(false));
+  await page.waitForTimeout(2500);
+  await page.click('#btn-start');
+
+  const db = await readDb(page);
+  const seqs = db.samples.map(r => r.seq).sort((a, b) => a - b);
+  const measured = db.samples.filter(r => !r.interrupted).sort((a, b) => a.seq - b.seq);
+  assert.ok(db.samples.length > before, 'rounds continue while the page is hidden');
+  assert.deepEqual(seqs, seqs.map((_, i) => i), 'seq stays contiguous across the absence');
+  assert.ok(measured.some(r => r.visible === false), 'a round taken while hidden is marked');
+  assert.equal(measured.at(-1).visible, true, 'and the last round ran in the foreground');
+  const pages = db.events.filter(e => e.type === 'page').map(e => e.text);
+  assert.ok(pages.includes('hidden') && pages.includes('visible'), `page events: ${pages.join(',')}`);
+  await ctx.close();
+});
+
 b.test('a session MUST record, resume across a reload with a contiguous seq, and export every stored round WHEN driven through the UI', async () => {
   const {ctx, state} = await context();
   const page = await ctx.newPage();

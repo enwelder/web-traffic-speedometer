@@ -22,11 +22,22 @@ const NOT_THE_LINK = new Set(['resting', 'short', 'no_budget', 'abort', 'error']
 export const countsAsFailure = r =>
   !!r && r.ok === false && !r.expected && !r.blocked && !r.unused && !NOT_THE_LINK.has(r.fail);
 
+// Spread within one round, excluding the first sample: that one pays the radio wake-up and the
+// connection setup, and is the worst of its burst in 70-86% of rounds on the TCP probes. Counted
+// only where every sample answered, so a time to fail cannot stand in for a round trip.
+function roundSpread(r) {
+  const all = r.ms_samples;
+  if (!all || r.samples_ok !== all.length) return null;
+  const after = all.slice(1).filter(v => v != null);
+  return after.length >= 2 ? Math.max(...after) - Math.min(...after) : null;
+}
+
 // One probe across the rounds that ran. Link failures (`fails`), tool stops (`stopped`) and
 // `expected`, `blocked` and `unused` literals are counted separately.
 function probeSummary(rs) {
   const ok = rs.filter(r => r.ok);
   const ms = ok.map(r => r.ms).filter(v => v != null).sort((a, b) => a - b);
+  const spreads = rs.map(roundSpread).filter(v => v != null).sort((a, b) => a - b);
   const fails = {};
   const stopped = {};
   for (const r of rs) {
@@ -40,7 +51,8 @@ function probeSummary(rs) {
     blocked: rs.filter(r => r.blocked).length,
     unused: rs.filter(r => r.unused).length,
     fails, stopped,
-    ms_p50: quantile(ms, 0.5), ms_p90: quantile(ms, 0.9), ms_max: ms.at(-1) ?? null
+    ms_p50: quantile(ms, 0.5), ms_p90: quantile(ms, 0.9), ms_max: ms.at(-1) ?? null,
+    spread_p50: quantile(spreads, 0.5), spread_p90: quantile(spreads, 0.9)
   };
 }
 
@@ -73,8 +85,9 @@ function gradeTally(ran, keys, field) {
   return grades;
 }
 
-// 14: format ids and file names carry `nulog`; `mark` events are no longer written.
-const FORMAT_VERSION = 14;
+// 15: a round is interrupted by a confirmed suspension or by Stop, and carries `wake_lock_lost`;
+// the summary carries the per-probe sample spread; a renamed session names its own export file.
+const FORMAT_VERSION = 15;
 
 // A row carrying `skipped` comes from a file written before format 11, where a slot that could
 // not start was a row.
@@ -143,7 +156,9 @@ function localStamp(t) {
 export function filename(session) {
   // An unreadable start time falls back to the current time, which keeps NaN out of the filename.
   const started = Number.isFinite(session.started) ? session.started : Date.now();
-  return `nulog-${localStamp(started)}-${slug(session.operator || session.connection)}.json`;
+  // A renamed session carries what the run was; the generated name only repeats operator and stamp.
+  const label = session.renamed ? session.name : session.operator || session.connection;
+  return `nulog-${localStamp(started)}-${slug(label)}.json`;
 }
 
 export const bundleFilename = exportedAt => `nulog-all-${localStamp(exportedAt)}.json`;

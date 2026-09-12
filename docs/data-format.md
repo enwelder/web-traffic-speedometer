@@ -1,6 +1,6 @@
 # Exported session format
 
-`format: "nulog/session"`, `version: 14`. One button per session writes one JSON file: session
+`format: "nulog/session"`, `version: 15`. One button per session writes one JSON file: session
 metadata, environment, a rollup, every sample, every event. CSV, GPX and GeoJSON derive from it
 directly.
 
@@ -18,6 +18,7 @@ directly.
 | 12 | `web` is gone and `up` joins, with `upload_bytes` and `rate_source`; rows carry `interrupted`, `suspended_ms`, `reference` and `phase_up_ms`; `ip6` and `ip4` carry `protocol_samples`; a timed-out literal is never `blocked`; `server` carries `proto`; `no_budget` joins the failure reasons; a `pause` event can carry `round`; the summary counts `interrupted` |
 | 13 | `up` carries `saturated` and `ceiling_bps`; `abort` is excluded from failure tallies |
 | 14 | the app is named Network Usability Log: format ids are `nulog/session`, `nulog/bundle` and `nulog/fixture`, file names start with `nulog-`, and the DNS control host is `nulog-dns-control.github.io`; `mark` events are no longer written; a round cut by Stop is `interrupted: stop` |
+| 15 | a wake-lock release no longer interrupts a round: `interrupted` is `suspended` or `stop`, and `wake_lock_lost` marks a round that saw a release; each probe's summary carries `spread_p50` and `spread_p90`; a session renamed by hand carries `renamed` and names its export file |
 
 Version 5 changes failure counts. Below it only `ip4` carries `expected`, so every `ip6` failure
 counts; from 5, `expected` on `ip6` marks a missing path.
@@ -29,6 +30,7 @@ Settings and values fixed once per session.
 | Field | Meaning |
 |---|---|
 | `id` `name` `started` `stopped` | identity and span |
+| `renamed` | the name was set by hand, and the export file is named after it instead of the operator |
 | `operator` `connection` | entered before the run; no browser API exposes either |
 | `profile` `intervalMs` `download` | the settings in force |
 | `ipv6_available` `ipv4_available` | whether each family answered at session start or carried traffic later. Informational; no round is graded on it |
@@ -39,7 +41,9 @@ Settings and values fixed once per session.
 
 ## Rollup
 
-`summary` holds per-probe p50, p90, max, ok and failure counts, the download's and the upload's
+`summary` holds per-probe p50, p90, max, ok and failure counts, the spread of each round's samples
+after the first (`spread_p50`, `spread_p90`, counted only for rounds where every sample answered),
+the download's and the upload's
 rate percentiles and total bytes, and counts of `slots` (rows plus skip events), skipped slots,
 `interrupted` rounds, paused rounds and degraded rounds. Interrupted rounds enter no other tally. Outage thresholds are left to analysis; every figure is recomputable
 from the samples.
@@ -92,7 +96,7 @@ screen.
 | `mono` | monotonic ms since session start; survives wall-clock jumps, bridged across a reload using `t` |
 | `late_ms` | how far behind schedule the round ran |
 | `round_error` | exception message if the round itself threw |
-| `interrupted` `suspended_ms` | `wake_lock` when the wake lock was released while the round ran, `suspended` when a 250 ms timer fired over 1 s late on either clock, `stop` when Stop ended the round; null otherwise. The row keeps its probes and carries null `grades` and `pgrades`. `suspended_ms` is the largest timer gap over 1 s |
+| `interrupted` `suspended_ms` | `suspended` when a 250 ms timer fired over 1 s late on either clock, `stop` when Stop ended the round; null otherwise. Versions up to 3.16.1 also wrote `wake_lock`. The row keeps its probes and carries null `grades` and `pgrades`. `suspended_ms` is the largest timer gap over 1 s |
 | `reference` | `{ok, ms, fail}` of the request to `https://www.gstatic.com/generate_204`, taken only when both literals, the download, the upload and STUN all failed; null otherwise. When it answered, every activity is unrated with note `far end` |
 | `visible` `visible_end` | whether the tab was foregrounded when the round started, and when it ended |
 | `lat` `lon` `accuracy` `speed` `heading` | GPS fix; `speed` in m/s, often absent |
@@ -102,6 +106,7 @@ screen.
 | `intervalMs` | interval in force for this round |
 | `in_pause` | this round followed a bridged gap, so it can be filtered without matching timestamps |
 | `wake_lock` | whether the screen was held awake |
+| `wake_lock_lost` | the screen lock was released while the round ran and taken again; the round is graded on what it measured |
 | `round_ms` `phase_idle_ms` `phase_down_ms` `phase_up_ms` | the round's wall time, and its three phases: the idle probes, the download with the round trip taken across it, and the upload. `phase_down_ms` includes up to 1 s of the refusal check after a `network` failure |
 | `speed_derived` `speed_source` | speed computed from consecutive fixes, and whether the reported value is `gps` or `derived` |
 | `loaded_rtt_ms` `loaded_rtt_from` | a round trip taken during the download window, and the probe that took it: the probe that answered in the idle phase, so the two values are comparable and their difference is the queueing delay under load. Null when no window opened or the transfer ended before the sample started |

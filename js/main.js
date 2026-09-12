@@ -291,6 +291,8 @@ const handlers = {
     const name = prompt('Session name', session.name);
     if (name == null) return;
     session.name = name.trim() || session.name;
+    // A named session names its export file.
+    session.renamed = true;
     await store.putSession(session);
     renderSessions();
   },

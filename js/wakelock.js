@@ -47,7 +47,8 @@ export function createWakeLock({onNotice, onEvent, onRelease} = {}) {
     lost = true;
     onNotice?.('Screen lock released and taken again. If this repeats, turn off Low Power Mode.');
     onEvent?.('screen wake lock released');
-    // iOS releases the lock before it suspends the page, so the round in flight hears of it first.
+    // iOS releases the lock before it suspends the page. The round in flight records the loss; a
+    // suspension that follows is caught by the gap watchdog, which is what interrupts it.
     onRelease?.();
     acquire();
   }

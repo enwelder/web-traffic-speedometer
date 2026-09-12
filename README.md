@@ -243,6 +243,11 @@ median for the same reason. `dns` takes five samples, each against a different r
 so each pays a full first contact. Before the first success, sampling stops at the first
 failure and the remaining budget goes to the rest of the round. `ms_samples`, `ms_min` and
 `ms_max` keep the spread, up to 52-4275 ms within one round, which the median omits.
+`summary.spread_p50` and `spread_p90` carry it across the session, measured after the first sample:
+that one pays the radio wake-up and the connection setup, and is the worst of its burst in 70-86%
+of rounds on the TCP probes. The spread is recorded, never graded — jitter as ITU-T and the
+conferencing vendors define it is measured on a paced packet stream, and a burst of request round
+trips is not one.
 
 A probe fails when no sample succeeds. A failed sample after a success is a lost packet:
 sampling continues while the budget allows, `samples_lost` counts it and `sample_fail` stores
@@ -356,6 +361,14 @@ round's literal marks the reading `saturated`, a lower bound, and `ceiling_bps` 
 round trips. The probe row therefore shows what the rate means for a call on the `call_rate` edges,
 `calls ok`, `voice only`, `choppy` or `too slow`, and the file keeps the rate.
 
+**What a round is.** A round starts when a slot comes due and none is running; a round that was
+interrupted chains the next one as soon as it settles. It ends when its three phases have run: the
+idle probes together, then the download, then the upload. It is interrupted only by a confirmed
+suspension, a 250 ms timer that fired over 1 s late on either clock, or by Stop; an interrupted
+round keeps its probes, carries no grades and enters no tally. A round whose loop threw records
+`round_error` and grades nothing. Every round that starts is written, failures included, and its
+bytes are charged.
+
 **Deadlines and scheduling.** Each probe gets 8 s, capped at the interval minus 500 ms. The
 download gets what the idle phase leaves of the interval, since the phases run sequentially and
 an interval-sized budget for each overruns the slot; the upload gets what the download leaves,
@@ -382,8 +395,8 @@ clock alone, a gap made entirely of sleep produces no `pause` event.
 |---|---|
 | `coords.speed` filled on 0, 2 and 51 of 158, 75 and 243 rounds across three journeys | speed derived from consecutive fixes when both are under 100 m |
 | accuracy falls to tower estimates: 30 of 74 rounds at exactly 1414 m in one journey | `accuracy_class` separates `gps` from `coarse`; coarse pairs produced 682 km/h on a train, so rates above 400 km/h are discarded |
-| the system reclaims the wake lock without hiding the page, typically in Low Power Mode | reacquired on release, every round and on visibility change; every row carries `wake_lock` |
-| a locked screen or background tab freezes JavaScript | the gap is a `pause` event with `late_ms`. A round in flight is `interrupted`: on the wake-lock release, which iOS sends before it suspends the page, or when a 250 ms timer fires over 1 s late on either clock. `visibilitychange` reported `visible` on every departure in one recording |
+| the system reclaims the wake lock without hiding the page, typically in Low Power Mode | reacquired on release, every round and on visibility change; every row carries `wake_lock`, and `wake_lock_lost` marks a round that saw a release |
+| a locked screen or background tab freezes JavaScript | the gap is a `pause` event with `late_ms`. A round in flight is `interrupted` when a 250 ms timer fires over 1 s late on either clock, which is the only evidence that the page stopped: `visibilitychange` reported `visible` on every departure in one recording, and the wake lock is released in Low Power Mode without any suspension following |
 | the location watch repeats `unavailable` on each timeout while it holds only tower estimates | one `no location (…)` note per change of error state; the notice clears on the next fix |
 | Safari evicts storage after about a week unvisited | never-exported sessions are flagged in the list |
 
@@ -440,6 +453,14 @@ Safari and iOS, since streaming reads, connection reuse and storage differ betwe
 `NULOG_ENGINES=chromium,webkit,firefox npm test` selects the set; each engine needs
 `npx playwright install <engine>`. A missing engine prints a note locally and fails on CI, where a
 silent skip reports unrun tests as passed.
+
+`tests/simulation.mjs` drives the app against simulated conditions and asserts the grades a user
+would read: a working 5G cell, the Delft tunnel starving the download, and every TCP path hanging
+while STUN answers. Profiles live in `tests/profiles/`; `node tools/profile-from-log.mjs
+<session.json> <name>` derives one from a recorded stretch, and `node tools/simulate.mjs --profile
+<name> [--headed]` runs the app under it to watch or adjust. The suite is WebKit only: a rate needs
+bytes paced across the measurement window, which reaches the page through a rewritten request to a
+local origin, and Chromium refuses that rewrite.
 
 `node tools/check-hosts.mjs` checks that every probe host still advertises the transport and
 sends the headers the probes read; `.github/workflows/hosts.yml` runs it daily.

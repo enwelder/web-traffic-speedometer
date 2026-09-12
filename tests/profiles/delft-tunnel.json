@@ -1,0 +1,11 @@
+{
+  "name": "delft-tunnel",
+  "note": "Taken from the recording of 11 Sep 2026, 18:03-18:06, KPN, train through the Delft tunnel: round trips stay usable while the cell schedules almost no data and starves two of three streams.",
+  "hosts": {
+    "default": {"latencyMs": 95, "jitterMs": 25},
+    "dns": {"latencyMs": 600, "jitterMs": 150},
+    "down": {"latencyMs": 150, "rateBps": 1200000, "starveStreams": 1},
+    "up": {"latencyMs": 400}
+  },
+  "udp": {"latencyMs": 80, "jitterMs": 20}
+}

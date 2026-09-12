@@ -41,7 +41,7 @@ s.test('gradeActivities MUST return identical grades WHEN called repeatedly with
 });
 
 s.test('gradeActivities and gradeProbes MUST return null WHEN the row carries interrupted', () => {
-  const left = {...round(), interrupted: 'wake_lock'};
+  const left = {...round(), interrupted: 'suspended'};
   assert.equal(g.gradeActivities(left), null);
   assert.equal(g.gradeProbes(left), null);
   assert.equal(g.probeReading('ip6', left).state, 'none', 'the probe rows show no reading');

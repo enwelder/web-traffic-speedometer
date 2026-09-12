@@ -1,0 +1,10 @@
+{
+  "name": "tcp-stall",
+  "note": "Taken from the recordings of 10 Sep 2026 in the Rijswijk and Delft tunnels: every TCP path hangs until its deadline while STUN answers.",
+  "hosts": {
+    "default": {"fail": "stall"},
+    "down": {"fail": "stall"},
+    "up": {"fail": "stall"}
+  },
+  "udp": {"latencyMs": 60}
+}

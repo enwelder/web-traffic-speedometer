@@ -1,6 +1,6 @@
 // Offline shell: recovery after a crash requires the page to load on a degraded network.
 
-const CACHE = 'nulog-v3.16.1';
+const CACHE = 'nulog-v3.17.0';
 
 const SHELL = [
   './',

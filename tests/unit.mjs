@@ -1225,7 +1225,7 @@ r.test('hatchesStrip MUST return false WHEN the pause event names an interrupted
 });
 
 r.test('changes MUST return no line WHEN the row carries interrupted', () => {
-  assert.deepEqual(ui.changes({...round({ip6: gone()}), interrupted: 'wake_lock'}, round()), []);
+  assert.deepEqual(ui.changes({...round({ip6: gone()}), interrupted: 'suspended'}, round()), []);
 });
 
 r.test('probeReading MUST return a value or a note for every probe and flag a saturated download WHEN the round is healthy', () => {
@@ -1398,6 +1398,25 @@ e.test('filename MUST strip quotes, commas, newlines and backslashes WHEN the se
   assert.deepEqual(JSON.parse(sessionJson(sess, [], [])).session.name, 'x", y\n\\');
 });
 
+e.test('filename MUST name the file after the session WHEN it has been renamed', () => {
+  const sess = {id: 'a', name: 'RTD → DHC trein', operator: 'KPN', connection: 'cellular',
+                renamed: true, started: Date.parse('2026-09-03T06:14:00Z')};
+  assert.match(filename(sess), /^nulog-20260903-\d{4}-rtd-dhc-trein\.json$/, filename(sess));
+  assert.match(filename({...sess, renamed: false}), /-kpn\.json$/,
+               'a generated name leaves the operator on the file');
+});
+
+e.test('summarise MUST report the sample spread taken after the first sample WHEN every sample answered', () => {
+  const row = (samples, ok = samples.length) =>
+    ({seq: 1, t: 1, probes: {ip6: {ok: true, ms: 50, ms_samples: samples, samples_ok: ok}}});
+  const sum = summarise([row([500, 40, 60, 50]), row([400, 20, 30, 25])]);
+  assert.deepEqual([sum.probes.ip6.spread_p50, sum.probes.ip6.spread_p90], [10, 20],
+                   'the first sample is left out of every round');
+  assert.equal(summarise([row([500, 40, 60, 50], 3)]).probes.ip6.spread_p50, null,
+               'a round with a lost sample carries no spread');
+  assert.equal(summarise([]).probes.ip6.spread_p90, null, 'no rounds means no percentile');
+});
+
 e.test('bundleFilename MUST stamp the local export time with a separator WHEN called', () => {
   // 06:15 UTC is 08:15 in Amsterdam: the name carries the hour of the runner's timezone.
   const exportedAt = Date.parse('2026-09-11T06:15:50Z');
@@ -1410,7 +1429,7 @@ e.test('bundleFilename MUST stamp the local export time with a separator WHEN ca
 
 e.test('summarise MUST exclude an interrupted round from ran and count it WHEN a row carries interrupted', () => {
   const rows = [1, 2, 3].map(i => ({seq: i, t: i, probes: {ip6: {ok: false, fail: 'abort'}}}));
-  rows[1].interrupted = 'wake_lock';
+  rows[1].interrupted = 'suspended';
   const sum = summarise(rows);
   assert.deepEqual([sum.rounds, sum.ran, sum.interrupted], [3, 2, 1]);
   assert.equal(sum.probes.ip6.n, 2, 'its probes enter no tally');

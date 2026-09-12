@@ -376,22 +376,57 @@ function interruptible() {
   return {grants, inRound, started: () => started(), restore};
 }
 
-r.test('createRecorder MUST store a round interrupted by wake_lock with null grades and pgrades WHEN the wake lock is released mid-round', async () => {
+// A release is the system reclaiming the screen, typically in Low Power Mode. Two rounds inside the
+// Delft tunnel were discarded for it while the page kept running on schedule.
+r.test('createRecorder MUST grade the round and record wake_lock_lost WHEN the wake lock is released without a timer gap', async () => {
   stubStun();
   const platform = interruptible();
-  globalThis.fetch = async () => { platform.started(); await sleep(150); return okResponse(); };
+  // Short samples, so the round completes well inside the wait: the release no longer cuts it off.
+  globalThis.fetch = async () => { platform.started(); await sleep(20); return okResponse(); };
   try {
     const store = fakeStore();
     const rec = createRecorder({store});
     await rec.start(session({intervalMs: 2000, ipv6_available: true}));
     await platform.inRound;
     platform.grants[0].systemRelease();
-    await sleep(500);
+    await sleep(900);
     await rec.stop();
     const row = store.written.samples[0];
-    assert.deepEqual([row.interrupted, row.grades, row.pgrades], ['wake_lock', null, null]);
+    assert.equal(row.interrupted, null);
+    assert.equal(row.wake_lock_lost, true);
+    assert.ok(row.grades && row.pgrades, 'the round is graded on what it measured');
     assert.ok(row.probes.ip6, 'the probes the round took are kept');
   } finally {
+    platform.restore();
+  }
+});
+
+r.test('createRecorder MUST interrupt the round as suspended WHEN the wake lock is released and a timer gap follows', async () => {
+  stubStun();
+  const platform = interruptible();
+  globalThis.fetch = async () => { platform.started(); await sleep(300); return okResponse(); };
+  const realNow = performance.now.bind(performance);
+  const realDate = Date.now.bind(Date);
+  try {
+    const store = fakeStore();
+    const rec = createRecorder({store});
+    await rec.start(session({intervalMs: 5000, ipv6_available: true}));
+    await platform.inRound;
+    platform.grants[0].systemRelease();
+    const frozen = realNow();
+    performance.now = () => frozen;
+    Date.now = () => realDate() + 4000;
+    await sleep(400);
+    performance.now = realNow;
+    Date.now = realDate;
+    await rec.stop();
+    const row = store.written.samples[0];
+    assert.equal(row.interrupted, 'suspended');
+    assert.equal(row.wake_lock_lost, true, 'the release is recorded on the same row');
+    assert.deepEqual([row.grades, row.pgrades], [null, null]);
+  } finally {
+    performance.now = realNow;
+    Date.now = realDate;
     platform.restore();
   }
 });
@@ -432,12 +467,14 @@ r.test('createRecorder MUST start the next round as the interrupted round settle
     const rec = createRecorder({store});
     await rec.start(session({intervalMs: 300, ipv6_available: true}));
     await platform.inRound;
-    platform.grants[0].systemRelease();
+    // Freeze the loop past the gap threshold, so the round in flight is interrupted as suspended.
+    const until = Date.now() + 1200;
+    while (Date.now() < until) { /* a suspended tab */ }
     slow = false;
     await sleep(900);
     await rec.stop();
     const [first, second] = [...store.written.samples].sort((a, b) => a.seq - b.seq);
-    assert.equal(first.interrupted, 'wake_lock');
+    assert.equal(first.interrupted, 'suspended');
     assert.ok(second, 'a round followed');
     assert.equal(store.written.events.filter(e => e.type === 'skip' && e.round === first.seq).length, 0);
     const gap = second.mono - (first.mono + first.round_ms);

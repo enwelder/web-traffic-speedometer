@@ -2,7 +2,7 @@
 // Playwright and starts its own server.
 import {spawnSync} from 'node:child_process';
 
-const suites = ['unit', 'stuck', 'wakelock', 'position', 'grading', 'edges', 'replay', 'regressions', 'security', 'browser'];
+const suites = ['unit', 'stuck', 'wakelock', 'position', 'grading', 'edges', 'replay', 'regressions', 'security', 'browser', 'simulation'];
 const only = process.argv.slice(2);
 // An unknown suite name fails, so a mistyped name in the CI workflow cannot pass with zero cases.
 const unknown = only.filter(n => !suites.includes(n));
